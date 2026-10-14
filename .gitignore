@@ -1,0 +1,14 @@
+# Visual Studio / build output
+.vs/
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+
+# Python cache
+__pycache__/
+
+# Logs & dumps (very large)
+*.log
+debug.txt
+Granny3D_plugin.log
