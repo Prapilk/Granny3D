@@ -315,6 +315,11 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblDuration;
         private Label lblModelInfo;
 
+        // UI - UO render bar
+        private CheckBox chkUoView;
+        private ComboBox cmbUoMode, cmbUoDir;
+        private NumericUpDown nudUoZoom, nudUoElev, nudUoVert;
+
         private readonly CameraController _camera = new CameraController();
 
         // Data
@@ -338,8 +343,22 @@ namespace UoFiddler.Plugin.Granny3D
         private bool _glReady;
         private int _dbgFrame;
         private int _shaderProg;
-        private int _uMvp, _uHasTex, _uColor, _uTex, _uLightDir, _uAlphaCut;
+        private int _uMvp, _uHasTex, _uColor, _uTex, _uLightDir, _uAlphaCut, _uUnlit;
         private bool _initialLoadPending;
+
+        // UO render view (right half of the viewport): orthographic 2:1 isometric,
+        // 5 stored directions (world N,NE,E,SE,S), flat unlit shading, no lights.
+        private bool _uoView = true;
+        private bool _uoSheet;              // false = one direction, true = sheet of all 5
+        private int _uoDirection = 4;       // 0..4 => world N,NE,E,SE,S (4 = S faces camera)
+        private float _uoSplit = 0.5f;      // x fraction of the editor | UO split
+        private float _uoZoom = 1f;
+        private float _uoElevationDeg = 26.565f;
+        private float _uoYawOffsetDeg = 0f;
+        private float _uoVertScale = 1f;
+        private bool _uoDragSplit;
+        // UO preview background (matches the UOFiddler animation preview: plain light back).
+        private float _uoBgR = 0.94f, _uoBgG = 0.94f, _uoBgB = 0.94f;
 
         private static readonly string LogFile = Path.Combine(Path.GetTempPath(), "Granny3D_plugin.log");
 
@@ -738,7 +757,44 @@ namespace UoFiddler.Plugin.Granny3D
             pnlRightBottom.Controls.Add(grpInfo);     // Fill
             pnlRightBottom.Controls.Add(pnlPlayRow);  // Top
 
-            pnlRight.Controls.Add(pnlRightBottom);
+            // ---- UO render bar (between the split viewport and the controls) ----
+            var pnlUoBar = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color.FromArgb(45, 45, 48) };
+
+            chkUoView = new CheckBox { Text = "Rendu UO", Location = new Point(8, 6), Width = 90, Checked = true, ForeColor = Color.Gainsboro };
+            chkUoView.CheckedChanged += (s, e) => { _uoView = chkUoView.Checked; if (glControl != null) glControl.Invalidate(); };
+
+            cmbUoMode = new ComboBox { Location = new Point(102, 4), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
+            cmbUoMode.Items.AddRange(new object[] { "Vue UO (1 direction)", "Planche (5 vues)" });
+            cmbUoMode.SelectedIndex = 0;
+            cmbUoMode.SelectedIndexChanged += (s, e) => { _uoSheet = cmbUoMode.SelectedIndex == 1; if (glControl != null) glControl.Invalidate(); };
+
+            cmbUoDir = new ComboBox { Location = new Point(258, 4), Width = 92, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
+            cmbUoDir.Items.AddRange(new object[] { "N (0)", "NE (1)", "E (2)", "SE (3)", "S (4)" });
+            cmbUoDir.SelectedIndex = 4;
+            cmbUoDir.SelectedIndexChanged += (s, e) => { _uoDirection = cmbUoDir.SelectedIndex; if (glControl != null) glControl.Invalidate(); };
+
+            pnlUoBar.Controls.Add(new Label { Text = "Zoom", Location = new Point(360, 7), Width = 40, ForeColor = Color.Gray });
+            nudUoZoom = new NumericUpDown { Location = new Point(402, 4), Width = 58, Minimum = 0.1m, Maximum = 6m, Increment = 0.1m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoZoom.ValueChanged += (s, e) => { _uoZoom = (float)nudUoZoom.Value; if (glControl != null) glControl.Invalidate(); };
+
+            pnlUoBar.Controls.Add(new Label { Text = "Incl.", Location = new Point(468, 7), Width = 34, ForeColor = Color.Gray });
+            nudUoElev = new NumericUpDown { Location = new Point(504, 4), Width = 62, Minimum = 5m, Maximum = 60m, Increment = 0.5m, DecimalPlaces = 2, Value = 26.565m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoElev.ValueChanged += (s, e) => { _uoElevationDeg = (float)nudUoElev.Value; if (glControl != null) glControl.Invalidate(); };
+
+            pnlUoBar.Controls.Add(new Label { Text = "Vert.", Location = new Point(572, 7), Width = 36, ForeColor = Color.Gray });
+            nudUoVert = new NumericUpDown { Location = new Point(610, 4), Width = 60, Minimum = 0.2m, Maximum = 3m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoVert.ValueChanged += (s, e) => { _uoVertScale = (float)nudUoVert.Value; if (glControl != null) glControl.Invalidate(); };
+
+            pnlUoBar.Controls.AddRange(new Control[] { chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert });
+
+            // Group the UO bar + playback panel into one bottom strip so the docking
+            // is unambiguous: one Top bar and a Fill playback panel below it.
+            pnlRightBottom.Dock = DockStyle.Fill;
+            var pnlRightBottomAll = new Panel { Dock = DockStyle.Bottom, Height = 650 };
+            pnlRightBottomAll.Controls.Add(pnlUoBar);          // Top
+            pnlRightBottomAll.Controls.Add(pnlRightBottom);    // Fill
+
+            pnlRight.Controls.Add(pnlRightBottomAll);
             pnlRight.Controls.Add(glControl);
 
             // ===== MAIN SPLIT: left tree | right viewport+playback =====
@@ -3904,64 +3960,157 @@ namespace UoFiddler.Plugin.Granny3D
             if (glControl.IsHandleCreated) glControl.Invalidate();
         }
 
+        private int UoSplitX()
+        {
+            int w = Math.Max(1, glControl.Width);
+            if (!_uoView) return w;
+            return (int)MathHelper.Clamp(w * _uoSplit, 40f, w - 40f);
+        }
+
         private void RenderScene()
         {
             if (!glControl.IsHandleCreated) return;
             glControl.MakeCurrent();
 
+            int W = Math.Max(1, glControl.Width);
+            int H = Math.Max(1, glControl.Height);
+
             if (_dbgFrame < 2)
             {
                 _dbgFrame++;
-                Log($"RenderScene frame#{_dbgFrame} size={glControl.Width}x{glControl.Height} meshes={_loadedMeshes.Count} prog={_shaderProg}");
+                Log($"RenderScene frame#{_dbgFrame} size={W}x{H} meshes={_loadedMeshes.Count} prog={_shaderProg}");
             }
 
-            GL.Viewport(0, 0, Math.Max(1, glControl.Width), Math.Max(1, glControl.Height));
+            int splitX = UoSplitX();
+
+            GL.Enable(EnableCap.ScissorTest);
+            GL.Disable(EnableCap.CullFace);
+            GL.Enable(EnableCap.DepthTest);
+            GL.DepthFunc(DepthFunction.Lequal);
+            // Alpha: discard fully-transparent texels (cutout) and blend soft edges.
+            GL.Enable(EnableCap.Blend);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+
+            // ---- Editor half (left): perspective orbit ----
+            GL.Viewport(0, 0, splitX, H);
+            GL.Scissor(0, 0, splitX, H);
             GL.ClearColor(0.08f, 0.09f, 0.12f, 1f);
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-            if (_shaderProg != 0)
+            if (_shaderProg != 0 && splitX > 1 && H > 1)
+                DrawEditorView(splitX, H);
+
+            // ---- UO half (right): orthographic 2:1 isometric, flat ----
+            if (_uoView && splitX < W - 1)
             {
-                GL.Enable(EnableCap.DepthTest);
-                GL.DepthFunc(DepthFunction.Lequal);
-                GL.Disable(EnableCap.CullFace);
+                int ux = splitX, uw = W - splitX;
+                GL.Viewport(ux, 0, uw, H);
+                GL.Scissor(ux, 0, uw, H);
+                GL.ClearColor(_uoBgR, _uoBgG, _uoBgB, 1f);
+                GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-                // Alpha: discard fully-transparent texels (cutout for wings/hair/
-                // foliage) and blend the remaining soft edges.
-                GL.Enable(EnableCap.Blend);
-                GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                if (_shaderProg != 0 && uw > 1 && H > 1)
+                    DrawUoView(ux, uw, H);
 
-                Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(
-                    MathHelper.DegreesToRadians(45f),
-                    (float)Math.Max(1, glControl.Width) / Math.Max(1, glControl.Height),
-                    0.01f, 5000f);
-                Matrix4 view = _camera.GetViewMatrix();
-                Matrix4 mvp = view * proj;
-
-                GL.UseProgram(_shaderProg);
-                GL.UniformMatrix4(_uMvp, false, ref mvp);
-                GL.Uniform3(_uLightDir, 0.5f, 0.5f, 1f);
-                GL.Uniform1(_uTex, 0);
-                GL.Uniform1(_uAlphaCut, 0.15f);
-                GL.ActiveTexture(TextureUnit.Texture0);
-
-                foreach (var lm in _loadedMeshes)
-                {
-                    if (lm.Vao == 0 || lm.Hidden) continue;
-
-                    bool tex = lm.HasTexture && lm.TextureId > 0;
-                    GL.BindTexture(TextureTarget.Texture2D, tex ? lm.TextureId : 0);
-                    GL.Uniform1(_uHasTex, tex ? 1 : 0);
-                    GL.Uniform3(_uColor, 0.72f, 0.66f, 0.55f);
-
-                    GL.BindVertexArray(lm.Vao);
-                    GL.DrawArrays(PrimitiveType.Triangles, 0, lm.Indices.Length);
-                }
-
-                GL.BindVertexArray(0);
-                GL.UseProgram(0);
+                // Divider line between the two halves.
+                GL.Scissor(splitX - 1, 0, 2, H);
+                GL.ClearColor(0.55f, 0.55f, 0.58f, 1f);
+                GL.Clear(ClearBufferMask.ColorBufferBit);
             }
 
+            GL.Disable(EnableCap.ScissorTest);
             glControl.SwapBuffers();
+        }
+
+        private void DrawEditorView(int w, int h)
+        {
+            GL.Viewport(0, 0, w, h);
+            GL.Scissor(0, 0, w, h);
+
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(
+                MathHelper.DegreesToRadians(45f),
+                (float)w / Math.Max(1, h),
+                0.01f, 5000f);
+            Matrix4 view = _camera.GetViewMatrix();
+            Matrix4 mvp = view * proj;
+            DrawMeshSet(mvp, unlit: false, alphaCut: 0.15f);
+        }
+
+        private void DrawUoView(int x, int w, int h)
+        {
+            if (_uoSheet)
+            {
+                const int n = 5;
+                int cw = Math.Max(1, w / n);
+                for (int k = 0; k < n; k++)
+                {
+                    int cxk = x + k * cw;
+                    int cwk = (k == n - 1) ? (x + w - cxk) : cw;
+                    DrawUoDirection(cxk, cwk, h, k);
+                }
+            }
+            else
+            {
+                DrawUoDirection(x, w, h, _uoDirection);
+            }
+        }
+
+        private void DrawUoDirection(int x, int w, int h, int dir)
+        {
+            GL.Viewport(x, 0, w, h);
+            GL.Scissor(x, 0, w, h);
+
+            Matrix4 view = UoViewMatrix(dir);
+            float maxDim = _refScale > 0 ? 2f / _refScale : 2f;
+            float viewH = maxDim * 1.15f / Math.Max(0.01f, _uoZoom);
+            float aspect = (float)w / Math.Max(1, h);
+            float viewW = viewH * aspect;
+
+            Matrix4 vscale = Matrix4.CreateScale(1f, 1f, _uoVertScale);
+            Matrix4 proj = Matrix4.CreateOrthographic(viewW, viewH, -5000f, 5000f);
+            Matrix4 mvp = vscale * view * proj;
+            // UO sprites use hard (binary) transparency -> high cutout.
+            DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f);
+        }
+
+        private Matrix4 UoViewMatrix(int dir)
+        {
+            float elev = MathHelper.DegreesToRadians(_uoElevationDeg);
+            float az = MathHelper.DegreesToRadians(_uoYawOffsetDeg + dir * 45f);
+            Vector3 target = _refCenter;
+            const float dist = 1000f;
+            Vector3 eye = target + new Vector3(
+                dist * (float)Math.Cos(elev) * (float)Math.Sin(az),
+                dist * (float)Math.Cos(elev) * (float)Math.Cos(az),
+                dist * (float)Math.Sin(elev));
+            return Matrix4.LookAt(eye, target, Vector3.UnitZ);
+        }
+
+        private void DrawMeshSet(Matrix4 mvp, bool unlit, float alphaCut)
+        {
+            GL.UseProgram(_shaderProg);
+            GL.UniformMatrix4(_uMvp, false, ref mvp);
+            GL.Uniform3(_uLightDir, 0.5f, 0.5f, 1f);
+            GL.Uniform1(_uTex, 0);
+            GL.Uniform1(_uAlphaCut, alphaCut);
+            GL.Uniform1(_uUnlit, unlit ? 1 : 0);
+            GL.ActiveTexture(TextureUnit.Texture0);
+
+            foreach (var lm in _loadedMeshes)
+            {
+                if (lm.Vao == 0 || lm.Hidden) continue;
+
+                bool tex = lm.HasTexture && lm.TextureId > 0;
+                GL.BindTexture(TextureTarget.Texture2D, tex ? lm.TextureId : 0);
+                GL.Uniform1(_uHasTex, tex ? 1 : 0);
+                GL.Uniform3(_uColor, 0.72f, 0.66f, 0.55f);
+
+                GL.BindVertexArray(lm.Vao);
+                GL.DrawArrays(PrimitiveType.Triangles, 0, lm.Indices.Length);
+            }
+
+            GL.BindVertexArray(0);
+            GL.UseProgram(0);
         }
 
         private void CompileShaders()
@@ -3985,6 +4134,7 @@ uniform int uHasTex;
 uniform vec3 uColor;
 uniform vec3 uLightDir;
 uniform float uAlphaCut;
+uniform int uUnlit;
 out vec4 FragColor;
 void main(){
     vec3 n = normalize(vNormal);
@@ -3993,7 +4143,8 @@ void main(){
     float a = (uHasTex == 1) ? tex.a : 1.0;
     if (a < uAlphaCut) discard;
     vec3 base = (uHasTex == 1) ? tex.rgb : uColor;
-    FragColor = vec4(base * (0.45 + 0.75 * d), a);
+    float shade = (uUnlit == 1) ? 1.0 : (0.45 + 0.75 * d);
+    FragColor = vec4(base * shade, a);
 }";
 
             int v = GL.CreateShader(ShaderType.VertexShader);
@@ -4023,6 +4174,7 @@ void main(){
             _uTex = GL.GetUniformLocation(_shaderProg, "uTex");
             _uLightDir = GL.GetUniformLocation(_shaderProg, "uLightDir");
             _uAlphaCut = GL.GetUniformLocation(_shaderProg, "uAlphaCut");
+            _uUnlit = GL.GetUniformLocation(_shaderProg, "uUnlit");
             Log($"Shaders compiled prog={_shaderProg} vsOk={vsOk} fsOk={fsOk} link={linkOk}");
         }
 
@@ -4031,22 +4183,46 @@ void main(){
         private void GlControl_MouseDown(object sender, MouseEventArgs e)
         {
             glControl.Focus();
+            if (_uoView)
+            {
+                int sx = UoSplitX();
+                if (Math.Abs(e.X - sx) <= 5) { _uoDragSplit = true; return; }
+                if (e.X > sx) return;   // right (UO) half: no orbit
+            }
             _camera.OnMouseDown(e);
         }
 
         private void GlControl_MouseUp(object sender, MouseEventArgs e)
         {
+            _uoDragSplit = false;
             _camera.OnMouseUp(e);
         }
 
         private void GlControl_MouseMove(object sender, MouseEventArgs e)
         {
+            if (_uoDragSplit)
+            {
+                _uoSplit = MathHelper.Clamp((float)e.X / Math.Max(1, glControl.Width), 0.15f, 0.85f);
+                glControl.Invalidate();
+                return;
+            }
+            int sx = UoSplitX();
+            if (_uoView && Math.Abs(e.X - sx) <= 5) { Cursor = Cursors.SizeWE; return; }
+            Cursor = Cursors.Default;
+            if (_uoView && e.X > sx) return;   // right (UO) half
             _camera.OnMouseMove(e);
             glControl.Invalidate();
         }
 
         private void GlControl_MouseWheel(object sender, MouseEventArgs e)
         {
+            if (_uoView && e.X > UoSplitX())
+            {
+                _uoZoom = MathHelper.Clamp(_uoZoom * (e.Delta > 0 ? 1.1f : 0.9f), 0.1f, 6f);
+                if (nudUoZoom != null) nudUoZoom.Value = (decimal)Math.Round(_uoZoom, 2);
+                glControl.Invalidate();
+                return;
+            }
             _camera.OnMouseWheel(e);
             glControl.Invalidate();
         }
