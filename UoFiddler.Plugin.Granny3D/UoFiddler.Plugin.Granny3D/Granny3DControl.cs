@@ -32,10 +32,6 @@ namespace UoFiddler.Plugin.Granny3D
         public bool HasTexture = false;
 
         public int[] BoneToAnimTrack;
-        // Bones whose animation position carries the character's world "root motion"
-        // (e.g. the Bip01 COM bouncing in a locomotion clip). Their VERTICAL (Z)
-        // translation is stripped during posing so the character stays grounded.
-        public bool[] MotionRootFlags;
         public Matrix4[] LocalMatrices;
         public Matrix4[] WorldMatrices;
         public Matrix4[] SkinMatrices;
@@ -363,11 +359,11 @@ namespace UoFiddler.Plugin.Granny3D
         private bool _uoSheet;              // false = one direction, true = sheet of all 5
         private int _uoDirection = 4;       // 0..4 => world N,NE,E,SE,S (4 = S faces camera)
         private float _uoSplit = 0.5f;      // x fraction of the editor | UO split
-        private float _uoZoom = 0.28f;
+        private float _uoZoom = 0.27f;
         private float _uoElevationDeg = 26.565f;
         private float _uoYawOffsetDeg = 180f;   // 180 so our camera matches UOFiddler's facing
         private float _uoVertScale = 1f;
-        private float _uoOffX = 0f, _uoOffY = 0f;  // screen-space offset (normalized units)
+        private float _uoOffX = 0f, _uoOffY = -0.080f;  // screen-space offset (normalized units)
         private bool _uoFeetOnLine = true;         // put the model's bottom on the red line
         private float _uoGlobalZoom = 1f;          // global magnification (model + reference)
         private float _uoBrightness = 0.8f;          // model brightness correction
@@ -804,7 +800,7 @@ namespace UoFiddler.Plugin.Granny3D
             cmbUoDir.SelectedIndexChanged += (s, e) => { _uoDirection = cmbUoDir.SelectedIndex; if (glControl != null) glControl.Invalidate(); };
 
             grpCamera.Controls.Add(new Label { Text = "Zoom", Location = new Point(8, 150), Width = 100, ForeColor = Color.Gray });
-            nudUoZoom = new NumericUpDown { Location = new Point(8, 168), Width = 100, Minimum = 0.1m, Maximum = 6m, Increment = 0.1m, DecimalPlaces = 2, Value = 0.28m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoZoom = new NumericUpDown { Location = new Point(8, 168), Width = 100, Minimum = 0.1m, Maximum = 6m, Increment = 0.1m, DecimalPlaces = 2, Value = 0.27m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoZoom.ValueChanged += (s, e) => { _uoZoom = (float)nudUoZoom.Value; if (glControl != null) glControl.Invalidate(); };
 
             grpCamera.Controls.Add(new Label { Text = "Inclinaison (°)", Location = new Point(120, 150), Width = 120, ForeColor = Color.Gray });
@@ -827,7 +823,7 @@ namespace UoFiddler.Plugin.Granny3D
             nudUoOffX.ValueChanged += (s, e) => { _uoOffX = (float)nudUoOffX.Value; if (glControl != null) glControl.Invalidate(); };
 
             grpCamera.Controls.Add(new Label { Text = "Décalage Y", Location = new Point(120, 276), Width = 110, ForeColor = Color.Gray });
-            nudUoOffY = new NumericUpDown { Location = new Point(120, 294), Width = 100, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoOffY = new NumericUpDown { Location = new Point(120, 294), Width = 100, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = -0.080m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoOffY.ValueChanged += (s, e) => { _uoOffY = (float)nudUoOffY.Value; if (glControl != null) glControl.Invalidate(); };
 
             // Reference overlay (UOFiddler animation, body 400 = c_man).
@@ -3083,53 +3079,6 @@ namespace UoFiddler.Plugin.Granny3D
                 if (added > 0)
                     Log($"Positional fallback: {lm.Name} nameMatched={matched}/{lm.Bones.Count} positional+={added} ref={refMesh.Name}");
             }
-
-            ComputeMotionRootFlags(anim);
-        }
-
-        // A track "moves" if any of its position keys deviates from the first by more
-        // than eps (root motion is large; bone-length positions are authored constant).
-        private static bool TrackPositionVaries(GrannyTrack tr, float eps)
-        {
-            if (tr.Pos == null || tr.Pos.Length < 2) return false;
-            float eps2 = eps * eps;
-            for (int i = 1; i < tr.Pos.Length; i++)
-                if ((tr.Pos[i] - tr.Pos[0]).LengthSquared > eps2) return true;
-            return false;
-        }
-
-        // Mark the topmost bone(s) whose position track actually moves (their ancestors
-        // all have constant positions). These carry the character's world placement
-        // (root motion) and are pinned to the bind pose so the preview walks in place.
-        private void ComputeMotionRootFlags(GrannyAnimation anim)
-        {
-            foreach (var lm in _loadedMeshes)
-            {
-                int bc = lm.Bones.Count;
-                lm.MotionRootFlags = new bool[bc];
-                if (anim == null || lm.BoneToAnimTrack == null || lm.BoneToAnimTrack.Length != bc) continue;
-
-                for (int i = 0; i < bc; i++)
-                {
-                    int t = lm.BoneToAnimTrack[i];
-                    if (t < 0 || t >= anim.Tracks.Count) continue;
-                    if (!TrackPositionVaries(anim.Tracks[t], 0.01f)) continue;
-
-                    bool ancestorsConstant = true;
-                    int p = lm.Bones[i].ParentId;
-                    var seen = new HashSet<int>();
-                    while (p >= 0 && p < bc && p != i && !seen.Contains(p))
-                    {
-                        seen.Add(p);
-                        int pt = lm.BoneToAnimTrack[p];
-                        if (pt >= 0 && pt < anim.Tracks.Count && TrackPositionVaries(anim.Tracks[pt], 0.01f))
-                        { ancestorsConstant = false; break; }
-                        p = lm.Bones[p].ParentId;
-                    }
-                    if (ancestorsConstant)
-                        lm.MotionRootFlags[i] = true;
-                }
-            }
         }
 
         private void ApplyAnimationPose(float t)
@@ -3198,13 +3147,7 @@ namespace UoFiddler.Plugin.Granny3D
                     if (_currentAnimation != null && trackIdx >= 0 && trackIdx < _currentAnimation.Tracks.Count)
                     {
                         var tr = _currentAnimation.Tracks[trackIdx];
-                        Vector3 pos = tr.EvaluatePos(t);
-                        // Strip the vertical root bounce (the character's up/down
-                        // "root motion"), but KEEP horizontal translation so weight
-                        // shifts and shuffle steps (e.g. spell casts) stay grounded.
-                        if (lm.MotionRootFlags != null && i < lm.MotionRootFlags.Length && lm.MotionRootFlags[i])
-                            pos.Z = lm.Bones[i].LocalPosition.Z;
-                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(t)) * Matrix4.CreateTranslation(pos);
+                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(t)) * Matrix4.CreateTranslation(tr.EvaluatePos(t));
                     }
                     else
                     {
