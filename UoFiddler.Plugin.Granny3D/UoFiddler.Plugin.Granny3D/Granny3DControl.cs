@@ -366,13 +366,13 @@ namespace UoFiddler.Plugin.Granny3D
         private float _uoOffX = 0f, _uoOffY = 0f;  // screen-space offset (normalized units)
         private bool _uoFeetOnLine = true;         // put the model's bottom on the red line
         private float _uoGlobalZoom = 1f;          // global magnification (model + reference)
-        private float _uoBrightness = 1f;          // model brightness correction
+        private float _uoBrightness = 0.8f;          // model brightness correction
 
         // Reference overlay: UOFiddler animation frame (anim.mul body 400 = c_man),
         // drawn on top of the model so size / camera tilt can be compared.
         private bool _uoRefShow;
         private int _uoRefBody = 400, _uoRefAction = 0, _uoRefFrame = 0;
-        private float _uoRefScale = 1f;
+        private float _uoRefScale = 0.28f;
         private float _uoRefOpacity = 0.55f;
         private readonly int[] _uoRefTex = new int[5];
         private readonly int[] _uoRefW = new int[5];
@@ -812,7 +812,7 @@ namespace UoFiddler.Plugin.Granny3D
             nudUoVert.ValueChanged += (s, e) => { _uoVertScale = (float)nudUoVert.Value; if (glControl != null) glControl.Invalidate(); };
 
             grpCamera.Controls.Add(new Label { Text = "Luminosité", Location = new Point(120, 200), Width = 110, ForeColor = Color.Gray });
-            nudUoBright = new NumericUpDown { Location = new Point(120, 218), Width = 100, Minimum = 0.2m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoBright = new NumericUpDown { Location = new Point(120, 218), Width = 100, Minimum = 0.2m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.8m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoBright.ValueChanged += (s, e) => { _uoBrightness = (float)nudUoBright.Value; if (glControl != null) glControl.Invalidate(); };
 
             chkUoFeet = new CheckBox { Text = "Pieds sur la ligne", Location = new Point(8, 248), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
@@ -839,7 +839,7 @@ namespace UoFiddler.Plugin.Granny3D
             nudUoRefFrame.ValueChanged += (s, e) => { _uoRefFrame = (int)nudUoRefFrame.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
 
             grpCamera.Controls.Add(new Label { Text = "Éch. réf.", Location = new Point(8, 406), Width = 100, ForeColor = Color.Gray });
-            nudUoRefScale = new NumericUpDown { Location = new Point(8, 424), Width = 100, Minimum = 0.05m, Maximum = 40m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefScale = new NumericUpDown { Location = new Point(8, 424), Width = 100, Minimum = 0.05m, Maximum = 40m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.28m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoRefScale.ValueChanged += (s, e) => { _uoRefScale = (float)nudUoRefScale.Value; if (glControl != null) glControl.Invalidate(); };
 
             grpCamera.Controls.Add(new Label { Text = "Opacité %", Location = new Point(120, 406), Width = 110, ForeColor = Color.Gray });
