@@ -292,6 +292,7 @@ namespace UoFiddler.Plugin.Granny3D
         private bool _suppressEquip;
         // UI - multipart character menu (Visage / Coiffure / Barbe / Torse)
         private GroupBox grpChar;
+        private GroupBox grpCamera;
         private Label lblCharInfo;
         private ComboBox cbCharFace, cbCharHair, cbCharBeard, cbCharTorso;
         private bool _suppressChar;
@@ -316,9 +317,9 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblModelInfo;
 
         // UI - UO render bar
-        private CheckBox chkUoView;
+        private CheckBox chkUoView, chkUoFeet;
         private ComboBox cmbUoMode, cmbUoDir;
-        private NumericUpDown nudUoZoom, nudUoElev, nudUoVert;
+        private NumericUpDown nudUoZoom, nudUoElev, nudUoVert, nudUoOffX, nudUoOffY;
 
         private readonly CameraController _camera = new CameraController();
 
@@ -337,6 +338,8 @@ namespace UoFiddler.Plugin.Granny3D
         private DateTime _lastFrameTime;
         private Vector3 _refCenter = Vector3.Zero;
         private float _refScale = 1f;
+        private Vector3 _normMin = Vector3.Zero;   // model bbox in normalized space
+        private Vector3 _normMax = Vector3.Zero;
         private string _currentModelPath;
 
         private System.Windows.Forms.Timer _renderTimer;
@@ -356,9 +359,12 @@ namespace UoFiddler.Plugin.Granny3D
         private float _uoElevationDeg = 26.565f;
         private float _uoYawOffsetDeg = 0f;
         private float _uoVertScale = 1f;
+        private float _uoOffX = 0f, _uoOffY = 0f;  // screen-space offset (normalized units)
+        private bool _uoFeetOnLine = true;         // put the model's bottom on the red line
         private bool _uoDragSplit;
         // UO preview background (matches the UOFiddler animation preview: plain light back).
         private float _uoBgR = 0.94f, _uoBgG = 0.94f, _uoBgB = 0.94f;
+        private int _uoDbg;
 
         private static readonly string LogFile = Path.Combine(Path.GetTempPath(), "Granny3D_plugin.log");
 
@@ -525,7 +531,7 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlRight = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6) };
 
             glControl = new GLControl();
-            glControl.Dock = DockStyle.Fill;
+            glControl.Dock = DockStyle.None;
             glControl.BackColor = Color.Black;
             glControl.Paint += GlControl_Paint;
             glControl.Resize += GlControl_Resize;
@@ -749,53 +755,72 @@ namespace UoFiddler.Plugin.Granny3D
             cbCharTorso = MakeSlotCombo(206);
             grpChar.Controls.AddRange(new Control[] { lblCharInfo, cbCharFace, cbCharHair, cbCharBeard, cbCharTorso });
 
+            // ---- Camera / UO render options (docked right of the character menu) ----
+            grpCamera = new GroupBox
+            {
+                Text = "Caméra (rendu UO)",
+                Dock = DockStyle.Right,
+                Width = 250,
+                ForeColor = Color.Gainsboro,
+                Padding = new Padding(8)
+            };
+
+            chkUoView = new CheckBox { Text = "Afficher le rendu UO", Location = new Point(8, 22), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
+            chkUoView.CheckedChanged += (s, e) => { _uoView = chkUoView.Checked; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Mode", Location = new Point(8, 52), Width = 232, ForeColor = Color.Gray });
+            cmbUoMode = new ComboBox { Location = new Point(8, 70), Width = 232, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
+            cmbUoMode.Items.AddRange(new object[] { "Vue UO (1 direction)", "Planche (5 vues)" });
+            cmbUoMode.SelectedIndex = 0;
+            cmbUoMode.SelectedIndexChanged += (s, e) => { _uoSheet = cmbUoMode.SelectedIndex == 1; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Direction", Location = new Point(8, 100), Width = 232, ForeColor = Color.Gray });
+            cmbUoDir = new ComboBox { Location = new Point(8, 118), Width = 232, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
+            cmbUoDir.Items.AddRange(new object[] { "N (0)", "NE (1)", "E (2)", "SE (3)", "S (4)" });
+            cmbUoDir.SelectedIndex = 4;
+            cmbUoDir.SelectedIndexChanged += (s, e) => { _uoDirection = cmbUoDir.SelectedIndex; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Zoom", Location = new Point(8, 150), Width = 100, ForeColor = Color.Gray });
+            nudUoZoom = new NumericUpDown { Location = new Point(8, 168), Width = 100, Minimum = 0.1m, Maximum = 6m, Increment = 0.1m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoZoom.ValueChanged += (s, e) => { _uoZoom = (float)nudUoZoom.Value; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Inclinaison (°)", Location = new Point(120, 150), Width = 120, ForeColor = Color.Gray });
+            nudUoElev = new NumericUpDown { Location = new Point(120, 168), Width = 100, Minimum = 5m, Maximum = 60m, Increment = 0.5m, DecimalPlaces = 2, Value = 26.565m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoElev.ValueChanged += (s, e) => { _uoElevationDeg = (float)nudUoElev.Value; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Échelle verticale", Location = new Point(8, 200), Width = 120, ForeColor = Color.Gray });
+            nudUoVert = new NumericUpDown { Location = new Point(8, 218), Width = 100, Minimum = 0.2m, Maximum = 3m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoVert.ValueChanged += (s, e) => { _uoVertScale = (float)nudUoVert.Value; if (glControl != null) glControl.Invalidate(); };
+
+            chkUoFeet = new CheckBox { Text = "Pieds sur la ligne", Location = new Point(8, 248), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
+            chkUoFeet.CheckedChanged += (s, e) => { _uoFeetOnLine = chkUoFeet.Checked; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Décalage X", Location = new Point(8, 276), Width = 110, ForeColor = Color.Gray });
+            nudUoOffX = new NumericUpDown { Location = new Point(8, 294), Width = 100, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoOffX.ValueChanged += (s, e) => { _uoOffX = (float)nudUoOffX.Value; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Décalage Y", Location = new Point(120, 276), Width = 110, ForeColor = Color.Gray });
+            nudUoOffY = new NumericUpDown { Location = new Point(120, 294), Width = 100, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoOffY.ValueChanged += (s, e) => { _uoOffY = (float)nudUoOffY.Value; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.AddRange(new Control[] { chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert, chkUoFeet, nudUoOffX, nudUoOffY });
+
             var pnlPlayRow = new Panel { Dock = DockStyle.Top, Height = 500 };
             pnlPlayRow.Controls.Add(grpEquip);      // Fill
+            pnlPlayRow.Controls.Add(grpCamera);     // Right (docked first -> further right)
             pnlPlayRow.Controls.Add(grpChar);       // Right
             pnlPlayRow.Controls.Add(grpPlayback);   // Left
 
             pnlRightBottom.Controls.Add(grpInfo);     // Fill
             pnlRightBottom.Controls.Add(pnlPlayRow);  // Top
 
-            // ---- UO render bar (between the split viewport and the controls) ----
-            var pnlUoBar = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color.FromArgb(45, 45, 48) };
-
-            chkUoView = new CheckBox { Text = "Rendu UO", Location = new Point(8, 6), Width = 90, Checked = true, ForeColor = Color.Gainsboro };
-            chkUoView.CheckedChanged += (s, e) => { _uoView = chkUoView.Checked; if (glControl != null) glControl.Invalidate(); };
-
-            cmbUoMode = new ComboBox { Location = new Point(102, 4), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
-            cmbUoMode.Items.AddRange(new object[] { "Vue UO (1 direction)", "Planche (5 vues)" });
-            cmbUoMode.SelectedIndex = 0;
-            cmbUoMode.SelectedIndexChanged += (s, e) => { _uoSheet = cmbUoMode.SelectedIndex == 1; if (glControl != null) glControl.Invalidate(); };
-
-            cmbUoDir = new ComboBox { Location = new Point(258, 4), Width = 92, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
-            cmbUoDir.Items.AddRange(new object[] { "N (0)", "NE (1)", "E (2)", "SE (3)", "S (4)" });
-            cmbUoDir.SelectedIndex = 4;
-            cmbUoDir.SelectedIndexChanged += (s, e) => { _uoDirection = cmbUoDir.SelectedIndex; if (glControl != null) glControl.Invalidate(); };
-
-            pnlUoBar.Controls.Add(new Label { Text = "Zoom", Location = new Point(360, 7), Width = 40, ForeColor = Color.Gray });
-            nudUoZoom = new NumericUpDown { Location = new Point(402, 4), Width = 58, Minimum = 0.1m, Maximum = 6m, Increment = 0.1m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
-            nudUoZoom.ValueChanged += (s, e) => { _uoZoom = (float)nudUoZoom.Value; if (glControl != null) glControl.Invalidate(); };
-
-            pnlUoBar.Controls.Add(new Label { Text = "Incl.", Location = new Point(468, 7), Width = 34, ForeColor = Color.Gray });
-            nudUoElev = new NumericUpDown { Location = new Point(504, 4), Width = 62, Minimum = 5m, Maximum = 60m, Increment = 0.5m, DecimalPlaces = 2, Value = 26.565m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
-            nudUoElev.ValueChanged += (s, e) => { _uoElevationDeg = (float)nudUoElev.Value; if (glControl != null) glControl.Invalidate(); };
-
-            pnlUoBar.Controls.Add(new Label { Text = "Vert.", Location = new Point(572, 7), Width = 36, ForeColor = Color.Gray });
-            nudUoVert = new NumericUpDown { Location = new Point(610, 4), Width = 60, Minimum = 0.2m, Maximum = 3m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
-            nudUoVert.ValueChanged += (s, e) => { _uoVertScale = (float)nudUoVert.Value; if (glControl != null) glControl.Invalidate(); };
-
-            pnlUoBar.Controls.AddRange(new Control[] { chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert });
-
-            // Group the UO bar + playback panel into one bottom strip so the docking
-            // is unambiguous: one Top bar and a Fill playback panel below it.
-            pnlRightBottom.Dock = DockStyle.Fill;
-            var pnlRightBottomAll = new Panel { Dock = DockStyle.Bottom, Height = 650 };
-            pnlRightBottomAll.Controls.Add(pnlUoBar);          // Top
-            pnlRightBottomAll.Controls.Add(pnlRightBottom);    // Fill
-
-            pnlRight.Controls.Add(pnlRightBottomAll);
+            pnlRight.Controls.Add(pnlRightBottom);
             pnlRight.Controls.Add(glControl);
+
+            // Size the GL viewport explicitly above the bottom strip so it never
+            // extends behind the controls (deterministic, independent of z-order).
+            pnlRight.Resize += (s, e) => LayoutViewport(pnlRight, pnlRightBottom);
+            LayoutViewport(pnlRight, pnlRightBottom);
 
             // ===== MAIN SPLIT: left tree | right viewport+playback =====
             var mainSplit = new SplitContainer
@@ -813,6 +838,15 @@ namespace UoFiddler.Plugin.Granny3D
             ResumeLayout(false);
 
             LoadCategoryTree();
+        }
+
+        private void LayoutViewport(Control parent, Control bottom)
+        {
+            if (glControl == null || parent == null) return;
+            const int pad = 6;
+            int w = parent.ClientSize.Width - pad * 2;
+            int h = parent.ClientSize.Height - (bottom != null ? bottom.Height : 0) - pad * 2;
+            glControl.Bounds = new Rectangle(pad, pad, Math.Max(1, w), Math.Max(1, h));
         }
 
         private void InitializeOpenGL()
@@ -2883,6 +2917,15 @@ namespace UoFiddler.Plugin.Granny3D
             _refCenter = new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f);
             float maxDim = Math.Max(maxX - minX, Math.Max(maxY - minY, maxZ - minZ));
             _refScale = maxDim > 0 ? 2f / maxDim : 1f;
+
+            _normMin = new Vector3(
+                (minX - _refCenter.X) * _refScale,
+                (minY - _refCenter.Y) * _refScale,
+                (minZ - _refCenter.Z) * _refScale);
+            _normMax = new Vector3(
+                (maxX - _refCenter.X) * _refScale,
+                (maxY - _refCenter.Y) * _refScale,
+                (maxZ - _refCenter.Z) * _refScale);
         }
 
         private void UpdateModelInfo()
@@ -4009,6 +4052,12 @@ namespace UoFiddler.Plugin.Granny3D
                 GL.ClearColor(_uoBgR, _uoBgG, _uoBgB, 1f);
                 GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
+                if (_uoDbg < 3)
+                {
+                    _uoDbg++;
+                    Log($"UOdbg W={W} H={H} splitX={splitX} ctl={glControl.Width}x{glControl.Height} this={Width}x{Height} parent={glControl.Parent?.Width}x{glControl.Parent?.Height} refCenter={_refCenter} refScale={_refScale} maxDim={(2f / Math.Max(1e-6f, _refScale)):F3}");
+                }
+
                 if (_shaderProg != 0 && uw > 1 && H > 1)
                     DrawUoView(ux, uw, H);
 
@@ -4038,6 +4087,9 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void DrawUoView(int x, int w, int h)
         {
+            // One shared frame for every direction so the model keeps a constant size
+            // when rotating (per-direction framing made N/S look bigger than E/O).
+            float frameSpan = ComputeFrameSpan();
             if (_uoSheet)
             {
                 const int n = 5;
@@ -4046,38 +4098,96 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     int cxk = x + k * cw;
                     int cwk = (k == n - 1) ? (x + w - cxk) : cw;
-                    DrawUoDirection(cxk, cwk, h, k);
+                    DrawUoDirection(cxk, cwk, h, k, frameSpan);
                 }
             }
             else
             {
-                DrawUoDirection(x, w, h, _uoDirection);
+                DrawUoDirection(x, w, h, _uoDirection, frameSpan);
             }
         }
 
-        private void DrawUoDirection(int x, int w, int h, int dir)
+        // Max projected vertical span across all 5 directions (direction-independent frame).
+        private float ComputeFrameSpan()
+        {
+            float best = 0.1f;
+            Matrix4 vscale = Matrix4.CreateScale(1f, 1f, _uoVertScale);
+            for (int d = 0; d < 5; d++)
+            {
+                Matrix4 modelToView = vscale * UoViewMatrix(d);
+                float vmin, vmax;
+                ViewVerticalRange(modelToView, out vmin, out vmax);
+                best = Math.Max(best, vmax - vmin);
+            }
+            return best;
+        }
+
+        private void DrawUoDirection(int x, int w, int h, int dir, float frameSpan)
         {
             GL.Viewport(x, 0, w, h);
             GL.Scissor(x, 0, w, h);
 
             Matrix4 view = UoViewMatrix(dir);
-            float maxDim = _refScale > 0 ? 2f / _refScale : 2f;
-            float viewH = maxDim * 1.15f / Math.Max(0.01f, _uoZoom);
+            Matrix4 vscale = Matrix4.CreateScale(1f, 1f, _uoVertScale);
+            Matrix4 modelToView = vscale * view; // row-vector: apply vscale then view
+
+            // Anchor a stable "ground" point: the center of the bottom plane
+            // (0, 0, zMin). Its projection does not depend on the view direction,
+            // so the model no longer bobs up/down when rotating.
+            float anchorZ = _uoFeetOnLine ? _normMin.Z : (_normMin.Z + _normMax.Z) * 0.5f;
+            Vector3 anchor = new Vector3(0f, 0f, anchorZ);
+            Vector3 va = Vector3.TransformPosition(anchor, modelToView);
+
+            float shiftX = _uoOffX;
+            float shiftY = _uoOffY - va.Y;
+            float viewH = _uoFeetOnLine
+                ? frameSpan * 2f * 1.08f / Math.Max(0.01f, _uoZoom)
+                : frameSpan * 1.15f / Math.Max(0.01f, _uoZoom);
+
             float aspect = (float)w / Math.Max(1, h);
             float viewW = viewH * aspect;
-
-            Matrix4 vscale = Matrix4.CreateScale(1f, 1f, _uoVertScale);
+            Matrix4 shift = Matrix4.CreateTranslation(shiftX, shiftY, 0f);
             Matrix4 proj = Matrix4.CreateOrthographic(viewW, viewH, -5000f, 5000f);
-            Matrix4 mvp = vscale * view * proj;
+            Matrix4 mvp = modelToView * shift * proj;
             // UO sprites use hard (binary) transparency -> high cutout.
             DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f);
+
+            // Center cross to check the framing (like UOFiddler's preview):
+            // X axis = red horizontal line, Y axis = green vertical line.
+            int cx = x + w / 2;
+            int cy = h / 2;
+            GL.Scissor(x, cy, w, 1);
+            GL.ClearColor(1f, 0.25f, 0.25f, 1f);
+            GL.Clear(ClearBufferMask.ColorBufferBit);
+            GL.Scissor(cx, 0, 1, h);
+            GL.ClearColor(0.2f, 1f, 0.2f, 1f);
+            GL.Clear(ClearBufferMask.ColorBufferBit);
+        }
+
+        // Min/max view-space Y of the model's (normalized) bounding box corners.
+        private void ViewVerticalRange(Matrix4 modelToView, out float vmin, out float vmax)
+        {
+            Vector3 a = _normMin, b = _normMax;
+            vmin = float.MaxValue;
+            vmax = float.MinValue;
+            for (int i = 0; i < 8; i++)
+            {
+                Vector3 c = new Vector3(
+                    (i & 1) == 0 ? a.X : b.X,
+                    (i & 2) == 0 ? a.Y : b.Y,
+                    (i & 4) == 0 ? a.Z : b.Z);
+                Vector3 v = Vector3.TransformPosition(c, modelToView);
+                if (v.Y < vmin) vmin = v.Y;
+                if (v.Y > vmax) vmax = v.Y;
+            }
+            if (vmin > vmax) { vmin = -1f; vmax = 1f; }
         }
 
         private Matrix4 UoViewMatrix(int dir)
         {
             float elev = MathHelper.DegreesToRadians(_uoElevationDeg);
             float az = MathHelper.DegreesToRadians(_uoYawOffsetDeg + dir * 45f);
-            Vector3 target = _refCenter;
+            Vector3 target = Vector3.Zero; // vertices are already recentered on the origin
             const float dist = 1000f;
             Vector3 eye = target + new Vector3(
                 dist * (float)Math.Cos(elev) * (float)Math.Sin(az),
