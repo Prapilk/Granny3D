@@ -8,6 +8,7 @@ using System.Windows.Forms;
 using OpenTK.Graphics.OpenGL;
 using OpenTK.Mathematics;
 using OpenTK.WinForms;
+using Ultima;
 
 namespace UoFiddler.Plugin.Granny3D
 {
@@ -317,9 +318,12 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblModelInfo;
 
         // UI - UO render bar
-        private CheckBox chkUoView, chkUoFeet;
+        private CheckBox chkUoView, chkUoFeet, chkUoRef;
         private ComboBox cmbUoMode, cmbUoDir;
         private NumericUpDown nudUoZoom, nudUoElev, nudUoVert, nudUoOffX, nudUoOffY;
+        private NumericUpDown nudUoYaw;
+        private NumericUpDown nudUoGlobal, nudUoBright;
+        private NumericUpDown nudUoRefAction, nudUoRefFrame, nudUoRefScale, nudUoRefOpacity;
 
         private readonly CameraController _camera = new CameraController();
 
@@ -346,7 +350,7 @@ namespace UoFiddler.Plugin.Granny3D
         private bool _glReady;
         private int _dbgFrame;
         private int _shaderProg;
-        private int _uMvp, _uHasTex, _uColor, _uTex, _uLightDir, _uAlphaCut, _uUnlit;
+        private int _uMvp, _uHasTex, _uColor, _uTex, _uLightDir, _uAlphaCut, _uUnlit, _uOpacity, _uBrightness;
         private bool _initialLoadPending;
 
         // UO render view (right half of the viewport): orthographic 2:1 isometric,
@@ -357,10 +361,25 @@ namespace UoFiddler.Plugin.Granny3D
         private float _uoSplit = 0.5f;      // x fraction of the editor | UO split
         private float _uoZoom = 1f;
         private float _uoElevationDeg = 26.565f;
-        private float _uoYawOffsetDeg = 0f;
+        private float _uoYawOffsetDeg = 180f;   // 180 so our camera matches UOFiddler's facing
         private float _uoVertScale = 1f;
         private float _uoOffX = 0f, _uoOffY = 0f;  // screen-space offset (normalized units)
         private bool _uoFeetOnLine = true;         // put the model's bottom on the red line
+        private float _uoGlobalZoom = 1f;          // global magnification (model + reference)
+        private float _uoBrightness = 1f;          // model brightness correction
+
+        // Reference overlay: UOFiddler animation frame (anim.mul body 400 = c_man),
+        // drawn on top of the model so size / camera tilt can be compared.
+        private bool _uoRefShow;
+        private int _uoRefBody = 400, _uoRefAction = 0, _uoRefFrame = 0;
+        private float _uoRefScale = 1f;
+        private float _uoRefOpacity = 0.55f;
+        private readonly int[] _uoRefTex = new int[5];
+        private readonly int[] _uoRefW = new int[5];
+        private readonly int[] _uoRefH = new int[5];
+        private readonly Point[] _uoRefPivot = new Point[5];
+        private int _uoRefKey = int.MinValue;
+        private int _quadVao, _quadVbo;
         private bool _uoDragSplit;
         // UO preview background (matches the UOFiddler animation preview: plain light back).
         private float _uoBgR = 0.94f, _uoBgG = 0.94f, _uoBgB = 0.94f;
@@ -792,6 +811,10 @@ namespace UoFiddler.Plugin.Granny3D
             nudUoVert = new NumericUpDown { Location = new Point(8, 218), Width = 100, Minimum = 0.2m, Maximum = 3m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoVert.ValueChanged += (s, e) => { _uoVertScale = (float)nudUoVert.Value; if (glControl != null) glControl.Invalidate(); };
 
+            grpCamera.Controls.Add(new Label { Text = "Luminosité", Location = new Point(120, 200), Width = 110, ForeColor = Color.Gray });
+            nudUoBright = new NumericUpDown { Location = new Point(120, 218), Width = 100, Minimum = 0.2m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoBright.ValueChanged += (s, e) => { _uoBrightness = (float)nudUoBright.Value; if (glControl != null) glControl.Invalidate(); };
+
             chkUoFeet = new CheckBox { Text = "Pieds sur la ligne", Location = new Point(8, 248), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
             chkUoFeet.CheckedChanged += (s, e) => { _uoFeetOnLine = chkUoFeet.Checked; if (glControl != null) glControl.Invalidate(); };
 
@@ -803,7 +826,35 @@ namespace UoFiddler.Plugin.Granny3D
             nudUoOffY = new NumericUpDown { Location = new Point(120, 294), Width = 100, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoOffY.ValueChanged += (s, e) => { _uoOffY = (float)nudUoOffY.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.AddRange(new Control[] { chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert, chkUoFeet, nudUoOffX, nudUoOffY });
+            // Reference overlay (UOFiddler animation, body 400 = c_man).
+            chkUoRef = new CheckBox { Text = "Référence c_man (superposée)", Location = new Point(8, 328), Width = 232, Checked = false, ForeColor = Color.Gainsboro };
+            chkUoRef.CheckedChanged += (s, e) => { _uoRefShow = chkUoRef.Checked; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Action", Location = new Point(8, 356), Width = 100, ForeColor = Color.Gray });
+            nudUoRefAction = new NumericUpDown { Location = new Point(8, 374), Width = 100, Minimum = 0m, Maximum = 34m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefAction.ValueChanged += (s, e) => { _uoRefAction = (int)nudUoRefAction.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Frame", Location = new Point(120, 356), Width = 110, ForeColor = Color.Gray });
+            nudUoRefFrame = new NumericUpDown { Location = new Point(120, 374), Width = 100, Minimum = 0m, Maximum = 40m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefFrame.ValueChanged += (s, e) => { _uoRefFrame = (int)nudUoRefFrame.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Éch. réf.", Location = new Point(8, 406), Width = 100, ForeColor = Color.Gray });
+            nudUoRefScale = new NumericUpDown { Location = new Point(8, 424), Width = 100, Minimum = 0.05m, Maximum = 40m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefScale.ValueChanged += (s, e) => { _uoRefScale = (float)nudUoRefScale.Value; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Opacité %", Location = new Point(120, 406), Width = 110, ForeColor = Color.Gray });
+            nudUoRefOpacity = new NumericUpDown { Location = new Point(120, 424), Width = 100, Minimum = 0m, Maximum = 100m, Increment = 5m, DecimalPlaces = 0, Value = 55m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefOpacity.ValueChanged += (s, e) => { _uoRefOpacity = (float)nudUoRefOpacity.Value / 100f; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Rotation (°)", Location = new Point(8, 452), Width = 100, ForeColor = Color.Gray });
+            nudUoYaw = new NumericUpDown { Location = new Point(8, 470), Width = 100, Minimum = -180m, Maximum = 180m, Increment = 5m, DecimalPlaces = 0, Value = 180m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoYaw.ValueChanged += (s, e) => { _uoYawOffsetDeg = (float)nudUoYaw.Value; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Zoom global %", Location = new Point(120, 452), Width = 110, ForeColor = Color.Gray });
+            nudUoGlobal = new NumericUpDown { Location = new Point(120, 470), Width = 100, Minimum = 10m, Maximum = 500m, Increment = 25m, DecimalPlaces = 0, Value = 100m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoGlobal.ValueChanged += (s, e) => { _uoGlobalZoom = (float)nudUoGlobal.Value / 100f; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.AddRange(new Control[] { chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert, nudUoBright, chkUoFeet, nudUoOffX, nudUoOffY, chkUoRef, nudUoRefAction, nudUoRefFrame, nudUoRefScale, nudUoRefOpacity, nudUoYaw, nudUoGlobal });
 
             var pnlPlayRow = new Panel { Dock = DockStyle.Top, Height = 500 };
             pnlPlayRow.Controls.Add(grpEquip);      // Fill
@@ -3949,6 +4000,7 @@ namespace UoFiddler.Plugin.Granny3D
                 if (!_glReady)
                 {
                     _glReady = true;
+                    _uoRefKey = int.MinValue;   // (re)load reference textures for this GL context
                     CompileShaders();
                     _renderTimer.Start();
                     StartInitialLoad();
@@ -4140,9 +4192,10 @@ namespace UoFiddler.Plugin.Granny3D
 
             float shiftX = _uoOffX;
             float shiftY = _uoOffY - va.Y;
+            float totalZoom = Math.Max(0.01f, _uoZoom * _uoGlobalZoom);
             float viewH = _uoFeetOnLine
-                ? frameSpan * 2f * 1.08f / Math.Max(0.01f, _uoZoom)
-                : frameSpan * 1.15f / Math.Max(0.01f, _uoZoom);
+                ? frameSpan * 2f * 1.08f / totalZoom
+                : frameSpan * 1.15f / totalZoom;
 
             float aspect = (float)w / Math.Max(1, h);
             float viewW = viewH * aspect;
@@ -4150,7 +4203,10 @@ namespace UoFiddler.Plugin.Granny3D
             Matrix4 proj = Matrix4.CreateOrthographic(viewW, viewH, -5000f, 5000f);
             Matrix4 mvp = modelToView * shift * proj;
             // UO sprites use hard (binary) transparency -> high cutout.
-            DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f);
+            DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f, opacity: 1f, brightness: _uoBrightness);
+
+            if (_uoRefShow)
+                DrawUoReference(x, w, h, dir);
 
             // Center cross to check the framing (like UOFiddler's preview):
             // X axis = red horizontal line, Y axis = green vertical line.
@@ -4183,10 +4239,148 @@ namespace UoFiddler.Plugin.Granny3D
             if (vmin > vmax) { vmin = -1f; vmax = 1f; }
         }
 
+        // ---- Reference overlay: UOFiddler animation frame (anim.mul body 400 = c_man) ----
+
+        private void EnsureUoReference()
+        {
+            int key = _uoRefBody * 1000000 + _uoRefAction * 1000 + _uoRefFrame;
+            if (key == _uoRefKey) return;
+
+            for (int i = 0; i < 5; i++)
+            {
+                if (_uoRefTex[i] > 0) { GL.DeleteTexture(_uoRefTex[i]); _uoRefTex[i] = 0; }
+            }
+            _uoRefKey = key;
+
+            try
+            {
+                for (int d = 0; d < 5; d++)
+                {
+                    int hue = 0;
+                    Ultima.AnimationFrame[] frames =
+                        Animations.GetAnimation(_uoRefBody, _uoRefAction, d, ref hue, false, false);
+                    if (frames == null || frames.Length == 0) continue;
+
+                    int fi = Math.Min(_uoRefFrame, frames.Length - 1);
+                    if (fi < 0) fi = 0;
+                    Ultima.AnimationFrame fr = frames[fi];
+                    if (fr == null || fr.Bitmap == null) continue;
+
+                    Bitmap src = fr.Bitmap;
+                    Bitmap argb = src.PixelFormat == System.Drawing.Imaging.PixelFormat.Format32bppArgb
+                        ? new Bitmap(src)
+                        : src.Clone(new Rectangle(0, 0, src.Width, src.Height),
+                                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+                    _uoRefTex[d] = UploadBitmap(argb);
+                    _uoRefW[d] = argb.Width;
+                    _uoRefH[d] = argb.Height;
+                    _uoRefPivot[d] = fr.Center;
+                    argb.Dispose();
+                }
+                Log($"UoRef loaded body={_uoRefBody} action={_uoRefAction} frame={_uoRefFrame} " +
+                    $"tex0={_uoRefTex[0]} size0={_uoRefW[0]}x{_uoRefH[0]} pivot0={_uoRefPivot[0]}");
+            }
+            catch (Exception ex)
+            {
+                Log("UoRef load error: " + ex.Message);
+            }
+        }
+
+        private int UploadBitmap(Bitmap bmp)
+        {
+            BitmapData bd = bmp.LockBits(
+                new Rectangle(0, 0, bmp.Width, bmp.Height),
+                ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            int tex = GL.GenTexture();
+            GL.BindTexture(TextureTarget.Texture2D, tex);
+            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba,
+                bmp.Width, bmp.Height, 0, OpenTK.Graphics.OpenGL.PixelFormat.Bgra,
+                PixelType.UnsignedByte, bd.Scan0);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+            bmp.UnlockBits(bd);
+            return tex;
+        }
+
+        private void EnsureQuad()
+        {
+            if (_quadVao != 0) return;
+            // Unit quad (0..1) with position / normal / uv, y-down friendly.
+            float[] v =
+            {
+                0f,0f,0f, 0f,0f,1f, 0f,0f,
+                1f,0f,0f, 0f,0f,1f, 1f,0f,
+                1f,1f,0f, 0f,0f,1f, 1f,1f,
+                0f,0f,0f, 0f,0f,1f, 0f,0f,
+                1f,1f,0f, 0f,0f,1f, 1f,1f,
+                0f,1f,0f, 0f,0f,1f, 0f,1f
+            };
+            _quadVao = GL.GenVertexArray();
+            GL.BindVertexArray(_quadVao);
+            _quadVbo = GL.GenBuffer();
+            GL.BindBuffer(BufferTarget.ArrayBuffer, _quadVbo);
+            GL.BufferData(BufferTarget.ArrayBuffer, v.Length * sizeof(float), v, BufferUsageHint.StaticDraw);
+            int stride = 8 * sizeof(float);
+            GL.EnableVertexAttribArray(0);
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, 0);
+            GL.EnableVertexAttribArray(1);
+            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, 3 * sizeof(float));
+            GL.EnableVertexAttribArray(2);
+            GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, 6 * sizeof(float));
+            GL.BindVertexArray(0);
+        }
+
+        private void DrawUoReference(int x, int w, int h, int dir)
+        {
+            EnsureUoReference();
+            int tex = (dir >= 0 && dir < 5) ? _uoRefTex[dir] : 0;
+            if (tex <= 0) return;
+
+            EnsureQuad();
+
+            float s = _uoRefScale * _uoGlobalZoom;
+            int fw = _uoRefW[dir], fh = _uoRefH[dir];
+            float bw = fw * s, bh = fh * s;
+            Point piv = _uoRefPivot[dir];
+
+            // Pivot (feet anchor) at the viewport center, exactly like UOFiddler's
+            // drawX = pivotX - Center.X ; drawY = pivotY - Center.Y - Height.
+            float cx = w * 0.5f;
+            float cy = h * 0.5f;
+            float drawX = cx - piv.X * s;
+            float drawY = cy - (piv.Y + fh) * s;
+
+            Matrix4 orthoPix = Matrix4.CreateOrthographicOffCenter(0f, w, h, 0f, -1f, 1f);
+            Matrix4 modelM = Matrix4.CreateScale(bw, bh, 1f) * Matrix4.CreateTranslation(drawX, drawY, 0f);
+            Matrix4 mvp = modelM * orthoPix;
+
+            GL.Disable(EnableCap.DepthTest);
+            GL.UseProgram(_shaderProg);
+            GL.UniformMatrix4(_uMvp, false, ref mvp);
+            GL.Uniform1(_uTex, 0);
+            GL.Uniform1(_uHasTex, 1);
+            GL.Uniform1(_uAlphaCut, 0.01f);
+            GL.Uniform1(_uUnlit, 1);
+            GL.Uniform1(_uOpacity, _uoRefOpacity);
+            GL.Uniform1(_uBrightness, 1f);
+            GL.ActiveTexture(TextureUnit.Texture0);
+            GL.BindTexture(TextureTarget.Texture2D, tex);
+            GL.BindVertexArray(_quadVao);
+            GL.DrawArrays(PrimitiveType.Triangles, 0, 6);
+            GL.BindVertexArray(0);
+            GL.UseProgram(0);
+            GL.Enable(EnableCap.DepthTest);
+        }
+
         private Matrix4 UoViewMatrix(int dir)
         {
             float elev = MathHelper.DegreesToRadians(_uoElevationDeg);
-            float az = MathHelper.DegreesToRadians(_uoYawOffsetDeg + dir * 45f);
+            // dir increases the same way as UO's direction index; with the default
+            // yaw offset (180) this maps dir d -> world azimuth (180 - d*45).
+            float az = MathHelper.DegreesToRadians(_uoYawOffsetDeg - dir * 45f);
             Vector3 target = Vector3.Zero; // vertices are already recentered on the origin
             const float dist = 1000f;
             Vector3 eye = target + new Vector3(
@@ -4196,7 +4390,7 @@ namespace UoFiddler.Plugin.Granny3D
             return Matrix4.LookAt(eye, target, Vector3.UnitZ);
         }
 
-        private void DrawMeshSet(Matrix4 mvp, bool unlit, float alphaCut)
+        private void DrawMeshSet(Matrix4 mvp, bool unlit, float alphaCut, float opacity = 1f, float brightness = 1f)
         {
             GL.UseProgram(_shaderProg);
             GL.UniformMatrix4(_uMvp, false, ref mvp);
@@ -4204,6 +4398,8 @@ namespace UoFiddler.Plugin.Granny3D
             GL.Uniform1(_uTex, 0);
             GL.Uniform1(_uAlphaCut, alphaCut);
             GL.Uniform1(_uUnlit, unlit ? 1 : 0);
+            GL.Uniform1(_uOpacity, opacity);
+            GL.Uniform1(_uBrightness, brightness);
             GL.ActiveTexture(TextureUnit.Texture0);
 
             foreach (var lm in _loadedMeshes)
@@ -4245,6 +4441,8 @@ uniform vec3 uColor;
 uniform vec3 uLightDir;
 uniform float uAlphaCut;
 uniform int uUnlit;
+uniform float uOpacity;
+uniform float uBrightness;
 out vec4 FragColor;
 void main(){
     vec3 n = normalize(vNormal);
@@ -4254,7 +4452,7 @@ void main(){
     if (a < uAlphaCut) discard;
     vec3 base = (uHasTex == 1) ? tex.rgb : uColor;
     float shade = (uUnlit == 1) ? 1.0 : (0.45 + 0.75 * d);
-    FragColor = vec4(base * shade, a);
+    FragColor = vec4(clamp(base * shade * uBrightness, 0.0, 1.0), a * uOpacity);
 }";
 
             int v = GL.CreateShader(ShaderType.VertexShader);
@@ -4285,6 +4483,8 @@ void main(){
             _uLightDir = GL.GetUniformLocation(_shaderProg, "uLightDir");
             _uAlphaCut = GL.GetUniformLocation(_shaderProg, "uAlphaCut");
             _uUnlit = GL.GetUniformLocation(_shaderProg, "uUnlit");
+            _uOpacity = GL.GetUniformLocation(_shaderProg, "uOpacity");
+            _uBrightness = GL.GetUniformLocation(_shaderProg, "uBrightness");
             Log($"Shaders compiled prog={_shaderProg} vsOk={vsOk} fsOk={fsOk} link={linkOk}");
         }
 
