@@ -309,6 +309,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Button btnPlay;
         private Button btnPause;
         private Button btnStop;
+        private Button btnExportVd;
         private CheckBox chkLoop;
         private TrackBar trackSpeed;
         private Label lblSpeed;
@@ -581,6 +582,11 @@ namespace UoFiddler.Plugin.Granny3D
             btnStop = new Button { Text = "Stop", Location = new Point(164, 24), Width = 72, Height = 30, Enabled = false };
             btnStop.Click += BtnStop_Click;
 
+            // Export the baked 3D render as a UO animation (.vd) using the same
+            // category/action mapping as UOFiddler's "Export -> To vd.." menu.
+            btnExportVd = new Button { Text = "Exporter en .vd (mapping)", Location = new Point(8, 192), Width = 228, Height = 28, BackColor = Color.FromArgb(84, 96, 78) };
+            btnExportVd.Click += (s, e) => ExportVdDialog();
+
             chkLoop = new CheckBox { Text = "Loop", Location = new Point(8, 62), AutoSize = true, Checked = true, ForeColor = Color.Gainsboro };
             chkLoop.CheckedChanged += (s, e) => _looping = chkLoop.Checked;
 
@@ -595,7 +601,7 @@ namespace UoFiddler.Plugin.Granny3D
             lblTime = new Label { Text = "Time: 0.00s", Location = new Point(8, 160), AutoSize = true, ForeColor = Color.Gainsboro };
             lblDuration = new Label { Text = "/ 0.00s", Location = new Point(150, 160), AutoSize = true, ForeColor = Color.Gainsboro };
 
-            grpPlayback.Controls.AddRange(new Control[] { btnPlay, btnPause, btnStop, chkLoop, lblSpeed, trackSpeed, trackTime, lblTime, lblDuration });
+            grpPlayback.Controls.AddRange(new Control[] { btnPlay, btnPause, btnStop, btnExportVd, chkLoop, lblSpeed, trackSpeed, trackTime, lblTime, lblDuration });
 
             var grpInfo = new GroupBox
             {
@@ -4417,6 +4423,356 @@ namespace UoFiddler.Plugin.Granny3D
 
             GL.BindVertexArray(0);
             GL.UseProgram(0);
+        }
+
+        // ==================== VD EXPORT (bake 3D -> UO frames) ====================
+
+        // Animations offered as sources: the current creature's own .grn clips
+        // (same folder + creature prefix), or every known animation as a fallback.
+        private List<string> GatherExportAnimSources(out string prefix)
+        {
+            var list = new List<string>();
+            string folder = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetDirectoryName(_currentModelPath) : null;
+            prefix = null;
+
+            if (!string.IsNullOrEmpty(_currentModelPath))
+            {
+                string modelName = Path.GetFileNameWithoutExtension(_currentModelPath);
+                if (modelName.StartsWith("H_Male", StringComparison.OrdinalIgnoreCase)) prefix = "H_Male_";
+                else if (modelName.StartsWith("H_Female", StringComparison.OrdinalIgnoreCase)) prefix = "H_Female_";
+                else prefix = DeriveCreature(modelName);
+            }
+
+            if (!string.IsNullOrEmpty(folder) && Directory.Exists(folder))
+                CollectAnims(folder, prefix, list);
+
+            if (list.Count == 0)
+            {
+                prefix = null;
+                foreach (var f in CategoryFolders)
+                    CollectAnims(Path.Combine(BasePath, f), null, list);
+            }
+
+            list.Sort(StringComparer.OrdinalIgnoreCase);
+            return list;
+        }
+
+        private void ExportVdDialog()
+        {
+            if (_loadedMeshes.Count == 0) { Log("Export .vd : aucun modele charge."); return; }
+            if (!_glReady || glControl == null || !glControl.IsHandleCreated) return;
+
+            var sources = GatherExportAnimSources(out string prefix);
+            if (sources.Count == 0) { Log("Export .vd : aucune animation source trouvee."); return; }
+
+            using (var form = new VdRemapForm(VdExport.Targets(), sources, prefix))
+            {
+                if (form.ShowDialog(this) != DialogResult.OK) return;
+                var target = form.Target;
+                if (target == null) return;
+
+                var mapping = form.GetMapping();     // action -> source path or null
+                int fps = form.Fps, size = form.FrameSize;
+
+                int mapped = 0;
+                for (int i = 0; i < mapping.Length; i++) if (mapping[i] != null) mapped++;
+                if (mapped == 0) { Log("Export .vd : aucune action mappee."); return; }
+
+                var byActionDir = new VdAnimBlock[target.ActionCount * VdExport.DirCount];
+                var cache = new Dictionary<string, VdAnimBlock[]>(StringComparer.OrdinalIgnoreCase);
+
+                Cursor = Cursors.WaitCursor;
+                try
+                {
+                    for (int a = 0; a < target.ActionCount; a++)
+                    {
+                        string src = (a < mapping.Length) ? mapping[a] : null;
+                        if (string.IsNullOrEmpty(src)) continue;
+
+                        if (!cache.TryGetValue(src, out var blocks))
+                        {
+                            blocks = BakeAnimFrames(src, size, fps);
+                            if (blocks == null) continue;
+                            cache[src] = blocks;
+                        }
+
+                        for (int d = 0; d < VdExport.DirCount; d++)
+                            byActionDir[a * VdExport.DirCount + d] = blocks[d];
+                    }
+
+                    using (var sfd = new SaveFileDialog())
+                    {
+                        sfd.Filter = target.Uop
+                            ? "UO animation (UOP/VD)|*.vd;*.uop|Tous les fichiers|*.*"
+                            : "UO animation (MUL/VD)|*.vd|Tous les fichiers|*.*";
+                        sfd.FileName = target.Key + ".vd";
+                        if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+                        if (target.Uop)
+                            VdExport.WriteUopVd(sfd.FileName, target.AnimType, target.ActionCount, byActionDir);
+                        else
+                            VdExport.WriteMulVd(sfd.FileName, target.AnimType, target.ActionCount, byActionDir);
+
+                        Log($"Export .vd OK : {sfd.FileName} cible={target.Key} actions={mapped} fps={fps} size={size}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"Export .vd error: {ex.Message}\n{ex}");
+                }
+                finally { Cursor = Cursors.Default; }
+            }
+        }
+
+        // Bake one source clip into 5 directional VdAnimBlocks (cached per source path
+        // so several target actions sharing a clip are rendered only once).
+        private VdAnimBlock[] BakeAnimFrames(string animPath, int size, int fps)
+        {
+            var savedAnim = _currentAnimation;
+            float savedTime = _currentTime;
+            bool savedPlaying = _playing;
+            _playing = false;
+
+            try
+            {
+                var parser = new GrannyFormatParser();
+                if (!parser.Load(animPath) || parser.Animation == null) return null;
+                _currentAnimation = parser.Animation;
+
+                foreach (var lm in _loadedMeshes) lm.BoneToAnimTrack = null;
+
+                glControl.MakeCurrent();
+
+                float dur = _currentAnimation.Duration;
+                if (dur <= 0.0001f) dur = 1f / Math.Max(1, fps);
+                int n = Math.Max(1, (int)Math.Round(dur * fps));
+                if (n > 64) n = 64;
+
+                const int ss = 4;                    // supersample factor (anti-aliasing)
+                const int pad = 2;                  // margin (final px) so nothing clips
+
+                // Match the preview's on-screen scale so the exported sprite is the
+                // same size the user sees in the UO view (calibrated against the c_man
+                // reference) instead of zooming in to fill the canvas. "size" > 0 is an
+                // explicit target character height in px; 0 = follow the preview.
+                float frameSpan = ComputeFrameSpan();
+                float totalZoom = Math.Max(0.01f, _uoZoom * _uoGlobalZoom);
+                float previewViewH = _uoFeetOnLine
+                    ? frameSpan * 2f * 1.08f / totalZoom
+                    : frameSpan * 1.15f / totalZoom;
+                int previewH = Math.Max(1, glControl != null ? glControl.Height : 600);
+                float previewPpu = Math.Max(1e-6f, previewH / previewViewH);
+
+                Matrix4 vscale = Matrix4.CreateScale(1f, 1f, _uoVertScale);
+
+                var blocks = new VdAnimBlock[VdExport.DirCount];
+                for (int d = 0; d < VdExport.DirCount; d++)
+                {
+                    Matrix4 modelToView = vscale * UoViewMatrix(d);
+
+                    // Pass 1: exact projected bounds over every frame of this direction,
+                    // so the whole silhouette fits whatever the pose (fixes parts being
+                    // cut below the ground line).
+                    float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
+                    for (int f = 0; f < n; f++)
+                    {
+                        PoseSkeletons(dur * f / n);
+                        RefreshVertexBuffers(false);
+                        AccumulateBounds(modelToView, ref minX, ref maxX, ref minY, ref maxY);
+                    }
+                    if (minX > maxX) { minX = -1f; maxX = 1f; minY = -1f; maxY = 1f; }
+
+                    float bw = Math.Max(1e-4f, maxX - minX);
+                    float bh = Math.Max(1e-4f, maxY - minY);
+
+                    float ppu = (size > 0) ? Math.Max(1e-6f, size / bh) : previewPpu;
+                    int cw = Math.Max(8, (int)Math.Ceiling(bw * ppu) + 2 * pad);
+                    int ch = Math.Max(8, (int)Math.Ceiling(bh * ppu) + 2 * pad);
+                    // Clamp the supersampled FBO to a safe size; shrink ppu so the
+                    // model still fits the same world extent (no cropping).
+                    const int maxR = 2048;
+                    if (cw * ss > maxR || ch * ss > maxR)
+                    {
+                        float f = Math.Min(maxR / (float)(cw * ss), maxR / (float)(ch * ss));
+                        ppu *= f;
+                        cw = Math.Max(8, (int)Math.Ceiling(bw * ppu) + 2 * pad);
+                        ch = Math.Max(8, (int)Math.Ceiling(bh * ppu) + 2 * pad);
+                    }
+                    int rw = cw * ss, rh = ch * ss;
+
+                    float viewW = cw / ppu, viewH = ch / ppu;
+                    float shiftX = -(minX + maxX) * 0.5f;
+                    float shiftY = -(minY + maxY) * 0.5f;
+                    Matrix4 proj = Matrix4.CreateOrthographic(viewW, viewH, -5000f, 5000f);
+                    Matrix4 mvp = modelToView * Matrix4.CreateTranslation(shiftX, shiftY, 0f) * proj;
+
+                    // Feet pivot -> UO Center (origin row = Center.Y + Height).
+                    float anchorZ = _uoFeetOnLine ? _normMin.Z : (_normMin.Z + _normMax.Z) * 0.5f;
+                    Vector3 va = Vector3.TransformPosition(new Vector3(0f, 0f, anchorZ), modelToView);
+                    int centerX = (int)Math.Round((0.5f + (va.X + shiftX) / viewW) * cw);
+                    int centerY = (int)Math.Round((0.5f - (va.Y + shiftY) / viewH) * ch) - ch;
+
+                    // Pass 2: render every frame, then box-downsample (SSAA).
+                    var frames = new List<Bitmap>(n);
+                    for (int f = 0; f < n; f++)
+                    {
+                        PoseSkeletons(dur * f / n);
+                        RefreshVertexBuffers(false);
+                        using (var big = RenderFrame(rw, rh, mvp))
+                            frames.Add(DownsampleBox(big, cw, ch));
+                    }
+                    blocks[d] = VdExport.BuildBlock(frames, centerX, centerY);
+                    foreach (var b in frames) b.Dispose();
+                    Log($"  bake dir={d} frames={n} px={cw}x{ch} ss={ss} center=({centerX},{centerY}) ({Path.GetFileName(animPath)})");
+                }
+                return blocks;
+            }
+            finally
+            {
+                _currentAnimation = savedAnim;
+                _currentTime = savedTime;
+                _playing = savedPlaying;
+                foreach (var lm in _loadedMeshes) lm.BoneToAnimTrack = null;
+                try { if (savedAnim != null) ApplyAnimationPose(savedTime); } catch { }
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            }
+        }
+
+        // Accumulate the projected (view-space X/Y) bounds of every visible mesh
+        // vertex for the current pose. Interleaved already holds normalized positions.
+        private void AccumulateBounds(Matrix4 modelToView, ref float minX, ref float maxX, ref float minY, ref float maxY)
+        {
+            foreach (var lm in _loadedMeshes)
+            {
+                if (lm.Interleaved == null || lm.Hidden) continue;
+                float[] f = lm.Interleaved;
+                for (int c = 0; c + 7 < f.Length; c += 8)
+                {
+                    Vector3 v = Vector3.TransformPosition(new Vector3(f[c], f[c + 1], f[c + 2]), modelToView);
+                    if (v.X < minX) minX = v.X; if (v.X > maxX) maxX = v.X;
+                    if (v.Y < minY) minY = v.Y; if (v.Y > maxY) maxY = v.Y;
+                }
+            }
+        }
+
+        // Render the current pose (already uploaded by RefreshVertexBuffers) through an
+        // offscreen FBO and read it back as a top-down ARGB bitmap at render resolution.
+        private Bitmap RenderFrame(int w, int h, Matrix4 mvp)
+        {
+            int fbo = GL.GenFramebuffer();
+            int color = GL.GenTexture();
+            int depth = GL.GenRenderbuffer();
+
+            GL.BindTexture(TextureTarget.Texture2D, color);
+            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8, w, h, 0,
+                OpenTK.Graphics.OpenGL.PixelFormat.Rgba, PixelType.UnsignedByte, IntPtr.Zero);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
+            GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+                TextureTarget.Texture2D, color, 0);
+            GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, depth);
+            GL.RenderbufferStorage(RenderbufferTarget.Renderbuffer, RenderbufferStorage.DepthComponent24, w, h);
+            GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment,
+                RenderbufferTarget.Renderbuffer, depth);
+
+            GL.Viewport(0, 0, w, h);
+            GL.Disable(EnableCap.ScissorTest);
+            GL.Enable(EnableCap.DepthTest);
+            GL.DepthFunc(DepthFunction.Lequal);
+            GL.Disable(EnableCap.CullFace);
+            GL.Enable(EnableCap.Blend);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            GL.ClearColor(0f, 0f, 0f, 0f);
+            GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+            DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f, opacity: 1f, brightness: _uoBrightness);
+
+            byte[] buf = new byte[w * h * 4];
+            GL.ReadPixels<byte>(0, 0, w, h, OpenTK.Graphics.OpenGL.PixelFormat.Rgba, PixelType.UnsignedByte, buf);
+
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            GL.DeleteFramebuffer(fbo);
+            GL.DeleteRenderbuffer(depth);
+            GL.DeleteTexture(color);
+
+            // GL origin is bottom-left -> flip vertically into a top-down ARGB bitmap.
+            var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            try
+            {
+                unsafe
+                {
+                    for (int y = 0; y < h; y++)
+                    {
+                        byte* dst = (byte*)bd.Scan0 + (long)y * bd.Stride;
+                        int srcRow = (h - 1 - y) * w * 4;
+                        for (int x = 0; x < w; x++)
+                        {
+                            int si = srcRow + x * 4;
+                            dst[x * 4 + 0] = buf[si + 2]; // B
+                            dst[x * 4 + 1] = buf[si + 1]; // G
+                            dst[x * 4 + 2] = buf[si + 0]; // R
+                            dst[x * 4 + 3] = buf[si + 3]; // A
+                        }
+                    }
+                }
+            }
+            finally { bmp.UnlockBits(bd); }
+            return bmp;
+        }
+
+        // Alpha-aware box downscale (proper SSAA): average the premultiplied colours so
+        // transparent texels don't darken the edges, then un-premultiply. Rectangular.
+        private static Bitmap DownsampleBox(Bitmap src, int dw, int dh)
+        {
+            if (dw < 1) dw = 1;
+            if (dh < 1) dh = 1;
+            int ss = Math.Max(1, src.Width / dw);
+            if (src.Height / dh < ss) ss = Math.Max(1, src.Height / dh);
+            var dst = new Bitmap(dw, dh, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            var sd = src.LockBits(new Rectangle(0, 0, src.Width, src.Height), ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            var dd = dst.LockBits(new Rectangle(0, 0, dw, dh), ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            try
+            {
+                unsafe
+                {
+                    for (int y = 0; y < dh; y++)
+                    {
+                        byte* drow = (byte*)dd.Scan0 + (long)y * dd.Stride;
+                        for (int x = 0; x < dw; x++)
+                        {
+                            long sr = 0, sg = 0, sb = 0, sa = 0; int cnt = 0;
+                            for (int j = 0; j < ss; j++)
+                            {
+                                int sy = y * ss + j;
+                                if (sy >= src.Height) break;
+                                byte* srow = (byte*)sd.Scan0 + (long)sy * sd.Stride;
+                                for (int i = 0; i < ss; i++)
+                                {
+                                    int sx = x * ss + i;
+                                    if (sx >= src.Width) break;
+                                    byte* p = srow + (long)sx * 4;
+                                    int a = p[3];
+                                    sb += (long)p[0] * a; sg += (long)p[1] * a; sr += (long)p[2] * a; sa += a; cnt++;
+                                }
+                            }
+                            byte* d = drow + (long)x * 4;
+                            if (sa > 0 && cnt > 0)
+                            {
+                                d[0] = (byte)Math.Min(255, sb / sa);
+                                d[1] = (byte)Math.Min(255, sg / sa);
+                                d[2] = (byte)Math.Min(255, sr / sa);
+                                d[3] = (byte)Math.Min(255, sa / cnt);
+                            }
+                            else { d[0] = d[1] = d[2] = d[3] = 0; }
+                        }
+                    }
+                }
+            }
+            finally { src.UnlockBits(sd); dst.UnlockBits(dd); }
+            return dst;
         }
 
         private void CompileShaders()
