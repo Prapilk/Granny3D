@@ -3995,7 +3995,23 @@ namespace UoFiddler.Plugin.Granny3D
                     if (anim != null && trackIdx >= 0 && trackIdx < anim.Tracks.Count)
                     {
                         var tr = anim.Tracks[trackIdx];
-                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(meshT)) * Matrix4.CreateTranslation(tr.EvaluatePos(meshT));
+                        var b = lm.Bones[i];
+                        int p = b.ParentId;
+                        bool isRoot = p < 0 || p >= boneCount || p == i;
+
+                        Vector3 pos;
+                        if (isRoot)
+                        {
+                            pos = tr.EvaluatePos(meshT);
+                        }
+                        else
+                        {
+                            bool hasPosMotion = tr.Pos != null && tr.Pos.Length > 1 &&
+                                                (tr.Pos[0] - tr.Pos[tr.Pos.Length - 1]).LengthSquared > 1e-4f;
+                            pos = hasPosMotion ? tr.EvaluatePos(meshT) : b.LocalPosition;
+                        }
+
+                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(meshT)) * Matrix4.CreateTranslation(pos);
                     }
                     else
                     {

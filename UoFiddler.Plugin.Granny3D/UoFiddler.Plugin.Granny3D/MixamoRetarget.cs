@@ -15,8 +15,7 @@ namespace UoFiddler.Plugin.Granny3D
     // the very same row-vector convention as the plugin's FK is used throughout.
     public static class MixamoRetarget
     {
-        // Mixamo node -> UO Biped bone name. Covers the 22 core human joints
-        // (fingers/helpers intentionally omitted: UO has a much simpler hand rig).
+        // Mixamo node -> UO Biped bone name. Covers the core human joints plus thumb and index fingers.
         static readonly (string Mix, string Uo)[] BoneMap =
         {
             ("mixamorig:Hips",         "Bip01 Pelvis"),
@@ -29,10 +28,18 @@ namespace UoFiddler.Plugin.Granny3D
             ("mixamorig:LeftArm",      "Bip01 L UpperArm"),
             ("mixamorig:LeftForeArm",  "Bip01 L Forearm"),
             ("mixamorig:LeftHand",     "Bip01 L Hand"),
+            ("mixamorig:LeftHandThumb1",  "Bip01 L Finger0"),
+            ("mixamorig:LeftHandThumb2",  "Bip01 L Finger01"),
+            ("mixamorig:LeftHandIndex1",   "Bip01 L Finger1"),
+            ("mixamorig:LeftHandIndex2",   "Bip01 L Finger11"),
             ("mixamorig:RightShoulder","Bip01 R Clavicle"),
             ("mixamorig:RightArm",     "Bip01 R UpperArm"),
             ("mixamorig:RightForeArm", "Bip01 R Forearm"),
             ("mixamorig:RightHand",    "Bip01 R Hand"),
+            ("mixamorig:RightHandThumb1", "Bip01 R Finger0"),
+            ("mixamorig:RightHandThumb2", "Bip01 R Finger01"),
+            ("mixamorig:RightHandIndex1",  "Bip01 R Finger1"),
+            ("mixamorig:RightHandIndex2",  "Bip01 R Finger11"),
             ("mixamorig:LeftUpLeg",    "Bip01 L Thigh"),
             ("mixamorig:LeftLeg",      "Bip01 L Calf"),
             ("mixamorig:LeftFoot",     "Bip01 L Foot"),
@@ -41,50 +48,6 @@ namespace UoFiddler.Plugin.Granny3D
             ("mixamorig:RightLeg",     "Bip01 R Calf"),
             ("mixamorig:RightFoot",    "Bip01 R Foot"),
             ("mixamorig:RightToeBase", "Bip01 R Toe0"),
-
-            // Fingers - Left Hand
-            ("mixamorig:LeftHandThumb1",  "Bip01 L Finger0"),
-            ("mixamorig:LeftHandThumb2",  "Bip01 L Finger01"),
-            ("mixamorig:LeftHandThumb3",  "Bip01 L Finger01"),
-            ("mixamorig:LeftHandThumb4",  "Bip01 L Finger01"),
-            ("mixamorig:LeftHandIndex1",   "Bip01 L Finger1"),
-            ("mixamorig:LeftHandIndex2",   "Bip01 L Finger11"),
-            ("mixamorig:LeftHandIndex3",   "Bip01 L Finger11"),
-            ("mixamorig:LeftHandIndex4",   "Bip01 L Finger11"),
-            ("mixamorig:LeftHandMiddle1",  "Bip01 L Finger1"),
-            ("mixamorig:LeftHandMiddle2",  "Bip01 L Finger11"),
-            ("mixamorig:LeftHandMiddle3",  "Bip01 L Finger11"),
-            ("mixamorig:LeftHandMiddle4",  "Bip01 L Finger11"),
-            ("mixamorig:LeftHandRing1",    "Bip01 L Finger1"),
-            ("mixamorig:LeftHandRing2",    "Bip01 L Finger11"),
-            ("mixamorig:LeftHandRing3",    "Bip01 L Finger11"),
-            ("mixamorig:LeftHandRing4",    "Bip01 L Finger11"),
-            ("mixamorig:LeftHandPinky1",   "Bip01 L Finger1"),
-            ("mixamorig:LeftHandPinky2",   "Bip01 L Finger11"),
-            ("mixamorig:LeftHandPinky3",   "Bip01 L Finger11"),
-            ("mixamorig:LeftHandPinky4",   "Bip01 L Finger11"),
-
-            // Fingers - Right Hand
-            ("mixamorig:RightHandThumb1", "Bip01 R Finger0"),
-            ("mixamorig:RightHandThumb2", "Bip01 R Finger01"),
-            ("mixamorig:RightHandThumb3", "Bip01 R Finger01"),
-            ("mixamorig:RightHandThumb4", "Bip01 R Finger01"),
-            ("mixamorig:RightHandIndex1",  "Bip01 R Finger1"),
-            ("mixamorig:RightHandIndex2",  "Bip01 R Finger11"),
-            ("mixamorig:RightHandIndex3",  "Bip01 R Finger11"),
-            ("mixamorig:RightHandIndex4",  "Bip01 R Finger11"),
-            ("mixamorig:RightHandMiddle1", "Bip01 R Finger1"),
-            ("mixamorig:RightHandMiddle2", "Bip01 R Finger11"),
-            ("mixamorig:RightHandMiddle3", "Bip01 R Finger11"),
-            ("mixamorig:RightHandMiddle4", "Bip01 R Finger11"),
-            ("mixamorig:RightHandRing1",   "Bip01 R Finger1"),
-            ("mixamorig:RightHandRing2",   "Bip01 R Finger11"),
-            ("mixamorig:RightHandRing3",   "Bip01 R Finger11"),
-            ("mixamorig:RightHandRing4",   "Bip01 R Finger11"),
-            ("mixamorig:RightHandPinky1",  "Bip01 R Finger1"),
-            ("mixamorig:RightHandPinky2",  "Bip01 R Finger11"),
-            ("mixamorig:RightHandPinky3",  "Bip01 R Finger11"),
-            ("mixamorig:RightHandPinky4",  "Bip01 R Finger11"),
         };
 
         // Mixamo is Y-up, UO models are Z-up: +/-90deg about X bridges the two when

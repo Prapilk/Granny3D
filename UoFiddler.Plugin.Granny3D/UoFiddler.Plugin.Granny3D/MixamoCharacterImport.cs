@@ -150,6 +150,129 @@ namespace UoFiddler.Plugin.Granny3D
                     uoBoneByName[model.Bones[i].Name] = i;
             }
 
+            // 2b) Compute world matrices of Mixamo FBX scene nodes and joint deltas for UO skeleton
+            // 2b) Compute world matrices of Mixamo FBX scene nodes in UO basis
+            Matrix4 C = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(90f));
+            Matrix4 Cinv = Matrix4.Invert(C);
+
+            var localMix = new Matrix4[nn];
+            for (int i = 0; i < nn; i++)
+            {
+                nodes[i].Transform.Decompose(out var sc, out var qq, out var tt);
+                localMix[i] = Matrix4.CreateScale(sc.X, sc.Y, sc.Z) *
+                              Matrix4.CreateFromQuaternion(new Quaternion(qq.X, qq.Y, qq.Z, qq.W)) *
+                              Matrix4.CreateTranslation(tt.X * Scale, tt.Y * Scale, tt.Z * Scale);
+            }
+
+            var wMix = new Matrix4[nn];
+            for (int i = 0; i < nn; i++)
+            {
+                int p = nodeParent[i];
+                wMix[i] = (p >= 0 && p < nn && p != i) ? localMix[i] * wMix[p] : localMix[i];
+            }
+
+            var wU = new Matrix4[nn];
+            for (int i = 0; i < nn; i++)
+                wU[i] = Cinv * wMix[i] * C;
+
+            // Adapt skeleton in model.Bones to match the character's exact proportions:
+            // For each bone, retain canonical UO Biped joint rotation (so animation tracks rotate along the exact intended axes)
+            // and relocate the joint pivot to the imported character's actual joint position from the FBX.
+            if (refBones != null && refBones.Count > 0)
+            {
+                int nb = refBones.Count;
+                var fittedBones = new List<GrannyBone>(nb);
+                for (int i = 0; i < nb; i++)
+                {
+                    fittedBones.Add(new GrannyBone
+                    {
+                        Name = refBones[i].Name,
+                        ParentId = refBones[i].ParentId,
+                        LocalRotation = refBones[i].LocalRotation,
+                        LocalPosition = refBones[i].LocalPosition,
+                        InverseBindMatrix = refBones[i].InverseBindMatrix
+                    });
+                }
+
+                // Reference UO bind world matrices (canonical 3ds Max Biped joint orientations)
+                var uoBindWorld = new Matrix4[nb];
+                for (int i = 0; i < nb; i++)
+                    uoBindWorld[i] = Matrix4.Invert(refBones[i].InverseBindMatrix);
+
+                // Fitted world matrices:
+                var fittedWorld = new Matrix4[nb];
+                for (int i = 0; i < nb; i++)
+                {
+                    string uoName = refBones[i].Name;
+                    fittedWorld[i] = uoBindWorld[i];
+
+                    // Find corresponding Mixamo node
+                    int ni = -1;
+                    if (MixamoRetarget.TryGetBoneAlias(uoName, out string mixAlias))
+                    {
+                        if (!nameToNode.TryGetValue(mixAlias, out ni))
+                        {
+                            string cleanAlias = mixAlias;
+                            int col = cleanAlias.IndexOf(':');
+                            if (col >= 0) cleanAlias = cleanAlias.Substring(col + 1);
+                            if (!nameToNode.TryGetValue(cleanAlias, out ni))
+                            {
+                                foreach (var kvp in nameToNode)
+                                {
+                                    string k = kvp.Key;
+                                    int c = k.IndexOf(':');
+                                    if (c >= 0) k = k.Substring(c + 1);
+                                    if (string.Equals(k, cleanAlias, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        ni = kvp.Value;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (ni >= 0)
+                    {
+                        Vector3 mixPos = wU[ni].Row3.Xyz;
+                        var rot = uoBindWorld[i].ExtractRotation();
+                        fittedWorld[i] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(mixPos);
+                    }
+                    else
+                    {
+                        int p = refBones[i].ParentId;
+                        if (p >= 0 && p < nb && p != i)
+                        {
+                            var uoLocal = uoBindWorld[i] * Matrix4.Invert(uoBindWorld[p]);
+                            fittedWorld[i] = uoLocal * fittedWorld[p];
+                        }
+                    }
+                }
+
+                // Recompute local transforms and inverse bind matrices for the fitted skeleton
+                for (int i = 0; i < nb; i++)
+                {
+                    int p = fittedBones[i].ParentId;
+                    if (p >= 0 && p < nb && p != i)
+                    {
+                        var localMat = fittedWorld[i] * Matrix4.Invert(fittedWorld[p]);
+                        fittedBones[i].LocalPosition = localMat.ExtractTranslation();
+                        fittedBones[i].LocalRotation = localMat.ExtractRotation();
+                    }
+                    else
+                    {
+                        fittedBones[i].LocalPosition = fittedWorld[i].ExtractTranslation();
+                        fittedBones[i].LocalRotation = fittedWorld[i].ExtractRotation();
+                    }
+                    fittedBones[i].InverseBindMatrix = Matrix4.Invert(fittedWorld[i]);
+                }
+
+                model.Bones = fittedBones;
+                uoBoneByName.Clear();
+                for (int i = 0; i < model.Bones.Count; i++)
+                    uoBoneByName[model.Bones[i].Name] = i;
+            }
+
             // 3) Process Meshes
             for (int m = 0; m < scene.MeshCount; m++)
             {
@@ -300,9 +423,63 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int bi = 0; bi < mesh.BoneCount; bi++)
                 {
                     string bname = mesh.Bones[bi].Name;
-                    if (MixamoRetarget.TryGetBoneAlias(bname, out string uoName) && uoBoneByName.TryGetValue(uoName, out int uoIdx))
+                    string cleanBName = bname;
+                    int colon = cleanBName.IndexOf(':');
+                    if (colon >= 0) cleanBName = cleanBName.Substring(colon + 1);
+
+                    int targetBoneIdx = -1;
+
+                    // Hand and Finger Bone Mapping:
+                    // - Thumb: Thumb1 -> Finger0 (base), Thumb2..4 -> Finger01 (knuckle/phalanges)
+                    // - Index: Index1 -> Finger1 (base), Index2..4 -> Finger11 (knuckle/phalanges)
+                    // - Middle (Majeur), Ring (Annulaire), Pinky (Auriculaire): mapped to Hand (Bip01 L/R Hand)
+                    //   so they act as one solid unit with the hand/palm without stretching.
+                    bool isLeft = cleanBName.IndexOf("Left", StringComparison.OrdinalIgnoreCase) >= 0 || cleanBName.StartsWith("L_", StringComparison.OrdinalIgnoreCase);
+                    bool isRight = cleanBName.IndexOf("Right", StringComparison.OrdinalIgnoreCase) >= 0 || cleanBName.StartsWith("R_", StringComparison.OrdinalIgnoreCase);
+
+                    if (cleanBName.IndexOf("Thumb", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        meshBoneToUo[bi] = uoIdx;
+                        string targetUo = cleanBName.IndexOf("Thumb1", StringComparison.OrdinalIgnoreCase) >= 0
+                            ? (isLeft ? "Bip01 L Finger0" : (isRight ? "Bip01 R Finger0" : null))
+                            : (isLeft ? "Bip01 L Finger01" : (isRight ? "Bip01 R Finger01" : null));
+
+                        if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out targetBoneIdx))
+                        {
+                            meshBoneToUo[bi] = targetBoneIdx;
+                            continue;
+                        }
+                    }
+
+                    if (cleanBName.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        string targetUo = cleanBName.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0
+                            ? (isLeft ? "Bip01 L Finger1" : (isRight ? "Bip01 R Finger1" : null))
+                            : (isLeft ? "Bip01 L Finger11" : (isRight ? "Bip01 R Finger11" : null));
+
+                        if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out targetBoneIdx))
+                        {
+                            meshBoneToUo[bi] = targetBoneIdx;
+                            continue;
+                        }
+                    }
+
+                    if (cleanBName.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanBName.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanBName.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanBName.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanBName.IndexOf("Finger", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        string targetUo = isLeft ? "Bip01 L Hand" : (isRight ? "Bip01 R Hand" : null);
+                        if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out targetBoneIdx))
+                        {
+                            meshBoneToUo[bi] = targetBoneIdx;
+                            continue;
+                        }
+                    }
+
+                    if (MixamoRetarget.TryGetBoneAlias(bname, out string uoName) && uoBoneByName.TryGetValue(uoName, out targetBoneIdx))
+                    {
+                        meshBoneToUo[bi] = targetBoneIdx;
                     }
                     else if (nameToNode.TryGetValue(bname, out int ni))
                     {
@@ -388,6 +565,8 @@ namespace UoFiddler.Plugin.Granny3D
                         part.Skin[v] = Array.Empty<VertexInfluence>();
                     }
                 }
+
+
 
                 model.Parts.Add(part);
             }
