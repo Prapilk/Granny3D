@@ -296,6 +296,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblAnimHeader;
         private TextBox txtAnimFilter;
         private TreeView tvAnims;
+        private Button btnImportAnim;
         // animation categories (Male / Female / Animals / ...)
         private class AnimCat
         {
@@ -304,6 +305,7 @@ namespace UoFiddler.Plugin.Granny3D
             public string Prefix;
             public bool IsAll;
             public bool Populated;
+            public string Pattern = "*.grn";
         }
         // A selectable multipart part (display text + full .grn path).
         private class PartItem
@@ -462,7 +464,7 @@ namespace UoFiddler.Plugin.Granny3D
         private void InitializeComponent()
         {
             SuspendLayout();
-            Width = 1100;
+            Width = 1400;
             Height = 750;
             BackColor = Color.FromArgb(37, 37, 38);
 
@@ -508,7 +510,21 @@ namespace UoFiddler.Plugin.Granny3D
             };
             tvAnims.AfterSelect += TvAnims_AfterSelect;
             tvAnims.BeforeExpand += TvAnims_BeforeExpand;
+
+            var pnlAnimTools = new Panel { Dock = DockStyle.Bottom, Height = 28 };
+            btnImportAnim = new Button
+            {
+                Text = "Importer un FBX Mixamo…",
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(48, 48, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnImportAnim.Click += BtnImportAnim_Click;
+            pnlAnimTools.Controls.Add(btnImportAnim);
+
             grpAnimations.Controls.Add(tvAnims);
+            grpAnimations.Controls.Add(pnlAnimTools);
             grpAnimations.Controls.Add(txtAnimFilter);
             grpAnimations.Controls.Add(lblAnimHeader);
 
@@ -608,11 +624,33 @@ namespace UoFiddler.Plugin.Granny3D
             };
             txtModelFilter.TextChanged += (s, e) => ApplyModelsFilter();
 
-            pnlLeft.Controls.Add(tvModels);
-            pnlLeft.Controls.Add(txtModelFilter);
-            pnlLeft.Controls.Add(lblModels);
-            pnlLeft.Controls.Add(grpAnimations);
-            pnlLeft.Controls.Add(grpLoaded);
+            // ---- Left column: models tree (top) / animations + meshes (bottom),
+            //      separated by draggable splitters so every zone can be enlarged. ----
+            var pnlModels = new Panel { Dock = DockStyle.Fill };
+            pnlModels.Controls.Add(tvModels);
+            pnlModels.Controls.Add(txtModelFilter);
+            pnlModels.Controls.Add(lblModels);
+
+            grpAnimations.Dock = DockStyle.Fill;
+            grpLoaded.Dock = DockStyle.Fill;
+
+            var animSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal
+            };
+            animSplit.Panel1.Controls.Add(grpAnimations);
+            animSplit.Panel2.Controls.Add(grpLoaded);
+
+            var leftSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal
+            };
+            leftSplit.Panel1.Controls.Add(pnlModels);
+            leftSplit.Panel2.Controls.Add(animSplit);
+
+            pnlLeft.Controls.Add(leftSplit);
 
             // ===== RIGHT COLUMN: viewport (top) + playback (bottom) =====
             var pnlRight = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6) };
@@ -1014,7 +1052,6 @@ namespace UoFiddler.Plugin.Granny3D
             var mainSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill,
-                SplitterDistance = 360,
                 FixedPanel = FixedPanel.Panel1,
                 BorderStyle = BorderStyle.FixedSingle,
                 Orientation = Orientation.Vertical
@@ -1025,7 +1062,24 @@ namespace UoFiddler.Plugin.Granny3D
             Controls.Add(mainSplit);
             ResumeLayout(false);
 
+            // Initial splitter positions: models column doubled (360 -> 720), and the
+            // animations / meshes zones get a resizable share of the left column.
+            SetSplitterDistance(mainSplit, 720);
+            SetSplitterDistance(leftSplit, 430);
+            SetSplitterDistance(animSplit, 190);
+
             LoadCategoryTree();
+        }
+
+        private static void SetSplitterDistance(SplitContainer sc, int distance)
+        {
+            if (sc == null) return;
+            int span = sc.Orientation == Orientation.Vertical ? sc.Width : sc.Height;
+            int lo = sc.Panel1MinSize;
+            int hi = span - sc.Panel2MinSize - sc.SplitterWidth;
+            if (hi < lo) hi = lo;
+            try { sc.SplitterDistance = Math.Max(lo, Math.Min(distance, hi)); }
+            catch { }
         }
 
         private void LayoutViewport(Control parent, Control bottom)
@@ -1968,6 +2022,7 @@ namespace UoFiddler.Plugin.Granny3D
                 AddAnimCat("Monsters", new AnimCat { Label = "Monsters", Folder = Path.Combine(BasePath, "Monsters") });
                 AddAnimCat("SeaCreatures", new AnimCat { Label = "SeaCreatures", Folder = Path.Combine(BasePath, "SeaCreatures") });
                 AddAnimCat("Equipment", new AnimCat { Label = "Equipment", Folder = Path.Combine(BasePath, "Others") });
+                AddAnimCat("Importés (Mixamo)", new AnimCat { Label = "Importés (Mixamo)", Folder = Path.Combine(BasePath, "Others"), Pattern = "*.anim" });
             }
             finally
             {
@@ -2004,7 +2059,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
             else
             {
-                CollectAnims(cat.Folder, cat.Prefix, files);
+                CollectAnims(cat.Folder, cat.Prefix, files, cat.Pattern);
             }
 
             files.Sort(StringComparer.OrdinalIgnoreCase);
@@ -2013,15 +2068,15 @@ namespace UoFiddler.Plugin.Granny3D
             cat.Populated = true;
         }
 
-        private static void CollectAnims(string folder, string prefix, List<string> outFiles)
+        private static void CollectAnims(string folder, string prefix, List<string> outFiles, string pattern = "*.grn")
         {
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) return;
             try
             {
-                foreach (var f in Directory.GetFiles(folder, "*.grn"))
+                foreach (var f in Directory.GetFiles(folder, pattern))
                 {
                     string name = Path.GetFileName(f);
-                    if (name.IndexOf("lod", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    if (pattern == "*.grn" && name.IndexOf("lod", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                     if (prefix != null && !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
                     outFiles.Add(f);
                 }
@@ -2034,6 +2089,86 @@ namespace UoFiddler.Plugin.Granny3D
             if (_suppressAnimSelect) return;
             if (e.Node?.Tag is string path)
                 PlayAnimationFile(path);
+        }
+
+        // Import a Mixamo FBX: retarget it onto the UO Biped skeleton, write a
+        // standalone ".anim" clip into the "Others" folder, then play it.
+        private void BtnImportAnim_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                using var ofd = new OpenFileDialog
+                {
+                    Title = "Importer une animation Mixamo (FBX)",
+                    Filter = "FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*"
+                };
+                if (ofd.ShowDialog() != DialogResult.OK) return;
+
+                string refPath = Path.Combine(BasePath, "Humans", "H_Female_Lod2.grn");
+                if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
+                if (!File.Exists(refPath))
+                {
+                    MessageBox.Show("Modèle de référence Biped introuvable (H_Female_Lod2.grn).");
+                    return;
+                }
+
+                var refParser = new GrannyFormatParser();
+                if (!refParser.Load(refPath) || refParser.Bones == null || refParser.Bones.Count == 0)
+                {
+                    MessageBox.Show("Impossible de charger le squelette de référence.");
+                    return;
+                }
+
+                string clip = Path.GetFileNameWithoutExtension(ofd.FileName);
+                if (!MixamoRetarget.TryImport(ofd.FileName, refParser.Bones, clip, out var anim, out string err) || anim == null)
+                {
+                    MessageBox.Show("Import Mixamo échoué : " + (err ?? "raison inconnue"));
+                    return;
+                }
+
+                string outPath = Path.Combine(BasePath, "Others", clip + GrannyAnimFile.Extension);
+                if (!GrannyAnimFile.Save(anim, outPath))
+                {
+                    MessageBox.Show("Écriture impossible : " + outPath);
+                    return;
+                }
+
+                Log($"Import Mixamo OK: {Path.GetFileName(outPath)} tracks={anim.Tracks.Count} dur={anim.Duration:F2}s mapped={MixamoRetarget.MappedBoneCount(refParser.Bones)}");
+
+                BuildAnimCategories();
+                RevealAnimFile(outPath);
+            }
+            catch (Exception ex)
+            {
+                Log($"Import Mixamo error: {ex.Message}\n{ex}");
+                MessageBox.Show("Erreur d'import : " + ex.Message);
+            }
+        }
+
+        // Expand the matching category and select the freshly written clip so it plays.
+        private void RevealAnimFile(string path)
+        {
+            if (tvAnims != null)
+            {
+                foreach (TreeNode catNode in tvAnims.Nodes)
+                {
+                    var cat = catNode.Tag as AnimCat;
+                    if (cat == null || cat.IsAll) continue;
+                    if (!string.Equals(cat.Pattern, "*.anim", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    catNode.Expand();
+                    foreach (TreeNode child in catNode.Nodes)
+                    {
+                        if (child.Tag is string s && string.Equals(s, path, StringComparison.OrdinalIgnoreCase))
+                        {
+                            tvAnims.SelectedNode = child;
+                            child.EnsureVisible();
+                            return;
+                        }
+                    }
+                }
+            }
+            PlayAnimationFile(path);
         }
 
         // Picking an animation loads the creature it belongs to (if needed) and plays it.
@@ -2073,6 +2208,15 @@ namespace UoFiddler.Plugin.Granny3D
             string folder = Path.GetDirectoryName(animPath);
             string name = Path.GetFileNameWithoutExtension(animPath);
             string folderName = Path.GetFileName(folder);
+
+            // Locally retargeted clips live in "Others" but are authored against the
+            // standard UO Biped, so default them onto a human body.
+            if (GrannyAnimFile.IsAnimFile(animPath))
+            {
+                string human = Path.Combine(BasePath, "Humans", "H_Female_Lod2.grn");
+                if (!File.Exists(human)) human = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
+                return File.Exists(human) ? human : null;
+            }
 
             if (string.Equals(folderName, "Humans", StringComparison.OrdinalIgnoreCase))
             {
@@ -3235,14 +3379,31 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        // Load a clip regardless of container: native .grn (Granny) or the custom
+        // .anim emitted by the Mixamo importer.
+        private static GrannyAnimation LoadAnyAnimation(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+            if (GrannyAnimFile.IsAnimFile(path)) return GrannyAnimFile.Load(path);
+            var parser = new GrannyFormatParser();
+            return (parser.Load(path) ? parser.Animation : null);
+        }
+
         private void LoadAnimationCore(string path)
         {
             if (!File.Exists(path)) return;
 
-            _animParser = new GrannyFormatParser();
-            if (!_animParser.Load(path)) return;
-
-            _currentAnimation = _animParser.Animation;
+            if (GrannyAnimFile.IsAnimFile(path))
+            {
+                _animParser = null;
+                _currentAnimation = GrannyAnimFile.Load(path);
+            }
+            else
+            {
+                _animParser = new GrannyFormatParser();
+                if (!_animParser.Load(path)) return;
+                _currentAnimation = _animParser.Animation;
+            }
             _currentAnimPath = path;
             RefreshMountAnimation();
             foreach (var lm in _loadedMeshes) ClearClothBake(lm);   // stale loop
@@ -4528,15 +4689,17 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         // Max projected vertical span across all 5 directions (direction-independent frame).
+        // Deliberately computed WITHOUT the vertical-scale deform: the frame (zoom) must
+        // stay put while the user squashes the mesh. If the frame followed the deform it
+        // re-zoomed to refit, which magnified the silhouette sideways and made the profile
+        // views look like they were filmed from above instead of simply squashed.
         private float ComputeFrameSpan()
         {
             float best = 0.1f;
-            Matrix4 vscale = Matrix4.CreateScale(1f, 1f, _uoVertScale);
             for (int d = 0; d < 5; d++)
             {
-                Matrix4 modelToView = vscale * UoViewMatrix(d);
                 float vmin, vmax;
-                ViewVerticalRange(modelToView, out vmin, out vmax);
+                ViewVerticalRange(UoViewMatrix(d), out vmin, out vmax);
                 best = Math.Max(best, vmax - vmin);
             }
             return best;
@@ -4824,6 +4987,34 @@ namespace UoFiddler.Plugin.Granny3D
             return list;
         }
 
+        // Every animation available anywhere under the model root: base .grn clips of
+        // every creature/folder plus imported .anim clips (Others). Used by the export
+        // mapping dialog's "ALL anim" toggle so any clip can be baked, not only the
+        // current model's own folder.
+        private List<string> GatherAllExportAnimSources(out List<string> display)
+        {
+            var list = new List<string>();
+            display = new List<string>();
+            foreach (var f in CategoryFolders)
+            {
+                string folder = Path.Combine(BasePath, f);
+                bool others = string.Equals(f, "Others", StringComparison.OrdinalIgnoreCase);
+                // Native clips live beside each creature; the "Others" folder holds
+                // equipment parts, not clips, so only its .anim imports are offered.
+                var group = new List<string>();
+                if (!others) CollectAnims(folder, null, group, "*.grn");
+                CollectAnims(folder, null, group, "*.anim");
+                group.Sort(StringComparer.OrdinalIgnoreCase);
+                string label = others ? "Importés (Mixamo)" : f;
+                foreach (var p in group)
+                {
+                    list.Add(p);
+                    display.Add(label + " \u25B8 " + Path.GetFileNameWithoutExtension(p));
+                }
+            }
+            return list;
+        }
+
         // ---- Cutout export helpers ----
         // A cutout spec = (occluder, target, bounds):
         //  - target  : meshes rendered into the sprite.
@@ -5069,8 +5260,9 @@ namespace UoFiddler.Plugin.Granny3D
 
             var sources = GatherExportAnimSources(out string prefix);
             if (sources.Count == 0) { Log("Export .vd : aucune animation source trouvee."); return; }
+            var allSources = GatherAllExportAnimSources(out var allDisplay);
 
-            using (var form = new VdRemapForm(VdExport.Targets(), sources, prefix))
+            using (var form = new VdRemapForm(VdExport.Targets(), sources, prefix, allSources, allDisplay))
             {
                 if (form.ShowDialog(this) != DialogResult.OK) return;
                 var target = form.Target;
@@ -5147,9 +5339,9 @@ namespace UoFiddler.Plugin.Granny3D
 
             try
             {
-                var parser = new GrannyFormatParser();
-                if (!parser.Load(animPath) || parser.Animation == null) return null;
-                _currentAnimation = parser.Animation;
+                var anim = LoadAnyAnimation(animPath);
+                if (anim == null) return null;
+                _currentAnimation = anim;
 
                 foreach (var lm in _loadedMeshes) lm.BoneToAnimTrack = null;
 

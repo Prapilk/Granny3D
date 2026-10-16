@@ -25,17 +25,32 @@ namespace UoFiddler.Plugin.Granny3D
         private readonly List<string> _sourceNames;  // display names
         private readonly string _stripPrefix;        // creature prefix to ignore when matching
 
+        // Every animation across all folders (the "ALL anim" set): an optional superset
+        // of _sources so clips from other creatures / imported .anim can be picked too.
+        // _allDisplay holds the same entries grouped by category (e.g. "Monsters ▸ X").
+        private readonly List<string> _allSources;
+        private readonly List<string> _allNames;
+        private readonly List<string> _allDisplay;
+        private bool _useAll;
+        private Button _btnAll;
+
         public VdTargetDef Target { get; private set; }
         public int Fps => (int)_nudFps.Value;
         public int FrameSize => (int)_nudSize.Value;
         public int OffsetY => (int)_nudOffY.Value;
 
-        public VdRemapForm(List<VdTargetDef> targets, List<string> sources, string stripPrefix = null)
+        public VdRemapForm(List<VdTargetDef> targets, List<string> sources, string stripPrefix = null,
+            List<string> allSources = null, List<string> allDisplay = null)
         {
             _targets = targets;
-            _sources = sources;
-            _sourceNames = sources.Select(Path.GetFileNameWithoutExtension).ToList();
+            _sources = sources ?? new List<string>();
+            _sourceNames = _sources.Select(Path.GetFileNameWithoutExtension).ToList();
             _stripPrefix = Normalize(stripPrefix ?? string.Empty);   // same normalization as source names
+
+            _allSources = (allSources != null && allSources.Count > 0) ? allSources : _sources;
+            _allNames = _allSources.Select(Path.GetFileNameWithoutExtension).ToList();
+            _allDisplay = (allDisplay != null && allDisplay.Count == _allSources.Count)
+                ? allDisplay : new List<string>(_allNames);
 
             Text = "Export .vd — mapping des animations";
             ClientSize = new Size(560, 620);
@@ -60,6 +75,21 @@ namespace UoFiddler.Plugin.Granny3D
             _cmbTarget.Items.AddRange(_targets.ToArray());
             _cmbTarget.SelectedIndexChanged += (s, e) => RebuildRows();
             top.Controls.Add(_cmbTarget);
+
+            // "ALL anim": swap the per-model source list for every clip found in all
+            // folders (other creatures, imported .anim...), not just the model's folder.
+            _btnAll = new Button
+            {
+                Text = "ALL anim (tout)",
+                Location = new Point(378, 5),
+                Width = 174,
+                Height = 26,
+                BackColor = Color.FromArgb(60, 60, 62),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            _btnAll.Click += (s, e) => ToggleAllSources();
+            top.Controls.Add(_btnAll);
 
             top.Controls.Add(new Label { Text = "Images/s :", Location = new Point(8, 42), Width = 70, ForeColor = Color.Gray });
             _nudFps = new NumericUpDown { Location = new Point(80, 38), Width = 60, Minimum = 2, Maximum = 30, Value = 10, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
@@ -90,7 +120,42 @@ namespace UoFiddler.Plugin.Granny3D
             if (_cmbTarget.Items.Count > 0) _cmbTarget.SelectedIndex = 0;
         }
 
-        private void RebuildRows()
+        // Currently offered sources: the per-model set, or every clip when "ALL" is on.
+        private List<string> ActiveSources() => _useAll ? _allSources : _sources;
+        private List<string> ActiveNames() => _useAll ? _allNames : _sourceNames;
+        private List<string> ActiveDisplay() => _useAll ? _allDisplay : _sourceNames;
+        private string ActivePrefix() => _useAll ? string.Empty : _stripPrefix;
+
+        // The clip (by path) currently chosen in each row, so a source-set swap can
+        // restore the user's picks. Null where the row is set to "(aucune)".
+        private string[] CaptureSelection()
+        {
+            var from = ActiveSources();
+            var keep = new string[_combos.Count];
+            foreach (var cb in _combos)
+            {
+                int idx = (int)cb.Tag;
+                int sel = cb.SelectedIndex - 1;
+                if (idx >= 0 && idx < keep.Length)
+                    keep[idx] = (sel >= 0 && sel < from.Count) ? from[sel] : null;
+            }
+            return keep;
+        }
+
+        // Flip between the current model's clips and every clip found in all folders.
+        private void ToggleAllSources()
+        {
+            if (_allSources.Count == 0) return;
+            var keep = CaptureSelection();          // capture against the CURRENT list
+            _useAll = !_useAll;
+            _btnAll.Text = _useAll ? "ALL anim (tout) *" : "ALL anim (tout)";
+            _btnAll.BackColor = _useAll ? Color.FromArgb(80, 96, 70) : Color.FromArgb(60, 60, 62);
+            RebuildRows(keep);
+        }
+
+        // preserve == null -> auto prefill from action names; otherwise keep the
+        // given clip paths where they still exist in the offered set.
+        private void RebuildRows(string[] preserve = null)
         {
             _rows.SuspendLayout();
             _rows.Controls.Clear();
@@ -99,8 +164,10 @@ namespace UoFiddler.Plugin.Granny3D
             var target = _cmbTarget.SelectedItem as VdTargetDef;
             if (target == null) { _rows.ResumeLayout(); return; }
 
+            var sources = ActiveSources();
+            var display = ActiveDisplay();
             var options = new List<string> { "--- (aucune) ---" };
-            options.AddRange(_sourceNames);
+            options.AddRange(display);
 
             int y = 6;
             for (int i = 0; i < target.ActionCount; i++)
@@ -127,7 +194,10 @@ namespace UoFiddler.Plugin.Granny3D
                 };
                 cb.Items.AddRange(options.ToArray());
                 cb.Tag = i;
-                cb.SelectedIndex = PrefillIndex(i, actionName, target);
+                int keep = (preserve != null && i < preserve.Length && preserve[i] != null)
+                    ? sources.FindIndex(p => string.Equals(p, preserve[i], StringComparison.OrdinalIgnoreCase)) + 1
+                    : 0;
+                cb.SelectedIndex = keep > 0 ? keep : PrefillIndex(i, actionName, target);
                 _combos.Add(cb);
                 _rows.Controls.Add(cb);
 
@@ -142,15 +212,17 @@ namespace UoFiddler.Plugin.Granny3D
         // prefix) -> best prefix match.
         private int PrefillIndex(int actionIndex, string actionName, VdTargetDef target)
         {
-            if (_sourceNames.Count == 0) return 0;
+            var names = ActiveNames();
+            if (names.Count == 0) return 0;
+            string strip = ActivePrefix();
 
             // Normalized source names with the creature prefix removed.
-            var norm = new string[_sourceNames.Count];
-            for (int i = 0; i < _sourceNames.Count; i++)
+            var norm = new string[names.Count];
+            for (int i = 0; i < names.Count; i++)
             {
-                string s = Normalize(_sourceNames[i]);
-                if (_stripPrefix.Length > 0 && s.StartsWith(_stripPrefix))
-                    s = s.Substring(_stripPrefix.Length);
+                string s = Normalize(names[i]);
+                if (strip.Length > 0 && s.StartsWith(strip))
+                    s = s.Substring(strip.Length);
                 norm[i] = s;
             }
 
@@ -170,6 +242,13 @@ namespace UoFiddler.Plugin.Granny3D
             // 2) Exact match on the stripped name (disambiguates Run_01 vs Horse_Run_01).
             for (int i = 0; i < norm.Length; i++)
                 if (norm[i] == tgt) return i + 1;
+
+            // 2b) In "ALL" mode names keep their creature prefix (e.g. "h_male_idle"
+            // for "Idle"), so also accept a trailing-token match.
+            if (_useAll)
+                for (int i = 0; i < norm.Length; i++)
+                    if (norm[i].Length > tgt.Length && norm[i].EndsWith(tgt, StringComparison.Ordinal))
+                        return i + 1;
 
             // 3) Closest by common prefix length (tie -> shortest extra).
             int bestIdx = 0, bestPref = 0, bestExtra = int.MaxValue;
@@ -205,13 +284,14 @@ namespace UoFiddler.Plugin.Granny3D
         {
             var target = _cmbTarget.SelectedItem as VdTargetDef;
             int n = target?.ActionCount ?? 0;
+            var sources = ActiveSources();
             var result = new string[n];
             foreach (var cb in _combos)
             {
                 int idx = (int)cb.Tag;
                 if (idx < 0 || idx >= n) continue;
                 int sel = cb.SelectedIndex - 1;
-                result[idx] = (sel >= 0 && sel < _sources.Count) ? _sources[sel] : null;
+                result[idx] = (sel >= 0 && sel < sources.Count) ? sources[sel] : null;
             }
             return result;
         }
