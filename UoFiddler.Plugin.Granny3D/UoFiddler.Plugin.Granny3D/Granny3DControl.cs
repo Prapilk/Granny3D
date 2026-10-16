@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -41,6 +41,7 @@ namespace UoFiddler.Plugin.Granny3D
         public int Vao;
         public int TextureId = -1;
         public bool HasTexture = false;
+        public Vector3 MeshColor = new Vector3(0.72f, 0.66f, 0.55f);
 
         public int[] BoneToAnimTrack;
         public Matrix4[] LocalMatrices;
@@ -241,6 +242,7 @@ namespace UoFiddler.Plugin.Granny3D
     {
         public bool IsFolder;
         public bool Populated;       // children already enumerated (expand/collapse idempotent)
+        public bool IsOthersCategory;
         public string Folder;
         public string CreatureKey;
         public string MeshPath;      // creature's base/LOD mesh file
@@ -256,11 +258,11 @@ namespace UoFiddler.Plugin.Granny3D
         // Category folder -> display name
         private static readonly string[] CategoryFolders =
         {
-            "Humans", "Monsters", "Animals", "SeaCreatures", "Others"
+            "Humans", "Monsters", "Animals", "SeaCreatures", "Others", "Others"
         };
         private static readonly string[] CategoryDisplay =
         {
-            "Humans", "Monsters", "Animals", "Sea Creatures", "Equipment"
+            "Humans", "Monsters", "Animals", "Sea Creatures", "Equipment", "Others"
         };
 
         // Action words used to split "<creature>_<action>" filenames (longest first).
@@ -297,6 +299,7 @@ namespace UoFiddler.Plugin.Granny3D
         private TextBox txtAnimFilter;
         private TreeView tvAnims;
         private Button btnImportAnim;
+        private Button btnImportModel;
         // animation categories (Male / Female / Animals / ...)
         private class AnimCat
         {
@@ -626,8 +629,21 @@ namespace UoFiddler.Plugin.Granny3D
 
             // ---- Left column: models tree (top) / animations + meshes (bottom),
             //      separated by draggable splitters so every zone can be enlarged. ----
+            var pnlModelTools = new Panel { Dock = DockStyle.Bottom, Height = 28 };
+            btnImportModel = new Button
+            {
+                Text = "Importer un Character Mixamo…",
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(48, 48, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnImportModel.Click += BtnImportModel_Click;
+            pnlModelTools.Controls.Add(btnImportModel);
+
             var pnlModels = new Panel { Dock = DockStyle.Fill };
             pnlModels.Controls.Add(tvModels);
+            pnlModels.Controls.Add(pnlModelTools);
             pnlModels.Controls.Add(txtModelFilter);
             pnlModels.Controls.Add(lblModels);
 
@@ -1129,7 +1145,14 @@ namespace UoFiddler.Plugin.Granny3D
                     if (!Directory.Exists(folder))
                         continue;
 
-                    var info = new TreeNodeInfo { IsFolder = true, Folder = folder, Display = CategoryDisplay[i] };
+                    bool isOthersCat = (i == 5);
+                    var info = new TreeNodeInfo
+                    {
+                        IsFolder = true,
+                        Folder = folder,
+                        Display = CategoryDisplay[i],
+                        IsOthersCategory = isOthersCat
+                    };
                     var node = new TreeNode(CategoryDisplay[i]) { Tag = info };
                     node.Nodes.Add(new TreeNode("..."));
                     tvModels.Nodes.Add(node);
@@ -1194,6 +1217,34 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     catch { }
                 }
+
+                try
+                {
+                    string othersFolder = Path.Combine(BasePath, "Others");
+                    if (Directory.Exists(othersFolder))
+                    {
+                        var extraFiles = new List<string>();
+                        extraFiles.AddRange(Directory.GetFiles(othersFolder, "*.char", SearchOption.AllDirectories));
+                        extraFiles.AddRange(Directory.GetFiles(othersFolder, "*.fbx", SearchOption.AllDirectories));
+                        foreach (var f in extraFiles)
+                        {
+                            string name = Path.GetFileNameWithoutExtension(f);
+                            if (name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                            if (!results.ContainsKey(name))
+                            {
+                                results[name] = new TreeNodeInfo
+                                {
+                                    IsFolder = false,
+                                    Folder = Path.GetDirectoryName(f),
+                                    CreatureKey = name,
+                                    MeshPath = f,
+                                    Display = name
+                                };
+                            }
+                        }
+                    }
+                }
+                catch { }
 
                 var root = new TreeNode($"Résultats ({results.Count})");
                 foreach (var kv in results)
@@ -1290,6 +1341,41 @@ namespace UoFiddler.Plugin.Granny3D
 
             // Clear any "..." placeholder before adding the real children.
             folderNode.Nodes.Clear();
+
+            if (folderInfo != null && folderInfo.IsOthersCategory)
+            {
+                try
+                {
+                    var modelFiles = new List<string>();
+                    if (Directory.Exists(folder))
+                    {
+                        modelFiles.AddRange(Directory.GetFiles(folder, "*.char", SearchOption.AllDirectories));
+                        modelFiles.AddRange(Directory.GetFiles(folder, "*.fbx", SearchOption.AllDirectories));
+                    }
+                    modelFiles.Sort(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var f in modelFiles)
+                    {
+                        string name = Path.GetFileNameWithoutExtension(f);
+                        var info = new TreeNodeInfo
+                        {
+                            IsFolder = false,
+                            Folder = Path.GetDirectoryName(f),
+                            CreatureKey = name,
+                            MeshPath = f,
+                            Display = name,
+                            Populated = true
+                        };
+                        var node = new TreeNode(name) { Tag = info };
+                        folderNode.Nodes.Add(node);
+                    }
+                }
+                catch { }
+
+                if (folderInfo != null) folderInfo.Populated = true;
+                return;
+            }
+
             var creatures = new SortedDictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
             try
@@ -1450,7 +1536,7 @@ namespace UoFiddler.Plugin.Granny3D
                     // then load the animation.
                     string leafPath = info.LeafPath;
                     var parentInfo = e.Node.Parent?.Tag as TreeNodeInfo;
-                    if (parentInfo != null)
+                    if (_loadedMeshes.Count == 0 && parentInfo != null)
                         EnsureMeshLoaded(parentInfo.MeshPath);
                     LoadAnimation(leafPath);
                     return;
@@ -1470,7 +1556,10 @@ namespace UoFiddler.Plugin.Granny3D
                         && string.Equals(Path.GetFileName(info.Folder), "Others", StringComparison.OrdinalIgnoreCase);
                     bool looksCharacter = Path.GetFileName(info.MeshPath)
                         .StartsWith("Character_", StringComparison.OrdinalIgnoreCase);
-                    if (isEquipCategory && !looksCharacter && _loadedMeshes.Count > 0)
+                    bool isCustomCharacter = GrannyModelFile.IsModelFile(info.MeshPath) ||
+                        info.MeshPath.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) ||
+                        info.MeshPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase);
+                    if (isEquipCategory && !looksCharacter && !isCustomCharacter && _loadedMeshes.Count > 0)
                     {
                         AddToScene(info.MeshPath);
                         return;
@@ -1552,10 +1641,71 @@ namespace UoFiddler.Plugin.Granny3D
                 });
             }
 
+            bool isCustomChar = !string.IsNullOrEmpty(info.MeshPath) &&
+                (info.MeshPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase) ||
+                 info.MeshPath.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) ||
+                 (node.Parent?.Tag as TreeNodeInfo)?.IsOthersCategory == true);
+
+            if (isCustomChar)
+            {
+                tvMenu.Items.Add(new ToolStripSeparator());
+                var deleteItem = new ToolStripMenuItem("Supprimer ce character", null, (s, a) =>
+                {
+                    DeleteCustomCharacter(node, info);
+                });
+                deleteItem.ForeColor = Color.Crimson;
+                tvMenu.Items.Add(deleteItem);
+            }
+
             tvMenu.Items.Add(new ToolStripSeparator());
             tvMenu.Items.Add("Retirer le dernier mesh", null, (s, a) =>
                 RemoveMeshAt(_loadedMeshes.Count - 1));
             tvMenu.Items.Add("Vider la scène", null, (s, a) => ClearScene());
+        }
+
+        private void DeleteCustomCharacter(TreeNode node, TreeNodeInfo info)
+        {
+            if (info == null || string.IsNullOrEmpty(info.MeshPath)) return;
+
+            string charName = !string.IsNullOrEmpty(node.Text) ? node.Text : Path.GetFileNameWithoutExtension(info.MeshPath);
+            var res = MessageBox.Show(
+                $"Voulez-vous vraiment supprimer le character '{charName}' et ses textures associées ?",
+                "Supprimer le character",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+
+            if (res != DialogResult.Yes) return;
+
+            try
+            {
+                if (string.Equals(_currentModelPath, info.MeshPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearScene();
+                }
+
+                if (File.Exists(info.MeshPath))
+                {
+                    File.Delete(info.MeshPath);
+                }
+
+                string folder = Path.GetDirectoryName(info.MeshPath) ?? string.Empty;
+                if (Directory.Exists(folder))
+                {
+                    string prefix = Path.GetFileNameWithoutExtension(info.MeshPath) + "_";
+                    foreach (var f in Directory.GetFiles(folder, prefix + "*.*"))
+                    {
+                        try { File.Delete(f); } catch { }
+                    }
+                }
+
+                node.Remove();
+                Log($"Character supprimé : {charName} ({info.MeshPath})");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Erreur lors de la suppression du character : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Log($"Erreur suppression character: {ex.Message}");
+            }
         }
 
         // Append every mesh of a .grn file to the current scene (used to layer
@@ -2145,6 +2295,78 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        // Import a Mixamo FBX character: extract meshes, skeleton, materials and skinning,
+        // convert to UO coordinate system (Z-up), save as .char in BasePath\Others,
+        // refresh the treeview and load/display the character.
+        private void BtnImportModel_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                using var ofd = new OpenFileDialog
+                {
+                    Title = "Importer un Character Mixamo (FBX)",
+                    Filter = "FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*"
+                };
+                if (ofd.ShowDialog() != DialogResult.OK) return;
+
+                string charName = Path.GetFileNameWithoutExtension(ofd.FileName);
+                string outFolder = Path.Combine(BasePath, "Others");
+                if (!Directory.Exists(outFolder)) Directory.CreateDirectory(outFolder);
+
+                string refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
+                if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Female_Lod2.grn");
+
+                if (!MixamoCharacterImport.TryImport(ofd.FileName, outFolder, refPath, out var model, out string err) || model == null)
+                {
+                    MessageBox.Show("Import Mixamo échoué : " + (err ?? "raison inconnue"));
+                    return;
+                }
+
+                string outPath = Path.Combine(outFolder, charName + GrannyModelFile.Extension);
+
+                if (!GrannyModelFile.Save(model, outPath))
+                {
+                    MessageBox.Show("Écriture impossible : " + outPath);
+                    return;
+                }
+
+                Log($"Import Character OK: {Path.GetFileName(outPath)} bones={model.Bones.Count} parts={model.Parts.Count}");
+
+                RestoreModelsTree();
+                RevealModelFile(outPath);
+            }
+            catch (Exception ex)
+            {
+                Log($"Import Character error: {ex.Message}\n{ex}");
+                MessageBox.Show("Erreur d'import : " + ex.Message);
+            }
+        }
+
+        private void RevealModelFile(string path)
+        {
+            if (tvModels == null) return;
+            string targetName = Path.GetFileNameWithoutExtension(path);
+
+            foreach (TreeNode catNode in tvModels.Nodes)
+            {
+                var info = catNode.Tag as TreeNodeInfo;
+                if (info != null && info.IsOthersCategory)
+                {
+                    catNode.Expand();
+                    foreach (TreeNode child in catNode.Nodes)
+                    {
+                        var cinfo = child.Tag as TreeNodeInfo;
+                        if (cinfo != null && (string.Equals(cinfo.CreatureKey, targetName, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(Path.GetFileNameWithoutExtension(cinfo.MeshPath), targetName, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            tvModels.SelectedNode = child;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         // Expand the matching category and select the freshly written clip so it plays.
         private void RevealAnimFile(string path)
         {
@@ -2258,7 +2480,8 @@ namespace UoFiddler.Plugin.Granny3D
             else if (string.Equals(folderName, "Animals", StringComparison.OrdinalIgnoreCase)) want = "Animals";
             else if (string.Equals(folderName, "Monsters", StringComparison.OrdinalIgnoreCase)) want = "Monsters";
             else if (string.Equals(folderName, "SeaCreatures", StringComparison.OrdinalIgnoreCase)) want = "SeaCreatures";
-            else if (string.Equals(folderName, "Others", StringComparison.OrdinalIgnoreCase)) want = "Equipment";
+            else if (string.Equals(folderName, "Others", StringComparison.OrdinalIgnoreCase))
+                want = (info.IsOthersCategory || GrannyModelFile.IsModelFile(info.MeshPath)) ? "Importés (Mixamo)" : "Equipment";
 
             if (lblAnimHeader != null)
                 lblAnimHeader.Text = want == null
@@ -2348,6 +2571,13 @@ namespace UoFiddler.Plugin.Granny3D
             if (!_glReady || !glControl.IsHandleCreated) { Log("  -> aborted: GL not ready"); return; }
 
             glControl.MakeCurrent();
+
+            if (GrannyModelFile.IsModelFile(path) || path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadCustomCharacter(path);
+                return;
+            }
+
             _modelParser = new GrannyFormatParser();
             if (!_modelParser.Load(path))
             {
@@ -2417,6 +2647,85 @@ namespace UoFiddler.Plugin.Granny3D
             _camera.Pitch = -0.35f;
             UpdateModelInfo();
             Log($"  done meshes={_loadedMeshes.Count} refCenter={_refCenter} refScale={_refScale} camDist={_camera.Distance} vp={glControl.Width}x{glControl.Height}");
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+        }
+
+        private void LoadCustomCharacter(string path)
+        {
+            GrannyModelFile model = null;
+            if (path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!MixamoCharacterImport.TryImport(path, out model, out string err) || model == null)
+                {
+                    Log($"LoadCustomCharacter FBX import failed ({path}): {err}");
+                    return;
+                }
+            }
+            else if (!GrannyModelFile.Load(path, out model) || model == null)
+            {
+                Log($"LoadCustomCharacter Load failed for {path}");
+                return;
+            }
+
+            foreach (var lm in _loadedMeshes)
+                DestroyMesh(lm);
+
+            _loadedMeshes.Clear();
+            _sceneExtras.Clear();
+            if (lstLoaded != null) lstLoaded.Items.Clear();
+            _currentModelPath = path;
+            ResetCharMenu();
+
+            foreach (var part in model.Parts)
+            {
+                if (part.Vertices.Length == 0 || part.Indices.Length == 0) continue;
+
+                var gmesh = new GrannyMesh();
+                gmesh.Vertices.AddRange(part.Vertices);
+                gmesh.Indices.AddRange(part.Indices);
+                if (part.UVs != null) gmesh.UVs.AddRange(part.UVs);
+                if (part.Skin != null) gmesh.Skin.AddRange(part.Skin);
+                foreach (var v in part.Vertices)
+                {
+                    if (v.X < gmesh.MinX) gmesh.MinX = v.X;
+                    if (v.X > gmesh.MaxX) gmesh.MaxX = v.X;
+                    if (v.Y < gmesh.MinY) gmesh.MinY = v.Y;
+                    if (v.Y > gmesh.MaxY) gmesh.MaxY = v.Y;
+                    if (v.Z < gmesh.MinZ) gmesh.MinZ = v.Z;
+                    if (v.Z > gmesh.MaxZ) gmesh.MaxZ = v.Z;
+                }
+
+                var lm = new LoadedMesh
+                {
+                    Name = string.IsNullOrEmpty(part.Name) ? Path.GetFileNameWithoutExtension(path) : part.Name,
+                    SourcePath = path,
+                    SourceMesh = gmesh,
+                    Bones = new List<GrannyBone>(model.Bones),
+                    BaseVertices = part.Vertices,
+                    Indices = part.Indices,
+                    Skin = (part.Skin != null && part.Skin.Length > 0) ? part.Skin : null,
+                    MeshColor = part.Color
+                };
+
+                BuildCornerData(lm);
+                SetupMeshVBO(lm);
+                lm.TextureId = !string.IsNullOrEmpty(part.TextureName) ? TryLoadTexture(path, part.TextureName) : -1;
+                lm.HasTexture = lm.TextureId > 0;
+                _loadedMeshes.Add(lm);
+                if (lstLoaded != null) lstLoaded.Items.Add(lm.Name);
+                Log($"  built custom mesh vbo={lm.Vbo} vao={lm.Vao} verts={lm.BaseVertices.Length} corners={lm.Indices.Length} color={lm.MeshColor}");
+            }
+
+            RefreshLoadedList();
+            PopulateBoneCombo();
+            ComputeReferenceBounds();
+            RefreshVertexBuffers(true);
+            _camera.Target = Vector3.Zero;
+            _camera.Distance = 5f;
+            _camera.Yaw = 0f;
+            _camera.Pitch = -0.35f;
+            UpdateModelInfo();
+            Log($"  custom character loaded: meshes={_loadedMeshes.Count} refCenter={_refCenter} refScale={_refScale}");
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
 
@@ -3143,28 +3452,44 @@ namespace UoFiddler.Plugin.Granny3D
             string baseName = Path.GetFileNameWithoutExtension(modelPath);
             string[] exts = { ".png", ".jpg", ".jpeg", ".bmp", ".tga" };
 
-            // 0) Texture name embedded in the .grn (authoritative, e.g. "orcs_orc_v03").
-            if (!string.IsNullOrEmpty(embeddedName) && Directory.Exists(MapsPath))
+            // 0) Direct texture name embedded in the model/mesh (authoritative)
+            if (!string.IsNullOrEmpty(embeddedName))
             {
-                try
+                if (!string.IsNullOrEmpty(dir))
                 {
-                    foreach (var f in Directory.GetFiles(MapsPath, "*", SearchOption.TopDirectoryOnly))
+                    string direct = Path.Combine(dir, embeddedName);
+                    if (File.Exists(direct)) { int t = LoadTexture(direct); if (t > 0) return t; }
+                }
+                if (Directory.Exists(MapsPath))
+                {
+                    string mapDirect = Path.Combine(MapsPath, embeddedName);
+                    if (File.Exists(mapDirect)) { int t = LoadTexture(mapDirect); if (t > 0) return t; }
+                }
+                if (Directory.Exists(MapsPath))
+                {
+                    try
                     {
-                        if (!f.EndsWith(".tga", StringComparison.OrdinalIgnoreCase)) continue;
-                        string fn = Path.GetFileNameWithoutExtension(f);
-                        if (fn.EndsWith("_m", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (fn.Equals(embeddedName, StringComparison.OrdinalIgnoreCase))
+                        foreach (var f in Directory.GetFiles(MapsPath, "*", SearchOption.TopDirectoryOnly))
                         {
-                            int tex = LoadTexture(f);
-                            if (tex > 0) return tex;
+                            if (!f.EndsWith(".tga", StringComparison.OrdinalIgnoreCase)) continue;
+                            string fn = Path.GetFileNameWithoutExtension(f);
+                            if (fn.EndsWith("_m", StringComparison.OrdinalIgnoreCase)) continue;
+                            if (fn.Equals(embeddedName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                int tex = LoadTexture(f);
+                                if (tex > 0) return tex;
+                            }
                         }
                     }
+                    catch { }
                 }
-                catch { }
-                foreach (var ext in exts)
+                if (!string.IsNullOrEmpty(dir))
                 {
-                    string p = Path.Combine(dir, embeddedName + ext);
-                    if (File.Exists(p)) { int t = LoadTexture(p); if (t > 0) return t; }
+                    foreach (var ext in exts)
+                    {
+                        string p = Path.Combine(dir, embeddedName + ext);
+                        if (File.Exists(p)) { int t = LoadTexture(p); if (t > 0) return t; }
+                    }
                 }
             }
 
@@ -3515,7 +3840,15 @@ namespace UoFiddler.Plugin.Granny3D
             for (int trackIdx = 0; trackIdx < anim.Tracks.Count; trackIdx++)
             {
                 var track = anim.Tracks[trackIdx];
-                if (!string.IsNullOrEmpty(track.Name) && modelBoneByName.TryGetValue(track.Name, out int modelBoneIdx))
+                if (string.IsNullOrEmpty(track.Name)) continue;
+
+                if (modelBoneByName.TryGetValue(track.Name, out int modelBoneIdx))
+                {
+                    lm.BoneToAnimTrack[modelBoneIdx] = trackIdx;
+                    matched++;
+                }
+                else if (MixamoRetarget.TryGetBoneAlias(track.Name, out string alias) &&
+                         modelBoneByName.TryGetValue(alias, out modelBoneIdx))
                 {
                     lm.BoneToAnimTrack[modelBoneIdx] = trackIdx;
                     matched++;
@@ -4945,7 +5278,7 @@ namespace UoFiddler.Plugin.Granny3D
                 bool tex = lm.HasTexture && lm.TextureId > 0;
                 GL.BindTexture(TextureTarget.Texture2D, tex ? lm.TextureId : 0);
                 GL.Uniform1(_uHasTex, tex ? 1 : 0);
-                GL.Uniform3(_uColor, 0.72f, 0.66f, 0.55f);
+                GL.Uniform3(_uColor, lm.MeshColor.X, lm.MeshColor.Y, lm.MeshColor.Z);
 
                 GL.BindVertexArray(lm.Vao);
                 GL.DrawArrays(PrimitiveType.Triangles, 0, lm.Indices.Length);
@@ -5182,7 +5515,14 @@ namespace UoFiddler.Plugin.Granny3D
             for (int ti = 0; ti < anim.Tracks.Count; ti++)
             {
                 var tr = anim.Tracks[ti];
-                if (!string.IsNullOrEmpty(tr.Name) && byName.TryGetValue(tr.Name, out int bi))
+                if (string.IsNullOrEmpty(tr.Name)) continue;
+
+                if (byName.TryGetValue(tr.Name, out int bi))
+                {
+                    if (bi < target.Length) { target[bi] = ti; matched++; }
+                }
+                else if (MixamoRetarget.TryGetBoneAlias(tr.Name, out string alias) &&
+                         byName.TryGetValue(alias, out bi))
                 {
                     if (bi < target.Length) { target[bi] = ti; matched++; }
                 }
