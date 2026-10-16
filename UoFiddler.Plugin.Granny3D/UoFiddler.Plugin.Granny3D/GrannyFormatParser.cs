@@ -288,6 +288,11 @@ namespace UoFiddler.Plugin.Granny3D
             List<string> objectNames = new List<string>();
             string currentObjName = string.Empty;
             bool hasObj = false;
+            // Each object attribute is (nameIndex, valueIndex). The object's display name comes
+            // from the attribute named "__ObjectName", but its string-table slot is NOT constant
+            // (it is index 4 in most files but 2 in some, e.g. the horse Idle clip). Look it up.
+            int objectNameKey = strings.IndexOf("__ObjectName");
+            if (objectNameKey < 0) objectNameKey = 4;
             foreach (var c in _flatChunks)
             {
                 if (c.Id == 0xCA5E0F00)
@@ -303,7 +308,7 @@ namespace UoFiddler.Plugin.Granny3D
                     reader.ReadInt32();
                     int v2 = reader.ReadInt32();
                     reader.ReadInt32();
-                    if (v0 == 4 && v2 >= 0 && v2 < strings.Count)
+                    if (v0 == objectNameKey && v2 >= 0 && v2 < strings.Count)
                     {
                         currentObjName = strings[v2];
                     }

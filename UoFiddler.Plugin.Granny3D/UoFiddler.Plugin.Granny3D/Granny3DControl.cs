@@ -12,6 +12,17 @@ using Ultima;
 
 namespace UoFiddler.Plugin.Granny3D
 {
+    // Role of a mesh in the UO-style layered "cutout" export. The body is the
+    // export target; accessories and mounts are "occluders" used only to carve
+    // away the parts of the body they cover (depth occlusion), and are not
+    // themselves exported in the cutout pass.
+    public enum MeshCutoutRole
+    {
+        Body = 0,      // export target (the visible character/creature)
+        Accessory = 1, // armor/weapon layered on top -> occluder
+        Mount = 2      // mount the rider sits on -> occluder (only for mounted actions)
+    }
+
     public class LoadedMesh
     {
         public string Name = string.Empty;
@@ -60,10 +71,32 @@ namespace UoFiddler.Plugin.Granny3D
         // removed and the new part is loaded in their place.
         public string CharSlot;
 
+        // Embedded body-skin texture name of a multipart body part (e.g.
+        // "UT256_H_Male_V2G"). Non-null only for parts that use the shared body skin,
+        // so the skin selector can retarget them; face/hair/armor parts leave it null.
+        public string SkinTexName;
+
         // Loaded for its skeleton/matrices only (e.g. the H_Male/H_Female placeholder
         // box which carries the full 43-bone skeleton, incl. CP_Grasp_* sockets) but
         // never drawn.
         public bool Hidden;
+
+        // Cutout role: Body = export target; Accessory/Mount = occluders that carve
+        // away the covered parts of the body in the layered UO cutout export.
+        public MeshCutoutRole CutoutRole = MeshCutoutRole.Body;
+
+        // Optional per-mesh animation override. Mounts are posed with their OWN clip
+        // (synchronized frame-by-frame to the rider's clip) instead of the rider's
+        // animation, because the horse skeleton/tracks differ from the human one.
+        public GrannyAnimation AnimOverride;
+        public int[] AnimOverrideTrack;   // bone -> track index within AnimOverride
+        public float AnimOverrideTimeScale = 1f;  // mount time = rider time * this
+        public float AnimOverrideTimeBase = 0f;    // added to the scaled time
+
+        // World placement of a mount relative to the rider (applied to the mount's
+        // root bone after posing): offset in world units + uniform scale.
+        public Vector3 MountOffset = Vector3.Zero;
+        public float MountScale = 1f;
 
         // Per-part placement tweak for SKINNED accessories (armor/pants/bracers):
         // a uniform scale about the part's bind centroid plus a world offset,
@@ -251,6 +284,7 @@ namespace UoFiddler.Plugin.Granny3D
         // UI - left column (category tree + animation list)
         private TreeView tvModels;
         private Label lblModels;
+        private TextBox txtModelFilter;
         private ListBox lbAnimations;
         private Label lblAnimations;
         private ListBox lstLoaded;
@@ -278,6 +312,15 @@ namespace UoFiddler.Plugin.Granny3D
             public string Path;
             public override string ToString() => Display;
         }
+
+        // Item of the body-skin selector. Base = texture base name (null = keep the
+        // piece's embedded skin).
+        private class SkinItem
+        {
+            public string Display;
+            public string Base;
+            public override string ToString() => Display;
+        }
         // UI - bone attach
         private Label lblBone;
         private ComboBox cbBones;
@@ -295,9 +338,10 @@ namespace UoFiddler.Plugin.Granny3D
         private GroupBox grpChar;
         private GroupBox grpCamera;
         private Label lblCharInfo;
-        private ComboBox cbCharFace, cbCharHair, cbCharBeard, cbCharTorso;
+        private ComboBox cbCharFace, cbCharHair, cbCharBeard, cbCharTorso, cbCharSkin;
         private bool _suppressChar;
         private int _charGender;           // 0=none, 1=male, 2=female
+        private string _skinOverride;      // body-skin texture base name (e.g. "UT256_H_Male_V2c"); null = embedded default
         // state - animation list
         private TreeNodeInfo _currentCreature;
         private bool _suppressAnimSelect;
@@ -310,6 +354,16 @@ namespace UoFiddler.Plugin.Granny3D
         private Button btnPause;
         private Button btnStop;
         private Button btnExportVd;
+        // Cutout export (UO-style layered body) + optional mount.
+        private Button btnExportCutout;
+        private Button btnExportCutoutAcc;
+        private ComboBox cmbMount;
+        private NumericUpDown nudMountOffX, nudMountOffY, nudMountOffZ, nudMountScale;
+        // Currently loaded mount mesh (CutoutRole == Mount) and its chosen clip path.
+        private LoadedMesh _mountMesh;
+        private string _mountClipPath;
+        // Manual cutout role for the selected mesh (Body / Accessory / Mount).
+        private ComboBox cmbCutoutRole;
         private CheckBox chkLoop;
         private TrackBar trackSpeed;
         private Label lblSpeed;
@@ -334,6 +388,7 @@ namespace UoFiddler.Plugin.Granny3D
         private readonly List<LoadedMesh> _loadedMeshes = new List<LoadedMesh>();
         private readonly HashSet<string> _sceneExtras = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private GrannyAnimation _currentAnimation;
+        private string _currentAnimPath;
         private float _currentTime;
         private float _clothDt = 1f / 60f;
         private int _clothDbg;
@@ -462,7 +517,7 @@ namespace UoFiddler.Plugin.Granny3D
             // ---- Loaded meshes list + bone attach ----
             grpLoaded = new GroupBox
             {
-                Text = "Meshes affiches (double-clic = retirer)",
+                Text = "Meshes affiches (double-clic = retirer ; Ctrl/Shift = multi-sélection)",
                 Dock = DockStyle.Bottom,
                 Height = 210,
                 ForeColor = Color.Gainsboro,
@@ -472,6 +527,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Dock = DockStyle.Fill,
                 IntegralHeight = false,
+                SelectionMode = SelectionMode.MultiExtended,
                 BackColor = Color.FromArgb(30, 30, 30),
                 ForeColor = Color.Gainsboro,
                 BorderStyle = BorderStyle.FixedSingle
@@ -542,7 +598,18 @@ namespace UoFiddler.Plugin.Granny3D
             tvModels.DoubleClick += TvModels_DoubleClick;
             tvModels.NodeMouseClick += TvModels_NodeMouseClick;
 
+            // Search box for the LOD2 models tree (same idea as the Animations filter).
+            txtModelFilter = new TextBox
+            {
+                Dock = DockStyle.Top,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            txtModelFilter.TextChanged += (s, e) => ApplyModelsFilter();
+
             pnlLeft.Controls.Add(tvModels);
+            pnlLeft.Controls.Add(txtModelFilter);
             pnlLeft.Controls.Add(lblModels);
             pnlLeft.Controls.Add(grpAnimations);
             pnlLeft.Controls.Add(grpLoaded);
@@ -587,6 +654,59 @@ namespace UoFiddler.Plugin.Granny3D
             btnExportVd = new Button { Text = "Exporter en .vd (mapping)", Location = new Point(8, 192), Width = 228, Height = 28, BackColor = Color.FromArgb(84, 96, 78) };
             btnExportVd.Click += (s, e) => ExportVdDialog();
 
+            // Cutout export: only the visible body is kept; armor/mount carve it away
+            // (UO layered animation, body-only layer).
+            btnExportCutout = new Button { Text = "Exporter cutout (corps)", Location = new Point(8, 226), Width = 110, Height = 28, BackColor = Color.FromArgb(78, 84, 96) };
+            btnExportCutout.Click += (s, e) =>
+            {
+                foreach (var lm in _loadedMeshes)
+                    Log($"cutout role: {lm.CutoutRole}  {lm.Name}");
+                ExportVdDialog(BuildCutoutFilter());
+            };
+
+            // Inverse layer: export the accessory, carved by the body (+ mount).
+            btnExportCutoutAcc = new Button { Text = "cutout accessoire", Location = new Point(126, 226), Width = 110, Height = 28, BackColor = Color.FromArgb(96, 84, 78) };
+            btnExportCutoutAcc.Click += (s, e) =>
+            {
+                foreach (var lm in _loadedMeshes)
+                    Log($"cutout role: {lm.CutoutRole}  {lm.Name}");
+                ExportVdDialog(BuildAccessoryCutoutFilter());
+            };
+
+            var lblMount = new Label { Text = "Monture :", Location = new Point(8, 262), AutoSize = true, ForeColor = Color.Gainsboro };
+            cmbMount = new ComboBox { Location = new Point(8, 280), Width = 228, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            cmbMount.Items.Add("(aucune)");
+            try { foreach (var m in GatherMountModels()) cmbMount.Items.Add(Path.GetFileName(m)); } catch { }
+            cmbMount.SelectedIndex = 0;
+            cmbMount.SelectedIndexChanged += (s, e) =>
+            {
+                int i = cmbMount.SelectedIndex;
+                if (i <= 0) { RemoveMount(); return; }
+                var models = GatherMountModels();
+                int mi = i - 1;
+                if (mi < 0 || mi >= models.Count) return;
+                LoadMount(models[mi]);
+            };
+
+            var lblMountPos = new Label { Text = "Offset X/Y/Z + echelle :", Location = new Point(8, 306), AutoSize = true, ForeColor = Color.Gainsboro };
+            nudMountOffX = new NumericUpDown { Location = new Point(8, 326), Width = 54, Minimum = -500, Maximum = 500, DecimalPlaces = 2, Increment = 0.5m, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            nudMountOffY = new NumericUpDown { Location = new Point(66, 326), Width = 54, Minimum = -500, Maximum = 500, DecimalPlaces = 2, Increment = 0.5m, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            nudMountOffZ = new NumericUpDown { Location = new Point(124, 326), Width = 54, Minimum = -500, Maximum = 500, DecimalPlaces = 2, Increment = 0.5m, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            nudMountScale = new NumericUpDown { Location = new Point(182, 326), Width = 54, Minimum = 0.05m, Maximum = 10, DecimalPlaces = 2, Increment = 0.05m, Value = 1, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            EventHandler mountTweak = (s, e) =>
+            {
+                if (_mountMesh == null) return;
+                var off = new Vector3((float)nudMountOffX.Value, (float)nudMountOffY.Value, (float)nudMountOffZ.Value);
+                float sc = (float)nudMountScale.Value;
+                foreach (var lm in _loadedMeshes)
+                    if (lm.CutoutRole == MeshCutoutRole.Mount) { lm.MountOffset = off; lm.MountScale = sc; }
+                if (_glReady && _currentAnimation != null) { try { ApplyAnimationPose(_currentTime); } catch { } }
+            };
+            nudMountOffX.ValueChanged += mountTweak;
+            nudMountOffY.ValueChanged += mountTweak;
+            nudMountOffZ.ValueChanged += mountTweak;
+            nudMountScale.ValueChanged += mountTweak;
+
             chkLoop = new CheckBox { Text = "Loop", Location = new Point(8, 62), AutoSize = true, Checked = true, ForeColor = Color.Gainsboro };
             chkLoop.CheckedChanged += (s, e) => _looping = chkLoop.Checked;
 
@@ -601,7 +721,7 @@ namespace UoFiddler.Plugin.Granny3D
             lblTime = new Label { Text = "Time: 0.00s", Location = new Point(8, 160), AutoSize = true, ForeColor = Color.Gainsboro };
             lblDuration = new Label { Text = "/ 0.00s", Location = new Point(150, 160), AutoSize = true, ForeColor = Color.Gainsboro };
 
-            grpPlayback.Controls.AddRange(new Control[] { btnPlay, btnPause, btnStop, btnExportVd, chkLoop, lblSpeed, trackSpeed, trackTime, lblTime, lblDuration });
+            grpPlayback.Controls.AddRange(new Control[] { btnPlay, btnPause, btnStop, btnExportVd, btnExportCutout, btnExportCutoutAcc, lblMount, cmbMount, lblMountPos, nudMountOffX, nudMountOffY, nudMountOffZ, nudMountScale, chkLoop, lblSpeed, trackSpeed, trackTime, lblTime, lblDuration });
 
             var grpInfo = new GroupBox
             {
@@ -741,7 +861,15 @@ namespace UoFiddler.Plugin.Granny3D
             btnClothBake.Click += (s, e) => BakeCloth();
             grpEquip.Controls.Add(btnClothBake);
 
-            grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnSubdiv, nudBakeFps, nudLoopBlend, btnClothBake });
+            // Manual cutout role for the selected mesh (auto-classified on load, editable
+            // here). Body = export target; Accessory = occluder that carves the body.
+            grpEquip.Controls.Add(new Label { Text = "Rôle cutout du mesh :", Location = new Point(8, 462), Width = 150, ForeColor = Color.Gainsboro });
+            cmbCutoutRole = new ComboBox { Location = new Point(160, 459), Width = 170, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            cmbCutoutRole.Items.AddRange(new object[] { "Body (corps visible)", "Accessory (découpe le corps)" });
+            cmbCutoutRole.SelectedIndexChanged += CmbCutoutRole_SelectedIndexChanged;
+            grpEquip.Controls.Add(cmbCutoutRole);
+
+            grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnSubdiv, nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole });
 
             // ---- Multipart character menu (H_Male / H_Female parts) ----
             grpChar = new GroupBox
@@ -778,7 +906,10 @@ namespace UoFiddler.Plugin.Granny3D
             cbCharBeard = MakeSlotCombo(160);
             grpChar.Controls.Add(new Label { Text = "Torse", Location = new Point(8, 188), Width = 232, ForeColor = Color.Gainsboro });
             cbCharTorso = MakeSlotCombo(206);
-            grpChar.Controls.AddRange(new Control[] { lblCharInfo, cbCharFace, cbCharHair, cbCharBeard, cbCharTorso });
+            grpChar.Controls.Add(new Label { Text = "Peau (corps)", Location = new Point(8, 234), Width = 232, ForeColor = Color.Gainsboro });
+            cbCharSkin = MakeSlotCombo(252);
+            cbCharSkin.SelectedIndexChanged += CharSkin_Changed;
+            grpChar.Controls.AddRange(new Control[] { lblCharInfo, cbCharFace, cbCharHair, cbCharBeard, cbCharTorso, cbCharSkin });
 
             // ---- Camera / UO render options (docked right of the character menu) ----
             grpCamera = new GroupBox
@@ -917,31 +1048,110 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void LoadCategoryTree()
         {
-            tvModels.Nodes.Clear();
-
-            if (!Directory.Exists(BasePath))
-            {
-                _initialLoadPending = false;
-                return;
-            }
-
-            for (int i = 0; i < CategoryFolders.Length; i++)
-            {
-                string folder = Path.Combine(BasePath, CategoryFolders[i]);
-                if (!Directory.Exists(folder))
-                    continue;
-
-                var info = new TreeNodeInfo { IsFolder = true, Folder = folder, Display = CategoryDisplay[i] };
-                var node = new TreeNode(CategoryDisplay[i]) { Tag = info };
-                node.Nodes.Add(new TreeNode("..."));
-                tvModels.Nodes.Add(node);
-            }
+            RestoreModelsTree();
 
             // Defer auto-load until the OpenGL context is ready (first Paint).
             _initialLoadPending = tvModels.Nodes.Count > 0;
             BuildAnimCategories();
             if (_glReady)
                 StartInitialLoad();
+        }
+
+        // Rebuild the normal category tree (Humans / Monsters / ... / Equipment) with
+        // lazy "..." placeholders. Used at startup and when the model search is cleared.
+        private void RestoreModelsTree()
+        {
+            if (tvModels == null) return;
+            _suppressSelect = true;
+            tvModels.BeginUpdate();
+            try
+            {
+                tvModels.Nodes.Clear();
+                if (!Directory.Exists(BasePath)) return;
+
+                for (int i = 0; i < CategoryFolders.Length; i++)
+                {
+                    string folder = Path.Combine(BasePath, CategoryFolders[i]);
+                    if (!Directory.Exists(folder))
+                        continue;
+
+                    var info = new TreeNodeInfo { IsFolder = true, Folder = folder, Display = CategoryDisplay[i] };
+                    var node = new TreeNode(CategoryDisplay[i]) { Tag = info };
+                    node.Nodes.Add(new TreeNode("..."));
+                    tvModels.Nodes.Add(node);
+                }
+            }
+            finally
+            {
+                tvModels.EndUpdate();
+                _suppressSelect = false;
+            }
+        }
+
+        // Filter the LOD2 models tree by name. With an empty filter the normal
+        // category tree is restored; otherwise a flat "Résultats" list of matching
+        // creatures is shown (selecting one loads it exactly like the tree does).
+        private void ApplyModelsFilter()
+        {
+            if (tvModels == null) return;
+            string filter = txtModelFilter?.Text?.Trim() ?? string.Empty;
+            if (filter.Length == 0) { RestoreModelsTree(); return; }
+
+            _suppressSelect = true;
+            tvModels.BeginUpdate();
+            try
+            {
+                tvModels.Nodes.Clear();
+                var results = new SortedDictionary<string, TreeNodeInfo>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var folderName in CategoryFolders)
+                {
+                    string folder = Path.Combine(BasePath, folderName);
+                    if (!Directory.Exists(folder)) continue;
+                    try
+                    {
+                        foreach (var f in Directory.GetFiles(folder, "*.grn"))
+                        {
+                            string fileName = Path.GetFileNameWithoutExtension(f);
+                            if (fileName.IndexOf("lod", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                            string creature = DeriveCreature(fileName);
+                            if (creature.Length == 0) creature = fileName;
+                            if (creature.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 &&
+                                fileName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                            if (!results.TryGetValue(creature, out var info))
+                            {
+                                results[creature] = new TreeNodeInfo
+                                {
+                                    IsFolder = false,
+                                    Folder = folder,
+                                    CreatureKey = creature,
+                                    MeshPath = f,
+                                    Display = creature
+                                };
+                            }
+                            else if (info.MeshPath == null ||
+                                     (f.IndexOf("lod2", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                      info.MeshPath.IndexOf("lod2", StringComparison.OrdinalIgnoreCase) < 0))
+                            {
+                                info.MeshPath = f;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                var root = new TreeNode($"Résultats ({results.Count})");
+                foreach (var kv in results)
+                    root.Nodes.Add(new TreeNode(kv.Key) { Tag = kv.Value });
+                tvModels.Nodes.Add(root);
+                root.Expand();
+            }
+            finally
+            {
+                tvModels.EndUpdate();
+                _suppressSelect = false;
+            }
         }
 
         private void TvModels_BeforeExpand(object sender, TreeViewCancelEventArgs e)
@@ -1297,8 +1507,9 @@ namespace UoFiddler.Plugin.Granny3D
         // Append every mesh of a .grn file to the current scene (used to layer
         // equipment/extra pieces onto an already-loaded character). The base
         // model, camera and reference bounds are left untouched so the added
-        // meshes stay aligned with the body.
-        private void AddToScene(string path)
+        // meshes stay aligned with the body. role controls the cutout layering
+        // (equipment added here defaults to Accessory = an occluder).
+        private void AddToScene(string path, MeshCutoutRole role = MeshCutoutRole.Accessory)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
             if (_sceneExtras.Contains(path)) { Log($"AddToScene: {Path.GetFileName(path)} already in scene"); return; }
@@ -1329,7 +1540,8 @@ namespace UoFiddler.Plugin.Granny3D
                     Bones = new List<GrannyBone>(parser.Bones),
                     BaseVertices = mesh.Vertices.ToArray(),
                     Indices = mesh.Indices.ToArray(),
-                    Skin = mesh.Skin.Count > 0 ? mesh.Skin.ToArray() : null
+                    Skin = mesh.Skin.Count > 0 ? mesh.Skin.ToArray() : null,
+                    CutoutRole = role
                 };
 
                 BuildCornerData(lm);
@@ -1400,11 +1612,12 @@ namespace UoFiddler.Plugin.Granny3D
         private void ResetCharMenu()
         {
             _charGender = 0;
+            _skinOverride = null;
             if (cbCharFace == null) return;
             _suppressChar = true;
             try
             {
-                foreach (var cb in new[] { cbCharFace, cbCharHair, cbCharBeard, cbCharTorso })
+                foreach (var cb in new[] { cbCharFace, cbCharHair, cbCharBeard, cbCharTorso, cbCharSkin })
                 {
                     cb.Items.Clear();
                     cb.Enabled = false;
@@ -1473,7 +1686,9 @@ namespace UoFiddler.Plugin.Granny3D
                 };
                 BuildCornerData(lm);
                 SetupMeshVBO(lm);
-                lm.TextureId = TryLoadTexture(path, parser.TextureName);
+                lm.SkinTexName = IsBodySkinTexture(parser.TextureName) ? parser.TextureName : null;
+                string texName = (lm.SkinTexName != null && !string.IsNullOrEmpty(_skinOverride)) ? _skinOverride : parser.TextureName;
+                lm.TextureId = TryLoadTexture(path, texName);
                 lm.HasTexture = lm.TextureId > 0;
                 _loadedMeshes.Add(lm);
                 added++;
@@ -1533,13 +1748,13 @@ namespace UoFiddler.Plugin.Granny3D
             _suppressChar = true;
             try
             {
-                foreach (var cb in new[] { cbCharFace, cbCharHair, cbCharBeard, cbCharTorso })
+                foreach (var cb in new[] { cbCharFace, cbCharHair, cbCharBeard, cbCharTorso, cbCharSkin })
                     cb.Items.Clear();
 
                 string folder = Path.Combine(BasePath, "Others");
                 if (_charGender == 0 || !Directory.Exists(folder))
                 {
-                    foreach (var cb in new[] { cbCharFace, cbCharHair, cbCharBeard, cbCharTorso })
+                    foreach (var cb in new[] { cbCharFace, cbCharHair, cbCharBeard, cbCharTorso, cbCharSkin })
                         cb.Enabled = false;
                     return;
                 }
@@ -1586,6 +1801,7 @@ namespace UoFiddler.Plugin.Granny3D
                 PreselectSlot(cbCharHair, "hair");
                 PreselectSlot(cbCharBeard, "beard");
                 PreselectSlot(cbCharTorso, "torso");
+                PopulateSkinCombo(male);
             }
             finally { _suppressChar = false; }
             UpdateCharInfo();
@@ -1645,6 +1861,92 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (var lm in _loadedMeshes)
                 if (!string.IsNullOrEmpty(lm.CharSlot)) parts++;
             lblCharInfo.Text = (_charGender == 2 ? "Femme" : "Homme") + $" — {parts} parties";
+        }
+
+        // True when a part's embedded texture is a shared human body skin
+        // (UT256_H_Male_V2 / _V2c / _V2G… but NOT _Faces_V2, hair, armor…).
+        private static bool IsBodySkinTexture(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            return System.Text.RegularExpressions.Regex.IsMatch(
+                name.Trim(), @"^UT?256_H_(Male|Female)_V2[A-Za-z]?$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        // List the body-skin textures available in Maps for this gender (V2 family +
+        // the Savage skins), with a "default" entry that keeps each part's embedded skin.
+        private void PopulateSkinCombo(bool male)
+        {
+            if (cbCharSkin == null) return;
+            cbCharSkin.Items.Clear();
+            cbCharSkin.Items.Add(new SkinItem { Display = "Défaut (pièce)", Base = null });
+
+            string token = male ? "Male" : "Female";
+            string tokenRx = @"(?<![A-Za-z])" + token + @"(?![A-Za-z])";
+            var bases = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (Directory.Exists(MapsPath))
+            {
+                try
+                {
+                    foreach (var f in Directory.GetFiles(MapsPath, "*.tga"))
+                    {
+                        string b = Path.GetFileNameWithoutExtension(f);
+                        if (b.EndsWith("_m", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (b.IndexOf("_face", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                        if (!System.Text.RegularExpressions.Regex.IsMatch(b, tokenRx, System.Text.RegularExpressions.RegexOptions.IgnoreCase)) continue;
+                        bool isBody = System.Text.RegularExpressions.Regex.IsMatch(b, @"^UT?256_H_(Male|Female)_V2[A-Za-z]?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        bool isSavage = b.IndexOf("savage", StringComparison.OrdinalIgnoreCase) >= 0;
+                        if (!isBody && !isSavage) continue;
+                        if (seen.Add(b)) bases.Add(b);
+                    }
+                }
+                catch { }
+                bases.Sort(StringComparer.OrdinalIgnoreCase);
+            }
+            foreach (var b in bases) cbCharSkin.Items.Add(new SkinItem { Display = BeautifySkin(b), Base = b });
+            cbCharSkin.Enabled = cbCharSkin.Items.Count > 0;
+            cbCharSkin.SelectedIndex = 0;
+        }
+
+        private static string BeautifySkin(string baseName)
+        {
+            string n = baseName;
+            int i = n.IndexOf("_H_", StringComparison.OrdinalIgnoreCase);
+            if (i >= 0) n = n.Substring(i + 3);            // "Male_V2c" / "Savage_Male"
+            if (n.StartsWith("Male_", StringComparison.OrdinalIgnoreCase)) n = n.Substring(5);
+            else if (n.StartsWith("Female_", StringComparison.OrdinalIgnoreCase)) n = n.Substring(7);
+            return n.Replace('_', ' ');
+        }
+
+        private void CharSkin_Changed(object sender, EventArgs e)
+        {
+            if (_suppressChar || cbCharSkin == null) return;
+            var item = cbCharSkin.SelectedItem as SkinItem;
+            ApplySkin(item != null ? item.Base : null);
+        }
+
+        // Retarget every body-skin part to the chosen texture (null = embedded default).
+        private void ApplySkin(string skinBase)
+        {
+            if (string.IsNullOrEmpty(skinBase) && _skinOverride == null) return;
+            _skinOverride = string.IsNullOrEmpty(skinBase) ? null : skinBase;
+            if (!_glReady || glControl == null || !glControl.IsHandleCreated) return;
+            glControl.MakeCurrent();
+            int changed = 0;
+            foreach (var lm in _loadedMeshes)
+            {
+                if (string.IsNullOrEmpty(lm.SkinTexName)) continue;
+                string name = _skinOverride ?? lm.SkinTexName;
+                int tex = TryLoadTexture(lm.SourcePath, name);
+                if (tex <= 0) continue;
+                if (lm.TextureId > 0) GL.DeleteTexture(lm.TextureId);
+                lm.TextureId = tex;
+                lm.HasTexture = true;
+                changed++;
+            }
+            Log($"Skin -> {_skinOverride ?? "(défaut)"} : {changed} parties retargétées");
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
 
         // ==================== ANIMATION TREE ====================
@@ -2334,14 +2636,36 @@ namespace UoFiddler.Plugin.Granny3D
             LoadEquipControlsFromMesh();
         }
 
-        // Push the equipment-controller values onto the selected mesh and re-pose.
+        // Indices of the meshes currently selected in the "Meshes affiches" list
+        // (supports Ctrl/Shift multi-selection for batch placement tweaks).
+        private List<int> GetSelectedMeshIndices()
+        {
+            var list = new List<int>();
+            if (lstLoaded == null) return list;
+            foreach (int i in lstLoaded.SelectedIndices)
+                if (i >= 0 && i < _loadedMeshes.Count) list.Add(i);
+            return list;
+        }
+
+        // Push the equipment-controller values onto every selected mesh and re-pose.
         private void ApplyEquipControls()
         {
             if (_suppressEquip) return;
-            int i = lstLoaded?.SelectedIndex ?? -1;
-            if (i < 0 || i >= _loadedMeshes.Count) return;
-            var lm = _loadedMeshes[i];
+            var idxs = GetSelectedMeshIndices();
+            if (idxs.Count == 0) return;
 
+            foreach (var i in idxs) ApplyEquipToMesh(_loadedMeshes[i]);
+
+            // Re-pose for any mesh (skinned parts are driven by their own skeleton;
+            // rigid weapons by their attach bone). The offset/scale tweak applies to
+            // both paths. ApplyAnimationPose also handles the no-animation case.
+            ApplyAnimationPose(_currentTime);
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+        }
+
+        // Copy the placement widgets onto a single mesh's stored tweak.
+        private void ApplyEquipToMesh(LoadedMesh lm)
+        {
             lm.MirrorX = cbMirrorX.Checked;
             lm.MirrorY = cbMirrorY.Checked;
             lm.MirrorZ = cbMirrorZ.Checked;
@@ -2359,12 +2683,6 @@ namespace UoFiddler.Plugin.Granny3D
                 if (lm.ClothBake != null && Math.Abs(g - lm.ClothBakeGravity) > 1e-4f) ClearClothBake(lm);
                 lm.ClothGravity = g;
             }
-
-            // Re-pose for any mesh (skinned parts are driven by their own skeleton;
-            // rigid weapons by their attach bone). The offset/scale tweak applies to
-            // both paths. ApplyAnimationPose also handles the no-animation case.
-            ApplyAnimationPose(_currentTime);
-            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
 
         private void ResetEquipControls()
@@ -2396,6 +2714,16 @@ namespace UoFiddler.Plugin.Granny3D
                 bool ok = i >= 0 && i < _loadedMeshes.Count;
                 var lm = ok ? _loadedMeshes[i] : null;
 
+                // Multiple meshes selected: keep the current widget values (do not
+                // clobber them from a single mesh) and show a batch target label.
+                int nSel = lstLoaded?.SelectedIndices.Count ?? 0;
+                if (nSel > 1)
+                {
+                    if (lblEquipTarget != null)
+                        lblEquipTarget.Text = $"Cible : {nSel} meshes sélectionnés (édition par lot)";
+                    return;
+                }
+
                 if (lblEquipTarget != null)
                     lblEquipTarget.Text = ok
                         ? $"Cible : {lm.Name}" + (string.IsNullOrEmpty(lm.AttachBoneName) ? "  (non attaché)" : $"  → {lm.AttachBoneName}")
@@ -2417,8 +2745,17 @@ namespace UoFiddler.Plugin.Granny3D
                 if (nudThickness != null) SetNud(nudThickness, ok ? lm.Thickness : 0f);
                 if (chkCloth != null) chkCloth.Checked = ok && lm.IsCloth;
                 if (nudClothGrav != null) SetNud(nudClothGrav, ok ? lm.ClothGravity : 9.8f);
+                if (cmbCutoutRole != null) cmbCutoutRole.SelectedIndex = ok ? (int)lm.CutoutRole : 0;
             }
             finally { _suppressEquip = false; }
+        }
+
+        private void CmbCutoutRole_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (_suppressEquip) return;
+            var role = (MeshCutoutRole)Math.Max(0, cmbCutoutRole.SelectedIndex);
+            foreach (var i in GetSelectedMeshIndices())
+                _loadedMeshes[i].CutoutRole = role;
         }
 
         private static void SetNud(NumericUpDown n, float v)
@@ -2906,6 +3243,8 @@ namespace UoFiddler.Plugin.Granny3D
             if (!_animParser.Load(path)) return;
 
             _currentAnimation = _animParser.Animation;
+            _currentAnimPath = path;
+            RefreshMountAnimation();
             foreach (var lm in _loadedMeshes) ClearClothBake(lm);   // stale loop
             try {
                 if (_currentAnimation != null) {
@@ -3147,13 +3486,22 @@ namespace UoFiddler.Plugin.Granny3D
                 if (lm.WorldMatrices == null || lm.WorldMatrices.Length != boneCount) lm.WorldMatrices = new Matrix4[boneCount];
                 if (lm.SkinMatrices == null || lm.SkinMatrices.Length != boneCount) lm.SkinMatrices = new Matrix4[boneCount];
 
+                // A mesh with an animation override is posed on its OWN clip, sampled at
+                // a time remapped from the rider's clock (so a longer/shorter mount clip
+                // still lines up frame-for-frame with the rider's cycle).
+                float meshT = t;
+                if (lm.AnimOverride != null)
+                    meshT = t * lm.AnimOverrideTimeScale + lm.AnimOverrideTimeBase;
+
                 for (int i = 0; i < boneCount; i++)
                 {
-                    int trackIdx = (lm.BoneToAnimTrack != null && i < lm.BoneToAnimTrack.Length) ? lm.BoneToAnimTrack[i] : -1;
-                    if (_currentAnimation != null && trackIdx >= 0 && trackIdx < _currentAnimation.Tracks.Count)
+                    GrannyAnimation anim = lm.AnimOverride ?? _currentAnimation;
+                    int[] trackMap = lm.AnimOverride != null ? lm.AnimOverrideTrack : lm.BoneToAnimTrack;
+                    int trackIdx = (trackMap != null && i < trackMap.Length) ? trackMap[i] : -1;
+                    if (anim != null && trackIdx >= 0 && trackIdx < anim.Tracks.Count)
                     {
-                        var tr = _currentAnimation.Tracks[trackIdx];
-                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(t)) * Matrix4.CreateTranslation(tr.EvaluatePos(t));
+                        var tr = anim.Tracks[trackIdx];
+                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(meshT)) * Matrix4.CreateTranslation(tr.EvaluatePos(meshT));
                     }
                     else
                     {
@@ -3163,6 +3511,20 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 ComputeWorldMatrices(lm);
+
+                // Mount placement: scale about the root then translate, so the whole
+                // mount is resized/repositioned under the rider in world space.
+                if (lm.CutoutRole == MeshCutoutRole.Mount && (lm.MountScale != 1f || lm.MountOffset != Vector3.Zero))
+                {
+                    for (int i = 0; i < boneCount; i++)
+                    {
+                        int p = lm.Bones[i].ParentId;
+                        bool isRoot = p < 0 || p >= boneCount || p == i;
+                        if (!isRoot) continue;
+                        lm.LocalMatrices[i] = Matrix4.CreateScale(lm.MountScale) * Matrix4.CreateTranslation(lm.MountOffset) * lm.LocalMatrices[i];
+                    }
+                    ComputeWorldMatrices(lm);
+                }
 
                 for (int i = 0; i < boneCount; i++)
                     lm.SkinMatrices[i] = lm.Bones[i].InverseBindMatrix * lm.WorldMatrices[i];
@@ -4193,7 +4555,10 @@ namespace UoFiddler.Plugin.Granny3D
             // (0, 0, zMin). Its projection does not depend on the view direction,
             // so the model no longer bobs up/down when rotating.
             float anchorZ = _uoFeetOnLine ? _normMin.Z : (_normMin.Z + _normMax.Z) * 0.5f;
-            Vector3 anchor = new Vector3(0f, 0f, anchorZ);
+            // Anchor at the model's true footprint origin (raw world 0,0,0), not the
+            // geometric center: for quadrupeds (horse) _refCenter.Y != 0, so (0,0)
+            // would place the sprite a few px too low. Normalized origin = -refCenter*scale.
+            Vector3 anchor = new Vector3(-_refCenter.X * _refScale, -_refCenter.Y * _refScale, anchorZ);
             Vector3 va = Vector3.TransformPosition(anchor, modelToView);
 
             float shiftX = _uoOffX;
@@ -4396,7 +4761,8 @@ namespace UoFiddler.Plugin.Granny3D
             return Matrix4.LookAt(eye, target, Vector3.UnitZ);
         }
 
-        private void DrawMeshSet(Matrix4 mvp, bool unlit, float alphaCut, float opacity = 1f, float brightness = 1f)
+        private void DrawMeshSet(Matrix4 mvp, bool unlit, float alphaCut, float opacity = 1f, float brightness = 1f,
+            Func<LoadedMesh, bool> filter = null)
         {
             GL.UseProgram(_shaderProg);
             GL.UniformMatrix4(_uMvp, false, ref mvp);
@@ -4411,6 +4777,7 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (var lm in _loadedMeshes)
             {
                 if (lm.Vao == 0 || lm.Hidden) continue;
+                if (filter != null && !filter(lm)) continue;
 
                 bool tex = lm.HasTexture && lm.TextureId > 0;
                 GL.BindTexture(TextureTarget.Texture2D, tex ? lm.TextureId : 0);
@@ -4457,7 +4824,245 @@ namespace UoFiddler.Plugin.Granny3D
             return list;
         }
 
-        private void ExportVdDialog()
+        // ---- Cutout export helpers ----
+        // A cutout spec = (occluder, target, bounds):
+        //  - target  : meshes rendered into the sprite.
+        //  - occluder: meshes drawn depth-only first, carving the target.
+        //  - bounds  : meshes whose projected bounds frame the canvas (the target role).
+        // NOTE: the mount is NOT part of the base occluder here; BakeAnimFrames adds it
+        // only for the mounted actions (23-29) via allowMount.
+        private (Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)
+            BuildCutoutFilter()
+        {
+            Func<LoadedMesh, bool> target = lm => lm.CutoutRole == MeshCutoutRole.Body;
+            Func<LoadedMesh, bool> occluder = lm => lm.CutoutRole == MeshCutoutRole.Accessory;
+            return (occluder, target, target);
+        }
+
+        // Inverse layer: export the ACCESSORY, carved by the body (and the mount on mounted
+        // actions). Lets the user produce the clothing/armor layer with the body removed.
+        private (Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)
+            BuildAccessoryCutoutFilter()
+        {
+            Func<LoadedMesh, bool> target = lm => lm.CutoutRole == MeshCutoutRole.Accessory;
+            Func<LoadedMesh, bool> occluder = lm => lm.CutoutRole == MeshCutoutRole.Body;
+            return (occluder, target, target);
+        }
+
+        // Cutout of only the mount's back (the rider is the target). Used so the
+        // Mount base models (LOD2) available under the Animals folder. Each entry is
+        // the full path to the mount's base mesh; its own clips share the prefix.
+        private List<string> GatherMountModels()
+        {
+            var list = new List<string>();
+            string folder = Path.Combine(BasePath, "Animals");
+            if (!Directory.Exists(folder)) return list;
+            foreach (var f in Directory.GetFiles(folder, "*.grn", SearchOption.AllDirectories))
+            {
+                string n = Path.GetFileName(f);
+                // Base mount meshes only (Lod2); skip the animation clips.
+                if (n.IndexOf("Lod2", StringComparison.OrdinalIgnoreCase) < 0 &&
+                    n.IndexOf("LOD2", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                bool isMount = n.StartsWith("Equines_", StringComparison.OrdinalIgnoreCase) ||
+                               n.StartsWith("Ostards_", StringComparison.OrdinalIgnoreCase) ||
+                               n.StartsWith("Skeletal_Mount", StringComparison.OrdinalIgnoreCase) ||
+                               n.StartsWith("MondainSteed", StringComparison.OrdinalIgnoreCase) ||
+                               n.StartsWith("Kirin_", StringComparison.OrdinalIgnoreCase) ||
+                               n.StartsWith("equines_unicorn", StringComparison.OrdinalIgnoreCase);
+                if (isMount) list.Add(f);
+            }
+            list.Sort(StringComparer.OrdinalIgnoreCase);
+            return list;
+        }
+
+        // Mount clips (walk/run/idle/...) under the Animals folder matching a prefix.
+        private List<string> GatherMountClips(string mountBasePath)
+        {
+            var list = new List<string>();
+            string dir = Path.GetDirectoryName(mountBasePath);
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return list;
+            // Equines_Horse_Dappled_Brown_Lod2 -> Equines_Horse_Dappled_Brown_
+            string file = Path.GetFileName(mountBasePath);
+            string prefix = file;
+            int li = file.LastIndexOf("_", StringComparison.OrdinalIgnoreCase);
+            if (li > 0) prefix = file.Substring(0, li + 1);
+            foreach (var f in Directory.GetFiles(dir, "*.grn", SearchOption.TopDirectoryOnly))
+            {
+                string n = Path.GetFileName(f);
+                if (ReferenceEquals(n, null)) continue;
+                if (n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                    n.IndexOf("Lod", StringComparison.OrdinalIgnoreCase) < 0)
+                    list.Add(f);
+            }
+            list.Sort(StringComparer.OrdinalIgnoreCase);
+            return list;
+        }
+
+        // VD action index -> mount clip keyword (human / equipment target). Only the
+        // mounted actions carry a mount; every other action exports without it.
+        //   23 Horse_Walk_01  -> walk      24 Horse_Run_01   -> run
+        //   25 Horse_Idle_01  -> idle      26 Horse_Attack1H -> idle
+        //   27 Horse_AttackBow-> fidget    28 Horse_AttackXB -> idle
+        //   29 Horse_Attack2H -> fidget
+        private static string MountClipKeywordForAction(int action)
+        {
+            switch (action)
+            {
+                case 23: return "walk";
+                case 24: return "run";
+                case 25: return "idle";
+                case 26: return "idle";
+                case 27: return "fidget";
+                case 28: return "idle";
+                case 29: return "fidget";
+                default: return null;
+            }
+        }
+
+        // Find the mount clip whose name contains the given keyword (e.g. "fidget").
+        private string FindMountClip(string keyword)
+        {
+            if (_mountMesh == null) return null;
+            var clips = GatherMountClips(_mountMesh.SourcePath);
+            if (clips.Count == 0) return null;
+            string kl = (keyword ?? "").ToLowerInvariant();
+            foreach (var c in clips)
+                if (Path.GetFileNameWithoutExtension(c).ToLowerInvariant().Contains(kl)) return c;
+            return null;
+        }
+
+        // Pick the mount clip whose action keyword matches the rider clip.
+        private string SelectMountClip(string riderClipPath)
+        {
+            var clips = GatherMountClips(_mountMesh.SourcePath);
+            if (clips.Count == 0) return null;
+            string rl = Path.GetFileNameWithoutExtension(riderClipPath ?? "").ToLowerInvariant();
+            string[] kw = { "walk", "run", "idle", "stand", "attack", "fidget", "eat", "die", "gethit", "get_hit" };
+            string key = null;
+            foreach (var k in kw) if (rl.Contains(k)) { key = k; break; }
+            if (key != null)
+                foreach (var c in clips)
+                    if (Path.GetFileNameWithoutExtension(c).ToLowerInvariant().Contains(key)) return c;
+            return clips[0];
+        }
+
+        // In the interactive preview the mount must play its OWN clip (matching the
+        // current rider action) instead of being dragged by the rider's skeleton.
+        private void RefreshMountAnimation()
+        {
+            if (_mountMesh == null) return;
+            if (_currentAnimation == null || string.IsNullOrEmpty(_currentAnimPath)) return;
+            EnsureMountAnimation(_currentAnimPath, _currentAnimation.Duration);
+        }
+
+        // Bind the mount's own clip (matching the rider action) into AnimOverride so the
+        // horse animates in sync with the rider. Scale keeps both cycles aligned.
+        private void EnsureMountAnimation(string riderClipPath, float riderDur, string keyword = null)
+        {
+            if (_mountMesh == null) return;
+            string clip = keyword != null ? FindMountClip(keyword) : SelectMountClip(riderClipPath);
+            if (string.IsNullOrEmpty(clip)) return;
+            if (_mountClipPath != clip || _mountMesh.AnimOverride == null)
+            {
+                var mp = new GrannyFormatParser();
+                if (!mp.Load(clip) || mp.Animation == null) return;
+                _mountMesh.AnimOverride = mp.Animation;
+                if (_mountMesh.AnimOverrideTrack == null || _mountMesh.AnimOverrideTrack.Length != _mountMesh.Bones.Count)
+                    _mountMesh.AnimOverrideTrack = new int[_mountMesh.Bones.Count];
+                int matched = BindMeshToAnimationTrack(_mountMesh, mp.Animation, _mountMesh.AnimOverrideTrack);
+                _mountClipPath = clip;
+                Log($"Mount clip: {Path.GetFileName(clip)} matched={matched}/{_mountMesh.Bones.Count} dur={mp.Animation.Duration:F2}");
+            }
+            float mountDur = _mountMesh.AnimOverride.Duration;
+            _mountMesh.AnimOverrideTimeScale = (mountDur > 0.0001f && riderDur > 0.0001f) ? (mountDur / riderDur) : 1f;
+            _mountMesh.AnimOverrideTimeBase = 0f;
+        }
+
+        // Like BindMeshToAnimation but writes the mapping into a caller array (used for
+        // the mount's AnimOverrideTrack, leaving the rider's BoneToAnimTrack intact).
+        private static int BindMeshToAnimationTrack(LoadedMesh lm, GrannyAnimation anim, int[] target)
+        {
+            int boneCount = lm.Bones.Count;
+            for (int i = 0; i < target.Length && i < boneCount; i++) target[i] = -1;
+            var byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < boneCount; i++)
+                if (!string.IsNullOrEmpty(lm.Bones[i].Name)) byName[lm.Bones[i].Name] = i;
+            int matched = 0;
+            for (int ti = 0; ti < anim.Tracks.Count; ti++)
+            {
+                var tr = anim.Tracks[ti];
+                if (!string.IsNullOrEmpty(tr.Name) && byName.TryGetValue(tr.Name, out int bi))
+                {
+                    if (bi < target.Length) { target[bi] = ti; matched++; }
+                }
+            }
+            return matched;
+        }
+
+        // Load a mount .grn into the scene as an occluder mesh with CutoutRole=Mount.
+        private LoadedMesh LoadMount(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+            if (!_glReady || glControl == null || !glControl.IsHandleCreated)
+            {
+                Log("LoadMount aborted: GL not ready");
+                return null;
+            }
+            glControl.MakeCurrent();
+            var parser = new GrannyFormatParser();
+            if (!parser.Load(path)) { Log($"LoadMount parse failed: {path}"); return null; }
+
+            // Drop any previously loaded mount meshes.
+            RemoveMount();
+
+            LoadedMesh first = null;
+            foreach (var mesh in parser.Meshes)
+            {
+                if (mesh.Vertices.Count == 0 || mesh.Indices.Count == 0) continue;
+                var lm = new LoadedMesh
+                {
+                    Name = $"[Mount] {Path.GetFileName(path)}",
+                    SourcePath = path,
+                    SourceMesh = mesh,
+                    Bones = new List<GrannyBone>(parser.Bones),
+                    BaseVertices = mesh.Vertices.ToArray(),
+                    Indices = mesh.Indices.ToArray(),
+                    Skin = mesh.Skin.Count > 0 ? mesh.Skin.ToArray() : null,
+                    CutoutRole = MeshCutoutRole.Mount,
+                    MountOffset = new Vector3((float)nudMountOffX.Value, (float)nudMountOffY.Value, (float)nudMountOffZ.Value),
+                    MountScale = (float)nudMountScale.Value
+                };
+                BuildCornerData(lm);
+                SetupMeshVBO(lm);
+                lm.TextureId = TryLoadTexture(path, parser.TextureName);
+                lm.HasTexture = lm.TextureId > 0;
+                _loadedMeshes.Add(lm);
+                if (first == null) first = lm;
+            }
+            _mountMesh = first;
+            _mountClipPath = null;
+            Log($"LoadMount OK: {Path.GetFileName(path)} role=Mount");
+            RefreshLoadedList();
+            PopulateBoneCombo();
+            if (_currentAnimation != null) { EnsureAnimationBindings(_currentAnimation); }
+            RefreshMountAnimation();
+            if (_currentAnimation != null) ApplyAnimationPose(_currentTime);
+            return first;
+        }
+
+        // Remove all Mount-role meshes from the scene.
+        private void RemoveMount()
+        {
+            for (int i = _loadedMeshes.Count - 1; i >= 0; i--)
+            {
+                if (_loadedMeshes[i].CutoutRole == MeshCutoutRole.Mount)
+                    _loadedMeshes.RemoveAt(i);
+            }
+            _mountMesh = null;
+            _mountClipPath = null;
+        }
+
+        private void ExportVdDialog((Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout = null)
         {
             if (_loadedMeshes.Count == 0) { Log("Export .vd : aucun modele charge."); return; }
             if (!_glReady || glControl == null || !glControl.IsHandleCreated) return;
@@ -4472,7 +5077,7 @@ namespace UoFiddler.Plugin.Granny3D
                 if (target == null) return;
 
                 var mapping = form.GetMapping();     // action -> source path or null
-                int fps = form.Fps, size = form.FrameSize;
+                int fps = form.Fps, size = form.FrameSize, offsetY = form.OffsetY;
 
                 int mapped = 0;
                 for (int i = 0; i < mapping.Length; i++) if (mapping[i] != null) mapped++;
@@ -4489,11 +5094,14 @@ namespace UoFiddler.Plugin.Granny3D
                         string src = (a < mapping.Length) ? mapping[a] : null;
                         if (string.IsNullOrEmpty(src)) continue;
 
-                        if (!cache.TryGetValue(src, out var blocks))
+                        // Mount clip is action-specific, so cache per (source, mount keyword).
+                        string kw = MountClipKeywordForAction(a);
+                        string cacheKey = (kw != null) ? src + "|" + kw : src;
+                        if (!cache.TryGetValue(cacheKey, out var blocks))
                         {
-                            blocks = BakeAnimFrames(src, size, fps);
+                            blocks = BakeAnimFrames(src, size, fps, cutout, kw, offsetY);
                             if (blocks == null) continue;
-                            cache[src] = blocks;
+                            cache[cacheKey] = blocks;
                         }
 
                         for (int d = 0; d < VdExport.DirCount; d++)
@@ -4525,8 +5133,12 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         // Bake one source clip into 5 directional VdAnimBlocks (cached per source path
-        // so several target actions sharing a clip are rendered only once).
-        private VdAnimBlock[] BakeAnimFrames(string animPath, int size, int fps)
+        // so several target actions sharing a clip are rendered only once). When cutout
+        // is non-null the render uses depth occlusion (body-only UO layering) instead of
+        // the plain full-model render.
+        private VdAnimBlock[] BakeAnimFrames(string animPath, int size, int fps,
+            (Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout = null,
+            string mountKeyword = null, int offsetY = 0)
         {
             var savedAnim = _currentAnimation;
             float savedTime = _currentTime;
@@ -4548,6 +5160,27 @@ namespace UoFiddler.Plugin.Granny3D
                 int n = Math.Max(1, (int)Math.Round(dur * fps));
                 if (n > 64) n = 64;
 
+                // A selected mount is an occluder only on the mounted actions (23-29),
+                // each using its own clip (walk/run/idle/fidget). Other actions export
+                // with no mount at all.
+                bool allowMount = cutout.HasValue && _mountMesh != null && !string.IsNullOrEmpty(mountKeyword);
+                if (allowMount)
+                {
+                    EnsureMountAnimation(animPath, dur, mountKeyword);
+                    glControl.MakeCurrent();
+                }
+
+                // Effective occluder: the caller's filter, plus the mount whenever one is
+                // loaded (the mount always carves the rider).
+                (Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds) cut = default;
+                if (cutout.HasValue)
+                {
+                    var baseOccluder = cutout.Value.occluder;
+                    Func<LoadedMesh, bool> occ = lm =>
+                        baseOccluder(lm) || (allowMount && lm.CutoutRole == MeshCutoutRole.Mount);
+                    cut = (occ, cutout.Value.target, cutout.Value.bounds);
+                }
+
                 const int ss = 4;                    // supersample factor (anti-aliasing)
                 const int pad = 2;                  // margin (final px) so nothing clips
 
@@ -4556,14 +5189,28 @@ namespace UoFiddler.Plugin.Granny3D
                 // reference) instead of zooming in to fill the canvas. "size" > 0 is an
                 // explicit target character height in px; 0 = follow the preview.
                 float frameSpan = ComputeFrameSpan();
-                float totalZoom = Math.Max(0.01f, _uoZoom * _uoGlobalZoom);
+                // The export scale follows the UO-calibrated "Zoom" only. The global
+                // zoom (%) is a pure on-screen magnifier (model + reference overlay):
+                // inheriting it made the export balloon by that factor (e.g. 300% -> 3x).
+                float totalZoom = Math.Max(0.01f, _uoZoom);
                 float previewViewH = _uoFeetOnLine
                     ? frameSpan * 2f * 1.08f / totalZoom
                     : frameSpan * 1.15f / totalZoom;
                 int previewH = Math.Max(1, glControl != null ? glControl.Height : 600);
                 float previewPpu = Math.Max(1e-6f, previewH / previewViewH);
 
+                Log($"  bake scale: zoom={_uoZoom:F3} totalZoom={totalZoom:F3} frameSpan={frameSpan:F3} ppu={previewPpu:F3} refScale={_refScale:F4} ppuRaw={(previewPpu / Math.Max(1e-6f, _refScale)):F3} refCenter=({_refCenter.X:F3},{_refCenter.Y:F3},{_refCenter.Z:F3}) rawMinZ={(_refCenter.Z + _normMin.Z / Math.Max(1e-6f, _refScale)):F3} rawMaxZ={(_refCenter.Z + _normMax.Z / Math.Max(1e-6f, _refScale)):F3} feetOnLine={_uoFeetOnLine} meshes={_loadedMeshes.Count}");
+                foreach (var lmx in _loadedMeshes)
+                    Log($"  bake scene mesh '{Path.GetFileName(lmx.SourcePath)}' role={lmx.CutoutRole} hidden={lmx.Hidden}");
+
                 Matrix4 vscale = Matrix4.CreateScale(1f, 1f, _uoVertScale);
+
+                // The cutout frame is sized to the exported layer only (accessories/mount
+                // are occluders, not part of the sprite) so the layer keeps the preview
+                // scale and the canvas stays tight. UO layers align via the frame Center.
+                Func<LoadedMesh, bool> boundsFilter = cutout.HasValue
+                    ? cut.bounds
+                    : (Func<LoadedMesh, bool>)(lm => lm.CutoutRole != MeshCutoutRole.Mount);
 
                 var blocks = new VdAnimBlock[VdExport.DirCount];
                 for (int d = 0; d < VdExport.DirCount; d++)
@@ -4578,7 +5225,7 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         PoseSkeletons(dur * f / n);
                         RefreshVertexBuffers(false);
-                        AccumulateBounds(modelToView, ref minX, ref maxX, ref minY, ref maxY);
+                        AccumulateBounds(modelToView, ref minX, ref maxX, ref minY, ref maxY, boundsFilter);
                     }
                     if (minX > maxX) { minX = -1f; maxX = 1f; minY = -1f; maxY = 1f; }
 
@@ -4608,9 +5255,11 @@ namespace UoFiddler.Plugin.Granny3D
 
                     // Feet pivot -> UO Center (origin row = Center.Y + Height).
                     float anchorZ = _uoFeetOnLine ? _normMin.Z : (_normMin.Z + _normMax.Z) * 0.5f;
-                    Vector3 va = Vector3.TransformPosition(new Vector3(0f, 0f, anchorZ), modelToView);
+                    Vector3 va = Vector3.TransformPosition(
+                        new Vector3(-_refCenter.X * _refScale, -_refCenter.Y * _refScale, anchorZ), modelToView);
                     int centerX = (int)Math.Round((0.5f + (va.X + shiftX) / viewW) * cw);
                     int centerY = (int)Math.Round((0.5f - (va.Y + shiftY) / viewH) * ch) - ch;
+                    centerY -= offsetY;
 
                     // Pass 2: render every frame, then box-downsample (SSAA).
                     var frames = new List<Bitmap>(n);
@@ -4618,12 +5267,14 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         PoseSkeletons(dur * f / n);
                         RefreshVertexBuffers(false);
-                        using (var big = RenderFrame(rw, rh, mvp))
+                        using (var big = cutout.HasValue
+                                   ? RenderFrameCutout(rw, rh, mvp, cut.occluder, cut.target)
+                                   : RenderFrame(rw, rh, mvp, lm2 => lm2.CutoutRole != MeshCutoutRole.Mount))
                             frames.Add(DownsampleBox(big, cw, ch));
                     }
                     blocks[d] = VdExport.BuildBlock(frames, centerX, centerY);
                     foreach (var b in frames) b.Dispose();
-                    Log($"  bake dir={d} frames={n} px={cw}x{ch} ss={ss} center=({centerX},{centerY}) ({Path.GetFileName(animPath)})");
+                    Log($"  bake dir={d} frames={n} px={cw}x{ch} ss={ss} center=({centerX},{centerY}) offsetY={offsetY} ({Path.GetFileName(animPath)})");
                 }
                 return blocks;
             }
@@ -4640,11 +5291,13 @@ namespace UoFiddler.Plugin.Granny3D
 
         // Accumulate the projected (view-space X/Y) bounds of every visible mesh
         // vertex for the current pose. Interleaved already holds normalized positions.
-        private void AccumulateBounds(Matrix4 modelToView, ref float minX, ref float maxX, ref float minY, ref float maxY)
+        private void AccumulateBounds(Matrix4 modelToView, ref float minX, ref float maxX, ref float minY, ref float maxY,
+            Func<LoadedMesh, bool> filter = null)
         {
             foreach (var lm in _loadedMeshes)
             {
                 if (lm.Interleaved == null || lm.Hidden) continue;
+                if (filter != null && !filter(lm)) continue;
                 float[] f = lm.Interleaved;
                 for (int c = 0; c + 7 < f.Length; c += 8)
                 {
@@ -4657,7 +5310,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         // Render the current pose (already uploaded by RefreshVertexBuffers) through an
         // offscreen FBO and read it back as a top-down ARGB bitmap at render resolution.
-        private Bitmap RenderFrame(int w, int h, Matrix4 mvp)
+        private Bitmap RenderFrame(int w, int h, Matrix4 mvp, Func<LoadedMesh, bool> filter = null)
         {
             int fbo = GL.GenFramebuffer();
             int color = GL.GenTexture();
@@ -4687,7 +5340,7 @@ namespace UoFiddler.Plugin.Granny3D
             GL.ClearColor(0f, 0f, 0f, 0f);
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-            DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f, opacity: 1f, brightness: _uoBrightness);
+            DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f, opacity: 1f, brightness: _uoBrightness, filter: filter);
 
             byte[] buf = new byte[w * h * 4];
             GL.ReadPixels<byte>(0, 0, w, h, OpenTK.Graphics.OpenGL.PixelFormat.Rgba, PixelType.UnsignedByte, buf);
@@ -4720,6 +5373,97 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
             finally { bmp.UnlockBits(bd); }
+            return bmp;
+        }
+
+        // Read the current FBO back as a top-down ARGB bitmap (GL bottom-left origin
+        // flipped). Shared by RenderFrame and RenderFrameCutout.
+        private static Bitmap ReadFboToBitmap(int w, int h)
+        {
+            byte[] buf = new byte[w * h * 4];
+            GL.ReadPixels<byte>(0, 0, w, h, OpenTK.Graphics.OpenGL.PixelFormat.Rgba, PixelType.UnsignedByte, buf);
+
+            var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            try
+            {
+                unsafe
+                {
+                    for (int y = 0; y < h; y++)
+                    {
+                        byte* dst = (byte*)bd.Scan0 + (long)y * bd.Stride;
+                        int srcRow = (h - 1 - y) * w * 4;
+                        for (int x = 0; x < w; x++)
+                        {
+                            int si = srcRow + x * 4;
+                            dst[x * 4 + 0] = buf[si + 2]; // B
+                            dst[x * 4 + 1] = buf[si + 1]; // G
+                            dst[x * 4 + 2] = buf[si + 0]; // R
+                            dst[x * 4 + 3] = buf[si + 3]; // A
+                        }
+                    }
+                }
+            }
+            finally { bmp.UnlockBits(bd); }
+            return bmp;
+        }
+
+        // Render only the target meshes, carving away (via depth occlusion) every
+        // part that is behind an occluder mesh. Two passes in one FBO:
+        //   1) occluders -> depth buffer only (color writes off).
+        //   2) target    -> drawn with depth test; fragments behind occluders fail.
+        // This yields the UO-style layered "cutout": the body without the regions
+        // covered by armor/mount.
+        private Bitmap RenderFrameCutout(int w, int h, Matrix4 mvp,
+            Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target)
+        {
+            int fbo = GL.GenFramebuffer();
+            int color = GL.GenTexture();
+            int depth = GL.GenRenderbuffer();
+
+            GL.BindTexture(TextureTarget.Texture2D, color);
+            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8, w, h, 0,
+                OpenTK.Graphics.OpenGL.PixelFormat.Rgba, PixelType.UnsignedByte, IntPtr.Zero);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
+            GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+                TextureTarget.Texture2D, color, 0);
+            GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, depth);
+            GL.RenderbufferStorage(RenderbufferTarget.Renderbuffer, RenderbufferStorage.DepthComponent24, w, h);
+            GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment,
+                RenderbufferTarget.Renderbuffer, depth);
+
+            GL.Viewport(0, 0, w, h);
+            GL.Disable(EnableCap.ScissorTest);
+            GL.Enable(EnableCap.DepthTest);
+            GL.DepthFunc(DepthFunction.Lequal);
+            GL.DepthMask(true);
+            GL.Disable(EnableCap.CullFace);
+            GL.Disable(EnableCap.Blend);
+            GL.ClearColor(0f, 0f, 0f, 0f);
+            GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+            // Pass 1: occluders fill the depth buffer only (no color).
+            GL.ColorMask(false, false, false, false);
+            DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f, opacity: 1f, brightness: 1f, filter: occluder);
+
+            // Pass 2: target drawn where NOT behind an occluder (depth Less).
+            GL.ColorMask(true, true, true, true);
+            GL.DepthFunc(DepthFunction.Less);
+            GL.Enable(EnableCap.Blend);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            DrawMeshSet(mvp, unlit: true, alphaCut: 0.5f, opacity: 1f, brightness: _uoBrightness, filter: target);
+
+            Bitmap bmp = ReadFboToBitmap(w, h);
+
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            GL.DeleteFramebuffer(fbo);
+            GL.DeleteRenderbuffer(depth);
+            GL.DeleteTexture(color);
+            GL.DepthFunc(DepthFunction.Lequal);
+            GL.DepthMask(true);
             return bmp;
         }
 

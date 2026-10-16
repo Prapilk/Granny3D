@@ -16,6 +16,7 @@ namespace UoFiddler.Plugin.Granny3D
         private ComboBox _cmbTarget;
         private NumericUpDown _nudFps;
         private NumericUpDown _nudSize;
+        private NumericUpDown _nudOffY;
         private Panel _rows;
         private readonly List<ComboBox> _combos = new List<ComboBox>();
 
@@ -27,6 +28,7 @@ namespace UoFiddler.Plugin.Granny3D
         public VdTargetDef Target { get; private set; }
         public int Fps => (int)_nudFps.Value;
         public int FrameSize => (int)_nudSize.Value;
+        public int OffsetY => (int)_nudOffY.Value;
 
         public VdRemapForm(List<VdTargetDef> targets, List<string> sources, string stripPrefix = null)
         {
@@ -66,6 +68,10 @@ namespace UoFiddler.Plugin.Granny3D
             top.Controls.Add(new Label { Text = "Perso (px, 0=aperçu) :", Location = new Point(150, 42), Width = 150, ForeColor = Color.Gray });
             _nudSize = new NumericUpDown { Location = new Point(300, 38), Width = 60, Minimum = 0, Maximum = 512, Increment = 16, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             top.Controls.Add(_nudSize);
+
+            top.Controls.Add(new Label { Text = "Décal. Y (px) :", Location = new Point(375, 42), Width = 95, ForeColor = Color.Gray });
+            _nudOffY = new NumericUpDown { Location = new Point(470, 38), Width = 55, Minimum = -64, Maximum = 64, Increment = 1, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            top.Controls.Add(_nudOffY);
 
             _rows = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(8) };
 
