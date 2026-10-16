@@ -393,6 +393,27 @@ namespace UoFiddler.Plugin.Granny3D
             var skinChunks = _flatChunks.Where(c => c.Id == 0xCA5E0702).ToList();
             var c0aChunks = _flatChunks.Where(c => c.Id == 0xCA5E0C0A).ToList();
 
+            // Some files (e.g. H_Female_Face_01 / _32) carry an EXTRA, empty mesh group:
+            // a zero-size polygon chunk and a 12-byte skin header appear BEFORE the real
+            // chunks. Pairing these per-mesh lists by index then slides out of phase and
+            // the real mesh is silently dropped (the mesh ends up with 0 indices).
+            // When a list has more entries than the vertex list, drop its payload-less
+            // entries to restore the 1:1 alignment — but only if that exactly matches the
+            // vertex count, so genuine degenerate meshes (e.g. a 1-vertex / 0-polygon
+            // slot in Four_Armed_Demon) keep their slot and are unaffected.
+            if (polChunks.Count > ptsChunks.Count)
+            {
+                var trimmed = polChunks.Where(c => c.DataSize != 0).ToList();
+                if (trimmed.Count == ptsChunks.Count)
+                    polChunks = trimmed;
+            }
+            else if (ptsChunks.Count > polChunks.Count)
+            {
+                var trimmed = ptsChunks.Where(c => c.DataSize != 0).ToList();
+                if (trimmed.Count == polChunks.Count)
+                    ptsChunks = trimmed;
+            }
+
             // Mesh skin weights reference bones through the per-mesh "bone tie" list
             // (chunk 0xCA5E0C0A). Each tie stores the skeleton bone index as its first
             // field, and the mesh's vertex influences index this tie list directly.
@@ -405,6 +426,15 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             int meshCount = Math.Max(ptsChunks.Count, polChunks.Count);
+
+            // Same off-by-one realignment for the skin list: drop its empty (12-byte
+            // header only) entries when there is exactly one per extra ghost mesh.
+            if (skinChunks.Count > meshCount)
+            {
+                var trimmedSkin = skinChunks.Where(c => c.DataSize > 12).ToList();
+                if (trimmedSkin.Count == meshCount)
+                    skinChunks = trimmedSkin;
+            }
 
             // Per-mesh bone-tie (binding) base offsets. The mesh skin chunk header stores
             // h1 = (bindingCount - 1); the per-mesh binding arrays are laid out in mesh
