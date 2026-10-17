@@ -3879,13 +3879,17 @@ namespace UoFiddler.Plugin.Granny3D
 
             bool need = false;
             foreach (var lm in _loadedMeshes)
+            {
+                if (lm.CutoutRole == MeshCutoutRole.Mount) continue;
                 if (lm.Bones != null && lm.Bones.Count > 0 && lm.BoneToAnimTrack == null) { need = true; break; }
+            }
             if (!need) return;
 
             LoadedMesh refMesh = null;
             int refScore = -1;
             foreach (var lm in _loadedMeshes)
             {
+                if (lm.CutoutRole == MeshCutoutRole.Mount) continue;
                 if (lm.Bones == null || lm.Bones.Count == 0) continue;
                 int m = BindMeshToAnimation(lm, anim);
                 if (m > refScore) { refScore = m; refMesh = lm; }
@@ -3899,6 +3903,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             foreach (var lm in _loadedMeshes)
             {
+                if (lm.CutoutRole == MeshCutoutRole.Mount) continue;
                 if (lm.Bones == null || lm.Bones.Count < 2 || ReferenceEquals(lm, refMesh)) continue;
 
                 int matched = 0;
@@ -3996,10 +4001,11 @@ namespace UoFiddler.Plugin.Granny3D
                 if (lm.AnimOverride != null)
                     meshT = t * lm.AnimOverrideTimeScale + lm.AnimOverrideTimeBase;
 
+                GrannyAnimation anim = (lm.CutoutRole == MeshCutoutRole.Mount) ? lm.AnimOverride : (lm.AnimOverride ?? _currentAnimation);
+                int[] trackMap = (lm.CutoutRole == MeshCutoutRole.Mount) ? lm.AnimOverrideTrack : (lm.AnimOverride != null ? lm.AnimOverrideTrack : lm.BoneToAnimTrack);
+
                 for (int i = 0; i < boneCount; i++)
                 {
-                    GrannyAnimation anim = lm.AnimOverride ?? _currentAnimation;
-                    int[] trackMap = lm.AnimOverride != null ? lm.AnimOverrideTrack : lm.BoneToAnimTrack;
                     int trackIdx = (trackMap != null && i < trackMap.Length) ? trackMap[i] : -1;
                     if (anim != null && trackIdx >= 0 && trackIdx < anim.Tracks.Count)
                     {
@@ -5421,43 +5427,115 @@ namespace UoFiddler.Plugin.Granny3D
             var list = new List<string>();
             string folder = Path.Combine(BasePath, "Animals");
             if (!Directory.Exists(folder)) return list;
+            string[] mountPrefixes = {
+                "Equines_", "Ostards_", "Llamas_", "Ridgeback", "Skeletal_Mount",
+                "Swamp_Dragon", "Giant_Beetle", "MondainSteed", "Kirin_", "CuShidhe",
+                "Hai_Riyo", "Raptalon"
+            };
             foreach (var f in Directory.GetFiles(folder, "*.grn", SearchOption.AllDirectories))
             {
                 string n = Path.GetFileName(f);
                 // Base mount meshes only (Lod2); skip the animation clips.
                 if (n.IndexOf("Lod2", StringComparison.OrdinalIgnoreCase) < 0 &&
                     n.IndexOf("LOD2", StringComparison.OrdinalIgnoreCase) < 0) continue;
-                bool isMount = n.StartsWith("Equines_", StringComparison.OrdinalIgnoreCase) ||
-                               n.StartsWith("Ostards_", StringComparison.OrdinalIgnoreCase) ||
-                               n.StartsWith("Skeletal_Mount", StringComparison.OrdinalIgnoreCase) ||
-                               n.StartsWith("MondainSteed", StringComparison.OrdinalIgnoreCase) ||
-                               n.StartsWith("Kirin_", StringComparison.OrdinalIgnoreCase) ||
-                               n.StartsWith("equines_unicorn", StringComparison.OrdinalIgnoreCase);
+                bool isMount = false;
+                foreach (var mp in mountPrefixes)
+                {
+                    if (n.StartsWith(mp, StringComparison.OrdinalIgnoreCase))
+                    {
+                        isMount = true;
+                        break;
+                    }
+                }
                 if (isMount) list.Add(f);
             }
             list.Sort(StringComparer.OrdinalIgnoreCase);
             return list;
         }
 
-        // Mount clips (walk/run/idle/...) under the Animals folder matching a prefix.
+        // Mount clips (walk/run/idle/...) under Animals/Monsters matching the mount's prefix or family fallback.
         private List<string> GatherMountClips(string mountBasePath)
         {
             var list = new List<string>();
+            if (string.IsNullOrEmpty(mountBasePath)) return list;
+
+            string fileName = Path.GetFileName(mountBasePath);
+            string fileLower = fileName.ToLowerInvariant();
+
+            // Candidate directories: the folder containing the mount, plus Animals and Monsters
+            var dirs = new List<string>();
             string dir = Path.GetDirectoryName(mountBasePath);
-            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return list;
-            // Equines_Horse_Dappled_Brown_Lod2 -> Equines_Horse_Dappled_Brown_
-            string file = Path.GetFileName(mountBasePath);
-            string prefix = file;
-            int li = file.LastIndexOf("_", StringComparison.OrdinalIgnoreCase);
-            if (li > 0) prefix = file.Substring(0, li + 1);
-            foreach (var f in Directory.GetFiles(dir, "*.grn", SearchOption.TopDirectoryOnly))
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) dirs.Add(dir);
+
+            string animalsDir = Path.Combine(BasePath, "Animals");
+            if (Directory.Exists(animalsDir) && !dirs.Exists(d => string.Equals(d, animalsDir, StringComparison.OrdinalIgnoreCase)))
+                dirs.Add(animalsDir);
+
+            string monstersDir = Path.Combine(BasePath, "Monsters");
+            if (Directory.Exists(monstersDir) && !dirs.Exists(d => string.Equals(d, monstersDir, StringComparison.OrdinalIgnoreCase)))
+                dirs.Add(monstersDir);
+
+            // Candidate prefixes in priority order:
+            var prefixes = new List<string>();
+
+            // 1. Direct prefix from file name before Lod
+            string baseNoExt = Path.GetFileNameWithoutExtension(fileName);
+            int li = baseNoExt.LastIndexOf('_');
+            if (li > 0)
+                prefixes.Add(baseNoExt.Substring(0, li + 1));
+
+            // 2. Family fallbacks
+            if (fileLower.StartsWith("equines_"))
+                prefixes.Add("Equines_Horse_Dappled_Brown_");
+            else if (fileLower.StartsWith("ostards_"))
+                prefixes.Add("Ostards_Ostard_Desert_");
+            else if (fileLower.StartsWith("llamas_"))
+                prefixes.Add("Llamas_Llama_");
+            else if (fileLower.StartsWith("ridgeback"))
+                prefixes.Add("Ridgeback_Ridgeback_");
+            else if (fileLower.StartsWith("swamp_dragon"))
+                prefixes.Add("Swamp_Dragon_");
+            else if (fileLower.StartsWith("giant_beetle"))
+                prefixes.Add("Giant_Beetle_");
+            else if (fileLower.StartsWith("skeletal_mount"))
+                prefixes.Add("Skeletal_Mount_");
+            else if (fileLower.StartsWith("mondainsteed"))
+                prefixes.Add("MondainSteed01_");
+            else if (fileLower.StartsWith("cushidhe"))
+                prefixes.Add("CuShidhe_");
+            else if (fileLower.StartsWith("hai_riyo"))
+                prefixes.Add("Hai_Riyo_");
+            else if (fileLower.StartsWith("raptalon"))
+                prefixes.Add("Raptalon_");
+            else if (fileLower.StartsWith("kirin"))
             {
-                string n = Path.GetFileName(f);
-                if (ReferenceEquals(n, null)) continue;
-                if (n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
-                    n.IndexOf("Lod", StringComparison.OrdinalIgnoreCase) < 0)
-                    list.Add(f);
+                prefixes.Add("Kirin_Kirin_");
+                prefixes.Add("Equines_Horse_Dappled_Brown_");
             }
+
+            var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pref in prefixes)
+            {
+                list.Clear();
+                seenFiles.Clear();
+                foreach (var d in dirs)
+                {
+                    if (!Directory.Exists(d)) continue;
+                    foreach (var f in Directory.GetFiles(d, "*.grn", SearchOption.TopDirectoryOnly))
+                    {
+                        string fn = Path.GetFileName(f);
+                        if (fn.StartsWith(pref, StringComparison.OrdinalIgnoreCase) &&
+                            fn.IndexOf("Lod", StringComparison.OrdinalIgnoreCase) < 0)
+                        {
+                            if (seenFiles.Add(fn))
+                                list.Add(f);
+                        }
+                    }
+                }
+                if (list.Count > 0)
+                    break;
+            }
+
             list.Sort(StringComparer.OrdinalIgnoreCase);
             return list;
         }
@@ -5492,31 +5570,76 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
-        // Find the mount clip whose name contains the given keyword (e.g. "fidget").
+        // Find the mount clip whose name contains the given keyword (e.g. "fidget", "idle", "walk").
         private string FindMountClip(string keyword)
         {
             if (_mountMesh == null) return null;
             var clips = GatherMountClips(_mountMesh.SourcePath);
             if (clips.Count == 0) return null;
             string kl = (keyword ?? "").ToLowerInvariant();
+
+            // Direct search
             foreach (var c in clips)
-                if (Path.GetFileNameWithoutExtension(c).ToLowerInvariant().Contains(kl)) return c;
-            return null;
+            {
+                string fn = Path.GetFileNameWithoutExtension(c).ToLowerInvariant();
+                if (fn.Contains(kl)) return c;
+            }
+
+            // Keyword specific aliases/fallbacks
+            if (kl == "idle")
+            {
+                foreach (var c in clips)
+                {
+                    string fn = Path.GetFileNameWithoutExtension(c).ToLowerInvariant();
+                    if (fn.Contains("stand")) return c;
+                }
+            }
+            else if (kl == "fidget")
+            {
+                // Fall back to idle if mount has no fidget clip
+                return FindMountClip("idle");
+            }
+            else if (kl == "gethit")
+            {
+                foreach (var c in clips)
+                {
+                    string fn = Path.GetFileNameWithoutExtension(c).ToLowerInvariant();
+                    if (fn.Contains("takedamage") || fn.Contains("get_hit")) return c;
+                }
+            }
+
+            return clips[0];
         }
 
         // Pick the mount clip whose action keyword matches the rider clip.
+        // Preserves the subtlety: forced idle for rider weapon attacks (attack1h, attackxb, generic attack),
+        // fidget for bow/2h attacks, and matching walk/run/die/gethit/idle.
         private string SelectMountClip(string riderClipPath)
         {
-            var clips = GatherMountClips(_mountMesh.SourcePath);
-            if (clips.Count == 0) return null;
-            string rl = Path.GetFileNameWithoutExtension(riderClipPath ?? "").ToLowerInvariant();
-            string[] kw = { "walk", "run", "idle", "stand", "attack", "fidget", "eat", "die", "gethit", "get_hit" };
-            string key = null;
-            foreach (var k in kw) if (rl.Contains(k)) { key = k; break; }
-            if (key != null)
-                foreach (var c in clips)
-                    if (Path.GetFileNameWithoutExtension(c).ToLowerInvariant().Contains(key)) return c;
-            return clips[0];
+            if (_mountMesh == null) return null;
+            if (string.IsNullOrEmpty(riderClipPath))
+                return FindMountClip("idle");
+
+            string rl = Path.GetFileNameWithoutExtension(riderClipPath).ToLowerInvariant();
+
+            // Mounted weapon actions (fidget for bow/2h, forced idle for 1h/xb/generic attack)
+            if (rl.Contains("attackbow") || rl.Contains("attack2h"))
+                return FindMountClip("fidget");
+            if (rl.Contains("attack1h") || rl.Contains("attackxb") || rl.Contains("attackcrossbow") || rl.Contains("attack"))
+                return FindMountClip("idle");
+
+            if (rl.Contains("walk"))
+                return FindMountClip("walk");
+            if (rl.Contains("run"))
+                return FindMountClip("run");
+            if (rl.Contains("die"))
+                return FindMountClip("die");
+            if (rl.Contains("gethit") || rl.Contains("get_hit") || rl.Contains("takedamage"))
+                return FindMountClip("gethit");
+            if (rl.Contains("fidget"))
+                return FindMountClip("fidget");
+
+            return FindMountClip("idle");
         }
 
         // In the interactive preview the mount must play its OWN clip (matching the
@@ -5524,12 +5647,12 @@ namespace UoFiddler.Plugin.Granny3D
         private void RefreshMountAnimation()
         {
             if (_mountMesh == null) return;
-            if (_currentAnimation == null || string.IsNullOrEmpty(_currentAnimPath)) return;
-            EnsureMountAnimation(_currentAnimPath, _currentAnimation.Duration);
+            float dur = _currentAnimation != null ? _currentAnimation.Duration : 1f;
+            EnsureMountAnimation(_currentAnimPath, dur);
         }
 
         // Bind the mount's own clip (matching the rider action) into AnimOverride so the
-        // horse animates in sync with the rider. Scale keeps both cycles aligned.
+        // mount animates in sync with the rider. Scale keeps both cycles aligned.
         private void EnsureMountAnimation(string riderClipPath, float riderDur, string keyword = null)
         {
             if (_mountMesh == null) return;
@@ -5539,16 +5662,28 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 var mp = new GrannyFormatParser();
                 if (!mp.Load(clip) || mp.Animation == null) return;
-                _mountMesh.AnimOverride = mp.Animation;
-                if (_mountMesh.AnimOverrideTrack == null || _mountMesh.AnimOverrideTrack.Length != _mountMesh.Bones.Count)
-                    _mountMesh.AnimOverrideTrack = new int[_mountMesh.Bones.Count];
-                int matched = BindMeshToAnimationTrack(_mountMesh, mp.Animation, _mountMesh.AnimOverrideTrack);
+                foreach (var lm in _loadedMeshes)
+                {
+                    if (lm.CutoutRole != MeshCutoutRole.Mount) continue;
+                    lm.AnimOverride = mp.Animation;
+                    if (lm.AnimOverrideTrack == null || lm.AnimOverrideTrack.Length != lm.Bones.Count)
+                        lm.AnimOverrideTrack = new int[lm.Bones.Count];
+                    int matched = BindMeshToAnimationTrack(lm, mp.Animation, lm.AnimOverrideTrack);
+                    Log($"Mount clip: {Path.GetFileName(clip)} matched={matched}/{lm.Bones.Count} dur={mp.Animation.Duration:F2}");
+                }
                 _mountClipPath = clip;
-                Log($"Mount clip: {Path.GetFileName(clip)} matched={matched}/{_mountMesh.Bones.Count} dur={mp.Animation.Duration:F2}");
             }
-            float mountDur = _mountMesh.AnimOverride.Duration;
-            _mountMesh.AnimOverrideTimeScale = (mountDur > 0.0001f && riderDur > 0.0001f) ? (mountDur / riderDur) : 1f;
-            _mountMesh.AnimOverrideTimeBase = 0f;
+            if (_mountMesh.AnimOverride != null)
+            {
+                float mountDur = _mountMesh.AnimOverride.Duration;
+                float scale = (mountDur > 0.0001f && riderDur > 0.0001f) ? (mountDur / riderDur) : 1f;
+                foreach (var lm in _loadedMeshes)
+                {
+                    if (lm.CutoutRole != MeshCutoutRole.Mount) continue;
+                    lm.AnimOverrideTimeScale = scale;
+                    lm.AnimOverrideTimeBase = 0f;
+                }
+            }
         }
 
         // Like BindMeshToAnimation but writes the mapping into a caller array (used for
@@ -5574,6 +5709,21 @@ namespace UoFiddler.Plugin.Granny3D
                          byName.TryGetValue(alias, out bi))
                 {
                     if (bi < target.Length) { target[bi] = ti; matched++; }
+                }
+                else if (tr.Name.StartsWith("master", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Fallback for root motion master bone (e.g. Master_Equines_Horse -> master_equines_horse_dark_brown)
+                    for (int j = 0; j < boneCount; j++)
+                    {
+                        if (j < target.Length && target[j] < 0 &&
+                            lm.Bones[j].Name != null &&
+                            lm.Bones[j].Name.StartsWith("master", StringComparison.OrdinalIgnoreCase))
+                        {
+                            target[j] = ti;
+                            matched++;
+                            break;
+                        }
+                    }
                 }
             }
             return matched;
@@ -5627,19 +5777,30 @@ namespace UoFiddler.Plugin.Granny3D
             if (_currentAnimation != null) { EnsureAnimationBindings(_currentAnimation); }
             RefreshMountAnimation();
             if (_currentAnimation != null) ApplyAnimationPose(_currentTime);
+            else if (_glReady && glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
             return first;
         }
 
         // Remove all Mount-role meshes from the scene.
         private void RemoveMount()
         {
+            bool removed = false;
             for (int i = _loadedMeshes.Count - 1; i >= 0; i--)
             {
                 if (_loadedMeshes[i].CutoutRole == MeshCutoutRole.Mount)
+                {
                     _loadedMeshes.RemoveAt(i);
+                    removed = true;
+                }
             }
             _mountMesh = null;
             _mountClipPath = null;
+            if (removed)
+            {
+                RefreshLoadedList();
+                PopulateBoneCombo();
+                if (_glReady && glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            }
         }
 
         private void ExportVdDialog((Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout = null)
@@ -5870,6 +6031,7 @@ namespace UoFiddler.Plugin.Granny3D
                 _currentTime = savedTime;
                 _playing = savedPlaying;
                 foreach (var lm in _loadedMeshes) lm.BoneToAnimTrack = null;
+                RefreshMountAnimation();
                 try { if (savedAnim != null) ApplyAnimationPose(savedTime); } catch { }
                 if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
             }
