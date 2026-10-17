@@ -36,6 +36,7 @@ namespace UoFiddler.Plugin.Granny3D
         // De-indexed (per triangle corner) buffers. Corner c corresponds to Indices[c].
         public int[] CornerVertex;
         public float[] Interleaved;      // per corner: pos(3) + normal(3) + uv(2)
+        public Vector3[] BaseCornerNormals;
 
         public int Vbo;
         public int Vao;
@@ -2765,6 +2766,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             // Rest normals (per corner) from triangle faces.
+            lm.BaseCornerNormals = new Vector3[cornerCount];
             for (int t = 0; t + 2 < cornerCount; t += 3)
             {
                 int i0 = lm.CornerVertex[t], i1 = lm.CornerVertex[t + 1], i2 = lm.CornerVertex[t + 2];
@@ -2776,6 +2778,7 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int k = 0; k < 3; k++)
                 {
                     int ci = t + k;
+                    lm.BaseCornerNormals[ci] = n;
                     lm.Interleaved[ci * 8 + 3] = n.X;
                     lm.Interleaved[ci * 8 + 4] = n.Y;
                     lm.Interleaved[ci * 8 + 5] = n.Z;
@@ -3113,6 +3116,7 @@ namespace UoFiddler.Plugin.Granny3D
             // rigid weapons by their attach bone). The offset/scale tweak applies to
             // both paths. ApplyAnimationPose also handles the no-animation case.
             ApplyAnimationPose(_currentTime);
+            RefreshVertexBuffers(true);
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
 
@@ -3986,7 +3990,7 @@ namespace UoFiddler.Plugin.Granny3D
                     StepClothForMesh(clm, _clothDt);
             }
 
-            RefreshVertexBuffers(false);
+            RefreshVertexBuffers(!_playing);
 
             try {
                 foreach (var lm in _loadedMeshes) {
@@ -4257,7 +4261,10 @@ namespace UoFiddler.Plugin.Granny3D
         private static Matrix4 BuildAttachTweak(LoadedMesh lm)
         {
             float ps = lm.PartScale == 0f ? 1f : lm.PartScale;
-            var s = new Vector3((lm.MirrorX ? -1f : 1f) * ps, (lm.MirrorY ? -1f : 1f) * ps, (lm.MirrorZ ? -1f : 1f) * ps);
+            var s = new Vector3(
+                (lm.MirrorX ? -1f : 1f) * ps * (lm.PartScaleVec.X == 0f ? 1f : lm.PartScaleVec.X),
+                (lm.MirrorY ? -1f : 1f) * ps * (lm.PartScaleVec.Y == 0f ? 1f : lm.PartScaleVec.Y),
+                (lm.MirrorZ ? -1f : 1f) * ps * (lm.PartScaleVec.Z == 0f ? 1f : lm.PartScaleVec.Z));
             Matrix4 scale = Matrix4.CreateScale(s);
             Matrix4 rot = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
                 MathHelper.DegreesToRadians(lm.AttachRotation.X),
@@ -4777,6 +4784,21 @@ namespace UoFiddler.Plugin.Granny3D
                     lm.PartScale * lm.PartScaleVec.Z);
                 bool scaleTweaked = pscale.X != 1f || pscale.Y != 1f || pscale.Z != 1f;
 
+                bool hasRot = lm.AttachRotation != Vector3.Zero;
+                bool hasMirror = lm.MirrorX || lm.MirrorY || lm.MirrorZ;
+                bool hasOffset = lm.AttachOffset != Vector3.Zero;
+                bool hasTweak = scaleTweaked || hasRot || hasMirror || hasOffset;
+
+                Matrix4 rotMat = hasRot
+                    ? Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
+                        MathHelper.DegreesToRadians(lm.AttachRotation.X),
+                        MathHelper.DegreesToRadians(lm.AttachRotation.Y),
+                        MathHelper.DegreesToRadians(lm.AttachRotation.Z)))
+                    : Matrix4.Identity;
+
+                Vector3 scalePivot = lm.HasBindCentroid ? lm.BindCentroid : Vector3.Zero;
+                Vector3 rotPivot = (lm.CutoutRole == MeshCutoutRole.Accessory) ? scalePivot : Vector3.Zero;
+
                 if (cloth)
                 {
                     // Positions come from the cloth solver (per particle); every
@@ -4799,9 +4821,24 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     if (!skinned)
                     {
-                        lm.DeformedCache[v] = (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
-                            ? orig + riderOffset
-                            : orig;
+                        Vector3 pos = orig;
+                        if (hasTweak)
+                        {
+                            Vector3 r = pos - scalePivot;
+                            if (scaleTweaked)
+                                r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
+                            pos = scalePivot + r;
+
+                            Vector3 rRot = pos - rotPivot;
+                            if (hasMirror)
+                                rRot = new Vector3(rRot.X * (lm.MirrorX ? -1f : 1f), rRot.Y * (lm.MirrorY ? -1f : 1f), rRot.Z * (lm.MirrorZ ? -1f : 1f));
+                            if (hasRot)
+                                rRot = Vector3.TransformNormal(rRot, rotMat);
+                            pos = rotPivot + rRot + lm.AttachOffset;
+                        }
+                        if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
+                            pos += riderOffset;
+                        lm.DeformedCache[v] = pos;
                         continue;
                     }
 
@@ -4811,7 +4848,24 @@ namespace UoFiddler.Plugin.Granny3D
                         : (v < lm.Skin.Length ? lm.Skin[v] : null);
                     if (influences == null || influences.Length == 0)
                     {
-                        lm.DeformedCache[v] = orig;
+                        Vector3 pos = orig;
+                        if (hasTweak)
+                        {
+                            Vector3 r = pos - scalePivot;
+                            if (scaleTweaked)
+                                r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
+                            pos = scalePivot + r;
+
+                            Vector3 rRot = pos - rotPivot;
+                            if (hasMirror)
+                                rRot = new Vector3(rRot.X * (lm.MirrorX ? -1f : 1f), rRot.Y * (lm.MirrorY ? -1f : 1f), rRot.Z * (lm.MirrorZ ? -1f : 1f));
+                            if (hasRot)
+                                rRot = Vector3.TransformNormal(rRot, rotMat);
+                            pos = rotPivot + rRot + lm.AttachOffset;
+                        }
+                        if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
+                            pos += riderOffset;
+                        lm.DeformedCache[v] = pos;
                         continue;
                     }
 
@@ -4836,20 +4890,30 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     Vector3 skinnedPos = totalW > 0.0001f ? (Math.Abs(totalW - 1f) > 0.001f ? def / totalW : def) : orig;
 
-                    // Per-part tweak: per-axis scale about the bind centroid + offset,
-                    // so the body no longer pokes through the piece.
-                    if (scaleTweaked || lm.AttachOffset != Vector3.Zero)
+                    // Per-part tweak: scale about bind centroid, mirror and rotation about rotPivot + offset
+                    if (hasTweak)
                     {
-                        Vector3 pivot = lm.HasBindCentroid ? lm.BindCentroid : Vector3.Zero;
-                        Vector3 r = skinnedPos - pivot;
-                        r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
-                        skinnedPos = pivot + r + lm.AttachOffset;
+                        Vector3 r = skinnedPos - scalePivot;
+                        if (scaleTweaked)
+                            r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
+                        Vector3 pos = scalePivot + r;
+
+                        Vector3 rRot = pos - rotPivot;
+                        if (hasMirror)
+                            rRot = new Vector3(rRot.X * (lm.MirrorX ? -1f : 1f), rRot.Y * (lm.MirrorY ? -1f : 1f), rRot.Z * (lm.MirrorZ ? -1f : 1f));
+                        if (hasRot)
+                            rRot = Vector3.TransformNormal(rRot, rotMat);
+                        skinnedPos = rotPivot + rRot + lm.AttachOffset;
                     }
 
                     // Thickness: push the piece outward along the (skinned) surface
                     // normal so residual body/armor mismatches never poke through.
                     if (thick)
                     {
+                        if (hasMirror)
+                            dnorm = new Vector3(dnorm.X * (lm.MirrorX ? -1f : 1f), dnorm.Y * (lm.MirrorY ? -1f : 1f), dnorm.Z * (lm.MirrorZ ? -1f : 1f));
+                        if (hasRot)
+                            dnorm = Vector3.TransformNormal(dnorm, rotMat);
                         if (dnorm.LengthSquared > 1e-12f) dnorm = Vector3.Normalize(dnorm);
                         else dnorm = Vector3.Zero;
                         skinnedPos += dnorm * lm.Thickness;
@@ -4892,7 +4956,9 @@ namespace UoFiddler.Plugin.Granny3D
 
                     if ((skinned || rigid) && !cloth && includeNormals)
                     {
-                        Vector3 n = new Vector3(lm.Interleaved[c * 8 + 3], lm.Interleaved[c * 8 + 4], lm.Interleaved[c * 8 + 5]);
+                        Vector3 n = (lm.BaseCornerNormals != null && c < lm.BaseCornerNormals.Length)
+                            ? lm.BaseCornerNormals[c]
+                            : new Vector3(lm.Interleaved[c * 8 + 3], lm.Interleaved[c * 8 + 4], lm.Interleaved[c * 8 + 5]);
                         // Approximate normal transform using the skin matrix's rotation part
                         // (for a rigid attach, the host bone's matrix).
                         if (rigid)
@@ -4914,12 +4980,43 @@ namespace UoFiddler.Plugin.Granny3D
                             if (bi >= 0 && bi < nbones)
                             {
                                 Vector3 tn = Vector3.TransformNormal(n, nmats[bi]);
+                                if (hasMirror)
+                                    tn = new Vector3(tn.X * (lm.MirrorX ? -1f : 1f), tn.Y * (lm.MirrorY ? -1f : 1f), tn.Z * (lm.MirrorZ ? -1f : 1f));
+                                if (hasRot)
+                                    tn = Vector3.TransformNormal(tn, rotMat);
+                                if (tn.LengthSquared > 1e-12f) tn = Vector3.Normalize(tn);
+                                lm.Interleaved[c * 8 + 3] = tn.X;
+                                lm.Interleaved[c * 8 + 4] = tn.Y;
+                                lm.Interleaved[c * 8 + 5] = tn.Z;
+                            }
+                            else if (hasMirror || hasRot)
+                            {
+                                Vector3 tn = n;
+                                if (hasMirror)
+                                    tn = new Vector3(tn.X * (lm.MirrorX ? -1f : 1f), tn.Y * (lm.MirrorY ? -1f : 1f), tn.Z * (lm.MirrorZ ? -1f : 1f));
+                                if (hasRot)
+                                    tn = Vector3.TransformNormal(tn, rotMat);
                                 if (tn.LengthSquared > 1e-12f) tn = Vector3.Normalize(tn);
                                 lm.Interleaved[c * 8 + 3] = tn.X;
                                 lm.Interleaved[c * 8 + 4] = tn.Y;
                                 lm.Interleaved[c * 8 + 5] = tn.Z;
                             }
                         }
+                    }
+                    else if (!skinned && !rigid && !cloth && includeNormals && (hasMirror || hasRot))
+                    {
+                        Vector3 n = (lm.BaseCornerNormals != null && c < lm.BaseCornerNormals.Length)
+                            ? lm.BaseCornerNormals[c]
+                            : new Vector3(lm.Interleaved[c * 8 + 3], lm.Interleaved[c * 8 + 4], lm.Interleaved[c * 8 + 5]);
+                        Vector3 tn = n;
+                        if (hasMirror)
+                            tn = new Vector3(tn.X * (lm.MirrorX ? -1f : 1f), tn.Y * (lm.MirrorY ? -1f : 1f), tn.Z * (lm.MirrorZ ? -1f : 1f));
+                        if (hasRot)
+                            tn = Vector3.TransformNormal(tn, rotMat);
+                        if (tn.LengthSquared > 1e-12f) tn = Vector3.Normalize(tn);
+                        lm.Interleaved[c * 8 + 3] = tn.X;
+                        lm.Interleaved[c * 8 + 4] = tn.Y;
+                        lm.Interleaved[c * 8 + 5] = tn.Z;
                     }
                 }
 
