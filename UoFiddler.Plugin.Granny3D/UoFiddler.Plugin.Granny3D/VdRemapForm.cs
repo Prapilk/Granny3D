@@ -23,7 +23,8 @@ namespace UoFiddler.Plugin.Granny3D
         private readonly List<VdTargetDef> _targets;
         private readonly List<string> _sources;      // full .grn paths
         private readonly List<string> _sourceNames;  // display names
-        private readonly string _stripPrefix;        // creature prefix to ignore when matching
+        private string _stripPrefix;                 // creature prefix to ignore when matching
+        private readonly string _basePath;
 
         // Every animation across all folders (the "ALL anim" set): an optional superset
         // of _sources so clips from other creatures / imported .anim can be picked too.
@@ -32,6 +33,7 @@ namespace UoFiddler.Plugin.Granny3D
         private readonly List<string> _allNames;
         private readonly List<string> _allDisplay;
         private bool _useAll;
+        private Button _btnChooseMap;
         private Button _btnAll;
 
         public VdTargetDef Target { get; private set; }
@@ -40,10 +42,11 @@ namespace UoFiddler.Plugin.Granny3D
         public int OffsetY => (int)_nudOffY.Value;
 
         public VdRemapForm(List<VdTargetDef> targets, List<string> sources, string stripPrefix = null,
-            List<string> allSources = null, List<string> allDisplay = null)
+            List<string> allSources = null, List<string> allDisplay = null, string basePath = null)
         {
+            _basePath = basePath;
             _targets = targets;
-            _sources = sources ?? new List<string>();
+            _sources = sources != null ? new List<string>(sources) : new List<string>();
             _sourceNames = _sources.Select(Path.GetFileNameWithoutExtension).ToList();
             _stripPrefix = Normalize(stripPrefix ?? string.Empty);   // same normalization as source names
 
@@ -53,7 +56,8 @@ namespace UoFiddler.Plugin.Granny3D
                 ? allDisplay : new List<string>(_allNames);
 
             Text = "Export .vd — mapping des animations";
-            ClientSize = new Size(560, 620);
+            ClientSize = new Size(620, 640);
+            MinimumSize = new Size(580, 480);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(40, 40, 44);
             ForeColor = Color.Gainsboro;
@@ -67,7 +71,7 @@ namespace UoFiddler.Plugin.Granny3D
             _cmbTarget = new ComboBox
             {
                 Location = new Point(120, 6),
-                Width = 250,
+                Width = 195,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(30, 30, 30),
                 ForeColor = Color.Gainsboro
@@ -76,13 +80,28 @@ namespace UoFiddler.Plugin.Granny3D
             _cmbTarget.SelectedIndexChanged += (s, e) => RebuildRows();
             top.Controls.Add(_cmbTarget);
 
+            // "Choose map": pick a reference creature (H_Male, Zombie...) from the full models tree
+            // to pre-fill the action mapping slots using its animation set.
+            _btnChooseMap = new Button
+            {
+                Text = "Choose map…",
+                Location = new Point(322, 5),
+                Width = 140,
+                Height = 26,
+                BackColor = Color.FromArgb(60, 60, 62),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            _btnChooseMap.Click += (s, e) => OnChooseMapClicked();
+            top.Controls.Add(_btnChooseMap);
+
             // "ALL anim": swap the per-model source list for every clip found in all
             // folders (other creatures, imported .anim...), not just the model's folder.
             _btnAll = new Button
             {
                 Text = "ALL anim (tout)",
-                Location = new Point(378, 5),
-                Width = 174,
+                Location = new Point(468, 5),
+                Width = 142,
                 Height = 26,
                 BackColor = Color.FromArgb(60, 60, 62),
                 ForeColor = Color.Gainsboro,
@@ -92,15 +111,15 @@ namespace UoFiddler.Plugin.Granny3D
             top.Controls.Add(_btnAll);
 
             top.Controls.Add(new Label { Text = "Images/s :", Location = new Point(8, 42), Width = 70, ForeColor = Color.Gray });
-            _nudFps = new NumericUpDown { Location = new Point(80, 38), Width = 60, Minimum = 2, Maximum = 30, Value = 10, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            _nudFps = new NumericUpDown { Location = new Point(80, 38), Width = 55, Minimum = 2, Maximum = 30, Value = 10, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             top.Controls.Add(_nudFps);
 
-            top.Controls.Add(new Label { Text = "Perso (px, 0=aperçu) :", Location = new Point(150, 42), Width = 150, ForeColor = Color.Gray });
-            _nudSize = new NumericUpDown { Location = new Point(300, 38), Width = 60, Minimum = 0, Maximum = 512, Increment = 16, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            top.Controls.Add(new Label { Text = "Perso (px, 0=aperçu) :", Location = new Point(145, 42), Width = 145, ForeColor = Color.Gray });
+            _nudSize = new NumericUpDown { Location = new Point(292, 38), Width = 55, Minimum = 0, Maximum = 512, Increment = 16, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             top.Controls.Add(_nudSize);
 
-            top.Controls.Add(new Label { Text = "Décal. Y (px) :", Location = new Point(375, 42), Width = 95, ForeColor = Color.Gray });
-            _nudOffY = new NumericUpDown { Location = new Point(470, 38), Width = 55, Minimum = -64, Maximum = 64, Increment = 1, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            top.Controls.Add(new Label { Text = "Décal. Y (px) :", Location = new Point(360, 42), Width = 95, ForeColor = Color.Gray });
+            _nudOffY = new NumericUpDown { Location = new Point(455, 38), Width = 55, Minimum = -64, Maximum = 64, Increment = 1, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             top.Controls.Add(_nudOffY);
 
             _rows = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(8) };
@@ -140,6 +159,47 @@ namespace UoFiddler.Plugin.Granny3D
                     keep[idx] = (sel >= 0 && sel < from.Count) ? from[sel] : null;
             }
             return keep;
+        }
+
+        private void OnChooseMapClicked()
+        {
+            using (var dlg = new VdChooseMapDialog(_basePath))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK || dlg.SelectedModel == null)
+                    return;
+
+                var entry = dlg.SelectedModel;
+                var newSources = new List<string>();
+                Granny3DControl.CollectAnims(entry.Folder, entry.Prefix, newSources, "*.grn");
+                Granny3DControl.CollectAnims(entry.Folder, entry.Prefix, newSources, "*.anim");
+
+                if (newSources.Count == 0)
+                {
+                    MessageBox.Show(this,
+                        $"Aucune animation trouvée pour '{entry.DisplayName}' dans :\n{entry.Folder}",
+                        "Choose map", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                _sources.Clear();
+                _sources.AddRange(newSources);
+                _sourceNames.Clear();
+                _sourceNames.AddRange(_sources.Select(Path.GetFileNameWithoutExtension));
+                _stripPrefix = Normalize(entry.Prefix ?? string.Empty);
+
+                if (_useAll)
+                {
+                    _useAll = false;
+                    _btnAll.Text = "ALL anim (tout)";
+                    _btnAll.BackColor = Color.FromArgb(60, 60, 62);
+                }
+
+                _btnChooseMap.Text = $"Map: {entry.DisplayName}";
+                _btnChooseMap.BackColor = Color.FromArgb(80, 96, 70);
+
+                // Auto prefill target actions from the chosen model's animation set
+                RebuildRows(preserve: null);
+            }
         }
 
         // Flip between the current model's clips and every clip found in all folders.
@@ -187,7 +247,7 @@ namespace UoFiddler.Plugin.Granny3D
                 var cb = new ComboBox
                 {
                     Location = new Point(200, y),
-                    Width = 330,
+                    Width = 390,
                     DropDownStyle = ComboBoxStyle.DropDownList,
                     BackColor = Color.FromArgb(30, 30, 30),
                     ForeColor = Color.Gainsboro

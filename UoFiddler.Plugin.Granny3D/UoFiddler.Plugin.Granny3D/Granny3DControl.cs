@@ -252,7 +252,7 @@ namespace UoFiddler.Plugin.Granny3D
 
     public class Granny3DControl : UserControl
     {
-        private const string BasePath = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\";
+        public const string BasePath = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\";
         private const string MapsPath = BasePath + "Maps";
 
         // Category folder -> display name
@@ -2218,7 +2218,7 @@ namespace UoFiddler.Plugin.Granny3D
             cat.Populated = true;
         }
 
-        private static void CollectAnims(string folder, string prefix, List<string> outFiles, string pattern = "*.grn")
+        public static void CollectAnims(string folder, string prefix, List<string> outFiles, string pattern = "*.grn")
         {
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) return;
             try
@@ -5618,7 +5618,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (sources.Count == 0) { Log("Export .vd : aucune animation source trouvee."); return; }
             var allSources = GatherAllExportAnimSources(out var allDisplay);
 
-            using (var form = new VdRemapForm(VdExport.Targets(), sources, prefix, allSources, allDisplay))
+            using (var form = new VdRemapForm(VdExport.Targets(), sources, prefix, allSources, allDisplay, BasePath))
             {
                 if (form.ShowDialog(this) != DialogResult.OK) return;
                 var target = form.Target;
