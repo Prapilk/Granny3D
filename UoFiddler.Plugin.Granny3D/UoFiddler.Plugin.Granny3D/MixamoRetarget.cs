@@ -16,7 +16,7 @@ namespace UoFiddler.Plugin.Granny3D
     public static class MixamoRetarget
     {
         // Mixamo node -> UO Biped bone name. Covers the core human joints plus thumb and index fingers.
-        static readonly (string Mix, string Uo)[] BoneMap =
+        public static readonly (string Mix, string Uo)[] BoneMap =
         {
             ("mixamorig:Hips",         "Bip01 Pelvis"),
             ("mixamorig:Spine",        "Bip01 Spine"),

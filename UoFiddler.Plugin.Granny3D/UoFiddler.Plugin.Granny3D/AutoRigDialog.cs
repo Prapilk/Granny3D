@@ -28,6 +28,7 @@ namespace UoFiddler.Plugin.Granny3D
         private string _outFolder;
         private string _refPath;
         private List<LoadedMesh>? _liveMeshes;
+        private List<GrannyBone>? _liveOriginalBones;
 
         // Visual controls
         private GLControl glControl = null!;
@@ -486,28 +487,84 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = "4. Positionnement des Articulations (Croix 3D)",
                 Dock = DockStyle.Top,
-                Height = 190,
+                Height = 265,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
             };
 
+            var pnlTopRigBtns = new Panel { Dock = DockStyle.Top, Height = 32 };
             var btnAutoDetect = new Button
             {
-                Text = "🎯 Réaligner les repères sur le modèle 3D",
-                Dock = DockStyle.Top,
-                Height = 32,
+                Text = "🎯 Auto-Placement Mixamo (5 repères)",
+                Dock = DockStyle.Left,
+                Width = 250,
                 BackColor = Color.FromArgb(140, 70, 20),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9.5F, FontStyle.Bold)
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
             };
-            btnAutoDetect.Click += (s, e) => { AutoFitMarkersToMesh(); EnsurePreviewModel(); };
+            btnAutoDetect.Click += (s, e) => { AutoPlaceMixamoLandmarks(); };
 
-            var lblJoint = new Label { Text = "Croix sélectionnée :", Location = new Point(12, 74), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            var btnRestoreLiveBones = new Button
+            {
+                Text = "🦴 Squelette d'Origine",
+                Dock = DockStyle.Right,
+                Width = 230,
+                BackColor = Color.FromArgb(40, 70, 110),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnRestoreLiveBones.Click += (s, e) =>
+            {
+                if (_liveOriginalBones != null && _liveOriginalBones.Count > 0)
+                {
+                    InitMarkersFromLiveBones(_liveOriginalBones);
+                    EnsurePreviewModel();
+                    glControl.Invalidate();
+                }
+                else
+                {
+                    MessageBox.Show("Aucun squelette d'origine en mémoire pour ce modèle.", "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            };
+            pnlTopRigBtns.Controls.Add(btnAutoDetect);
+            pnlTopRigBtns.Controls.Add(btnRestoreLiveBones);
+
+            // Skinning Action Buttons Panel
+            var pnlSkinBtns = new Panel { Dock = DockStyle.Top, Height = 34, Padding = new Padding(0, 4, 0, 0) };
+            var btnRecalcArms = new Button
+            {
+                Text = "💪 Recalculer Skinning Bras",
+                Dock = DockStyle.Left,
+                Width = 250,
+                BackColor = Color.FromArgb(20, 100, 80),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnRecalcArms.Click += (s, e) => { RecalculateArmSkinning(); };
+
+            var btnRecalcAllSkin = new Button
+            {
+                Text = "🔥 Recalculer Tout le Skinning",
+                Dock = DockStyle.Right,
+                Width = 230,
+                BackColor = Color.FromArgb(90, 40, 100),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnRecalcAllSkin.Click += (s, e) => { RecalculateAllSkinning(); };
+
+            pnlSkinBtns.Controls.Add(btnRecalcArms);
+            pnlSkinBtns.Controls.Add(btnRecalcAllSkin);
+
+            var lblJoint = new Label { Text = "Croix sélectionnée :", Location = new Point(12, 114), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
             cbJoints = new ComboBox
             {
-                Location = new Point(150, 71),
+                Location = new Point(150, 111),
                 Width = 280,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(22, 22, 24),
@@ -523,7 +580,7 @@ namespace UoFiddler.Plugin.Granny3D
                 glControl.Invalidate();
             };
 
-            var pnlCoords = new Panel { Location = new Point(12, 105), Size = new Size(480, 36), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            var pnlCoords = new Panel { Location = new Point(12, 145), Size = new Size(480, 36), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
             Label CreateLbl(string txt, int x) => new Label { Text = txt, Location = new Point(x, 8), AutoSize = true, ForeColor = Color.Gainsboro };
 
             nudX = new NumericUpDown { DecimalPlaces = 3, Minimum = -10, Maximum = 10, Increment = 0.01m, Location = new Point(25, 6), Width = 85, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
@@ -557,7 +614,8 @@ namespace UoFiddler.Plugin.Granny3D
             grpMarkers.Controls.Add(pnlCoords);
             grpMarkers.Controls.Add(cbJoints);
             grpMarkers.Controls.Add(lblJoint);
-            grpMarkers.Controls.Add(btnAutoDetect);
+            grpMarkers.Controls.Add(pnlSkinBtns);
+            grpMarkers.Controls.Add(pnlTopRigBtns);
 
             // 5. Animation Preview Group
             var grpAnim = new GroupBox
@@ -1114,13 +1172,14 @@ namespace UoFiddler.Plugin.Granny3D
                     Normals = _baseNormals
                 };
 
-                if (_rawSkin != null && _rawSkin.Length == _baseVertices.Length)
+                if (_rawSkin != null && _rawSkin.Length == _baseVertices.Length && _rawSkin.Any(x => x != null && x.Length > 0))
                 {
                     part.Skin = _rawSkin;
                 }
                 else
                 {
-                    part.Skin = ComputeProximitySkinWeights(_baseVertices, _previewModel.Bones);
+                    MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
+                    _rawSkin = part.Skin;
                 }
                 _previewModel.Parts.Add(part);
             }
@@ -1128,72 +1187,385 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void AdaptPreviewBonesToMarkers()
         {
-            if (_previewModel == null || _previewModel.Bones.Count == 0) return;
+            if (_previewModel == null || _previewModel.Bones.Count == 0 || _refBones == null || _refBones.Count == 0) return;
 
-            foreach (var m in _markers)
+            int nb = _previewModel.Bones.Count;
+            var uoBindWorld = new Matrix4[nb];
+            for (int i = 0; i < nb; i++)
             {
-                var bone = _previewModel.Bones.FirstOrDefault(b => string.Equals(b.Name, m.BoneName, StringComparison.OrdinalIgnoreCase));
-                if (bone != null)
-                {
-                    bone.InverseBindMatrix = Matrix4.Invert(Matrix4.CreateTranslation(m.Position));
-                }
-            }
-        }
-
-        private VertexInfluence[][] ComputeProximitySkinWeights(Vector3[] vertices, List<GrannyBone> bones)
-        {
-            var skin = new VertexInfluence[vertices.Length][];
-            if (bones.Count == 0) return skin;
-
-            var bonePos = new Vector3[bones.Count];
-            for (int i = 0; i < bones.Count; i++)
-            {
-                var marker = _markers.FirstOrDefault(m => string.Equals(m.BoneName, bones[i].Name, StringComparison.OrdinalIgnoreCase));
-                bonePos[i] = marker != null ? marker.Position : bones[i].LocalPosition;
+                var inv = _refBones[i].InverseBindMatrix;
+                if (Math.Abs(inv.Determinant) > 1e-5f)
+                    uoBindWorld[i] = Matrix4.Invert(inv);
+                else
+                    uoBindWorld[i] = Matrix4.Identity;
             }
 
-            for (int v = 0; v < vertices.Length; v++)
+            var fittedWorld = new Matrix4[nb];
+            for (int i = 0; i < nb; i++)
             {
-                var pos = vertices[v];
-                int bestB1 = -1, bestB2 = -1;
-                float d1 = float.MaxValue, d2 = float.MaxValue;
-
-                for (int b = 0; b < bones.Count; b++)
+                fittedWorld[i] = uoBindWorld[i];
+                string name = _previewModel.Bones[i].Name;
+                var marker = _markers.FirstOrDefault(m => string.Equals(m.BoneName, name, StringComparison.OrdinalIgnoreCase));
+                if (marker == null)
                 {
-                    float distSq = (pos - bonePos[b]).LengthSquared;
-                    if (distSq < d1)
-                    {
-                        d2 = d1; bestB2 = bestB1;
-                        d1 = distSq; bestB1 = b;
-                    }
-                    else if (distSq < d2)
-                    {
-                        d2 = distSq; bestB2 = b;
-                    }
+                    int mIdx = _markers.FindIndex(m => FindMatchingBoneIndex(_previewModel.Bones, m.BoneName) == i);
+                    if (mIdx >= 0) marker = _markers[mIdx];
                 }
 
-                if (bestB1 >= 0 && bestB2 >= 0)
+                if (marker != null)
                 {
-                    float w1 = 1.0f / (MathF.Sqrt(d1) + 1e-3f);
-                    float w2 = 1.0f / (MathF.Sqrt(d2) + 1e-3f);
-                    float sum = w1 + w2;
-                    skin[v] = new[]
-                    {
-                        new VertexInfluence { BoneId = bestB1, Weight = w1 / sum },
-                        new VertexInfluence { BoneId = bestB2, Weight = w2 / sum }
-                    };
-                }
-                else if (bestB1 >= 0)
-                {
-                    skin[v] = new[] { new VertexInfluence { BoneId = bestB1, Weight = 1.0f } };
+                    var rot = uoBindWorld[i].ExtractRotation();
+                    fittedWorld[i] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(marker.Position);
                 }
                 else
                 {
-                    skin[v] = Array.Empty<VertexInfluence>();
+                    int p = _previewModel.Bones[i].ParentId;
+                    int pIdx = _previewModel.Bones.FindIndex(b => b.Id == p);
+                    if (pIdx >= 0 && pIdx < nb && pIdx != i)
+                    {
+                        var uoLocal = uoBindWorld[i] * Matrix4.Invert(uoBindWorld[pIdx]);
+                        fittedWorld[i] = uoLocal * fittedWorld[pIdx];
+                    }
                 }
             }
 
-            return skin;
+            // Recompute local transforms and inverse bind matrices for preview bones
+            for (int i = 0; i < nb; i++)
+            {
+                int p = _previewModel.Bones[i].ParentId;
+                int pIdx = _previewModel.Bones.FindIndex(b => b.Id == p);
+                if (pIdx >= 0 && pIdx < nb && pIdx != i)
+                {
+                    var localMat = fittedWorld[i] * Matrix4.Invert(fittedWorld[pIdx]);
+                    _previewModel.Bones[i].LocalPosition = localMat.ExtractTranslation();
+                    _previewModel.Bones[i].LocalRotation = localMat.ExtractRotation();
+                }
+                else
+                {
+                    _previewModel.Bones[i].LocalPosition = fittedWorld[i].ExtractTranslation();
+                    _previewModel.Bones[i].LocalRotation = fittedWorld[i].ExtractRotation();
+                }
+                _previewModel.Bones[i].InverseBindMatrix = Matrix4.Invert(fittedWorld[i]);
+            }
+        }
+
+        private static int FindMatchingBoneIndex(List<GrannyBone> bones, string uoTargetName)
+        {
+            if (bones == null || bones.Count == 0 || string.IsNullOrEmpty(uoTargetName)) return -1;
+
+            int idx = bones.FindIndex(b => string.Equals(b.Name, uoTargetName, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0) return idx;
+
+            foreach (var (mix, uo) in MixamoRetarget.BoneMap)
+            {
+                if (string.Equals(uo, uoTargetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    string cleanMix = mix.StartsWith("mixamorig:") ? mix.Substring(10) : mix;
+                    idx = bones.FindIndex(b =>
+                        string.Equals(b.Name, mix, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(b.Name, cleanMix, StringComparison.OrdinalIgnoreCase) ||
+                        b.Name.EndsWith(":" + cleanMix, StringComparison.OrdinalIgnoreCase));
+                    if (idx >= 0) return idx;
+                }
+            }
+
+            string lower = uoTargetName.ToLowerInvariant();
+            bool isLeft = lower.Contains(" l ") || lower.Contains("left") || lower.EndsWith("_l");
+            bool isRight = lower.Contains(" r ") || lower.Contains("right") || lower.EndsWith("_r");
+
+            if (lower.Contains("head"))
+                return bones.FindIndex(b => b.Name.IndexOf("head", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (lower.Contains("neck"))
+                return bones.FindIndex(b => b.Name.IndexOf("neck", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (lower.Contains("pelvis") || lower.Contains("hips"))
+                return bones.FindIndex(b => b.Name.IndexOf("pelvis", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("hips", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (lower.Contains("spine2") || lower.Contains("chest"))
+                return bones.FindIndex(b => b.Name.IndexOf("spine2", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("spine_02", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("chest", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (lower.Contains("spine"))
+                return bones.FindIndex(b => b.Name.IndexOf("spine", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            if (isLeft)
+            {
+                if (lower.Contains("hand"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("wrist", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("forearm"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("forearm", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("elbow", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("lowerarm", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("upperarm"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("upperarm", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("arm", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("clavicle"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("clavicle", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("shoulder", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("calf"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("calf", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("knee", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("leg", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("thigh"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("thigh", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("upleg", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("hip", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("foot"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("foot", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("ankle", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
+            }
+            else if (isRight)
+            {
+                if (lower.Contains("hand"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("wrist", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("forearm"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("forearm", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("elbow", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("lowerarm", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("upperarm"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("upperarm", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("arm", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("clavicle"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("clavicle", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("shoulder", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("calf"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("calf", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("knee", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("leg", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("thigh"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("thigh", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("upleg", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("hip", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("foot"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("foot", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("ankle", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
+            }
+
+            return -1;
+        }
+
+        private void InitMarkersFromLiveBones(List<GrannyBone> bones)
+        {
+            if (bones == null || bones.Count == 0) return;
+
+            int nb = bones.Count;
+            var boneWorldMat = new Matrix4[nb];
+            var boneWorldPos = new Vector3[nb];
+
+            for (int i = 0; i < nb; i++)
+            {
+                var inv = bones[i].InverseBindMatrix;
+                if (Math.Abs(inv.Determinant) > 1e-5f)
+                {
+                    boneWorldMat[i] = Matrix4.Invert(inv);
+                    boneWorldPos[i] = boneWorldMat[i].Row3.Xyz;
+                }
+            }
+
+            var children = new List<int>[nb];
+            for (int i = 0; i < nb; i++) children[i] = new List<int>();
+            var roots = new List<int>();
+
+            for (int i = 0; i < nb; i++)
+            {
+                int p = bones[i].ParentId;
+                int pIdx = bones.FindIndex(b => b.Id == p);
+                if (pIdx >= 0 && pIdx < nb && pIdx != i)
+                    children[pIdx].Add(i);
+                else
+                    roots.Add(i);
+            }
+
+            void ComputeFk(int idx)
+            {
+                if (boneWorldPos[idx] == Vector3.Zero)
+                {
+                    int p = bones[idx].ParentId;
+                    int pIdx = bones.FindIndex(b => b.Id == p);
+                    var local = Matrix4.CreateFromQuaternion(bones[idx].LocalRotation) * Matrix4.CreateTranslation(bones[idx].LocalPosition);
+                    if (pIdx >= 0 && pIdx < nb && pIdx != idx)
+                        boneWorldMat[idx] = local * boneWorldMat[pIdx];
+                    else
+                        boneWorldMat[idx] = local;
+                    boneWorldPos[idx] = boneWorldMat[idx].Row3.Xyz;
+                }
+
+                foreach (int child in children[idx])
+                    ComputeFk(child);
+            }
+
+            foreach (int r in roots)
+                ComputeFk(r);
+
+            foreach (var m in _markers)
+            {
+                int bIdx = FindMatchingBoneIndex(bones, m.BoneName);
+                if (bIdx >= 0 && bIdx < nb)
+                {
+                    m.Position = boneWorldPos[bIdx];
+                }
+            }
+
+            UpdateNudValues();
+        }
+
+        private void AutoPlaceMixamoLandmarks()
+        {
+            if (_baseVertices == null || _baseVertices.Length == 0) return;
+
+            float minX = float.MaxValue, maxX = float.MinValue;
+            float minY = float.MaxValue, maxY = float.MinValue;
+            float minZ = float.MaxValue, maxZ = float.MinValue;
+
+            foreach (var v in _baseVertices)
+            {
+                minX = Math.Min(minX, v.X); maxX = Math.Max(maxX, v.X);
+                minY = Math.Min(minY, v.Y); maxY = Math.Max(maxY, v.Y);
+                minZ = Math.Min(minZ, v.Z); maxZ = Math.Max(maxZ, v.Z);
+            }
+
+            float height = Math.Max(0.1f, maxZ - minZ);
+            float halfWidth = Math.Max(0.05f, (maxX - minX) * 0.5f);
+            float midY = (minY + maxY) * 0.5f;
+
+            void SetPos(string name, Vector3 pos)
+            {
+                var m = _markers.FirstOrDefault(x => string.Equals(x.BoneName, name, StringComparison.OrdinalIgnoreCase));
+                if (m != null) m.Position = pos;
+            }
+
+            // 1. Menton / Tête (Chin)
+            SetPos("Bip01 Head", new Vector3(0f, midY, minZ + height * 0.90f));
+            SetPos("Bip01 Neck", new Vector3(0f, midY, minZ + height * 0.83f));
+
+            // 2. Bassin / Entrejambe (Groin / Pelvis)
+            SetPos("Bip01 Spine2", new Vector3(0f, midY, minZ + height * 0.74f));
+            SetPos("Bip01 Spine", new Vector3(0f, midY, minZ + height * 0.62f));
+            SetPos("Bip01 Pelvis", new Vector3(0f, midY, minZ + height * 0.52f));
+
+            // 3. Bras (Clavicules, Épaules, Coudes, Poignets)
+            float armY = midY;
+            SetPos("Bip01 L Clavicle", new Vector3(halfWidth * 0.25f, armY, minZ + height * 0.76f));
+            SetPos("Bip01 R Clavicle", new Vector3(-halfWidth * 0.25f, armY, minZ + height * 0.76f));
+
+            SetPos("Bip01 L UpperArm", new Vector3(halfWidth * 0.45f, armY, minZ + height * 0.74f));
+            SetPos("Bip01 R UpperArm", new Vector3(-halfWidth * 0.45f, armY, minZ + height * 0.74f));
+
+            // Coudes (Elbows)
+            SetPos("Bip01 L Forearm", new Vector3(halfWidth * 0.72f, armY, minZ + height * 0.72f));
+            SetPos("Bip01 R Forearm", new Vector3(-halfWidth * 0.72f, armY, minZ + height * 0.72f));
+
+            // Poignets (Wrists)
+            SetPos("Bip01 L Hand", new Vector3(halfWidth * 0.95f, armY, minZ + height * 0.70f));
+            SetPos("Bip01 R Hand", new Vector3(-halfWidth * 0.95f, armY, minZ + height * 0.70f));
+
+            // 4. Jambes (Hanches, Genoux, Chevilles)
+            SetPos("Bip01 L Thigh", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.48f));
+            SetPos("Bip01 R Thigh", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.48f));
+
+            // Genoux (Knees)
+            SetPos("Bip01 L Calf", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.26f));
+            SetPos("Bip01 R Calf", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.26f));
+
+            // Chevilles (Ankles)
+            SetPos("Bip01 L Foot", new Vector3(halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
+            SetPos("Bip01 R Foot", new Vector3(-halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
+
+            UpdateNudValues();
+            EnsurePreviewModel();
+            glControl.Invalidate();
+        }
+
+        private void RecalculateArmSkinning()
+        {
+            if (_previewModel == null || _previewModel.Parts.Count == 0 || _baseVertices == null) return;
+            EnsurePreviewModel();
+            var part = _previewModel.Parts[0];
+            if (part.Skin == null || part.Skin.Length != _baseVertices.Length)
+            {
+                MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
+                _rawSkin = part.Skin;
+                return;
+            }
+
+            int nb = _previewModel.Bones.Count;
+            var boneByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < nb; i++) boneByName[_previewModel.Bones[i].Name] = i;
+
+            var boneWorldPos = new Vector3[nb];
+            for (int i = 0; i < nb; i++)
+                boneWorldPos[i] = Matrix4.Invert(_previewModel.Bones[i].InverseBindMatrix).Row3.Xyz;
+
+            var armSegments = new List<(int BoneId, Vector3 P0, Vector3 P1)>();
+            void AddSeg(string name, string endName)
+            {
+                if (boneByName.TryGetValue(name, out int b0) && boneByName.TryGetValue(endName, out int b1))
+                    armSegments.Add((b0, boneWorldPos[b0], boneWorldPos[b1]));
+                else if (boneByName.TryGetValue(name, out int bs))
+                    armSegments.Add((bs, boneWorldPos[bs], boneWorldPos[bs]));
+            }
+
+            AddSeg("Bip01 L Clavicle", "Bip01 L UpperArm");
+            AddSeg("Bip01 L UpperArm", "Bip01 L Forearm");
+            AddSeg("Bip01 L Forearm", "Bip01 L Hand");
+            AddSeg("Bip01 L Hand", "Bip01 L Finger1");
+
+            AddSeg("Bip01 R Clavicle", "Bip01 R UpperArm");
+            AddSeg("Bip01 R UpperArm", "Bip01 R Forearm");
+            AddSeg("Bip01 R Forearm", "Bip01 R Hand");
+            AddSeg("Bip01 R Hand", "Bip01 R Finger1");
+
+            var armBoneIndices = new HashSet<int>();
+            foreach (var seg in armSegments) armBoneIndices.Add(seg.BoneId);
+
+            int updatedVerts = 0;
+            for (int v = 0; v < _baseVertices.Length; v++)
+            {
+                var p = _baseVertices[v];
+                bool isArmVert = (MathF.Abs(p.X) > 0.16f && p.Z > 0.85f);
+                if (!isArmVert && part.Skin[v] != null)
+                {
+                    foreach (var inf in part.Skin[v])
+                    {
+                        if (armBoneIndices.Contains(inf.BoneId) && inf.Weight > 0.15f)
+                        {
+                            isArmVert = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!isArmVert) continue;
+
+                var candidates = new List<(int BoneId, float Weight)>();
+                foreach (var seg in armSegments)
+                {
+                    string bName = _previewModel.Bones[seg.BoneId].Name;
+                    bool isLeft = bName.Contains(" L ");
+                    bool isRight = bName.Contains(" R ");
+                    if (isLeft && p.X < -0.02f) continue;
+                    if (isRight && p.X > 0.02f) continue;
+
+                    Vector3 ab = seg.P1 - seg.P0;
+                    float l2 = ab.LengthSquared;
+                    float dist = l2 < 1e-6f ? (p - seg.P0).Length : (p - (seg.P0 + MathHelper.Clamp(Vector3.Dot(p - seg.P0, ab) / l2, 0f, 1f) * ab)).Length;
+
+                    float w = 1.0f / (MathF.Pow(dist, 4f) + 1e-4f);
+                    candidates.Add((seg.BoneId, w));
+                }
+
+                candidates.Sort((a, b) => b.Weight.CompareTo(a.Weight));
+                int count = Math.Min(4, candidates.Count);
+                if (count > 0)
+                {
+                    float sum = 0f;
+                    for (int i = 0; i < count; i++) sum += candidates[i].Weight;
+                    var infs = new VertexInfluence[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        infs[i] = new VertexInfluence
+                        {
+                            BoneId = candidates[i].BoneId,
+                            Weight = sum > 1e-6f ? (candidates[i].Weight / sum) : (i == 0 ? 1f : 0f)
+                        };
+                    }
+                    part.Skin[v] = infs;
+                    updatedVerts++;
+                }
+            }
+
+            _rawSkin = part.Skin;
+            MessageBox.Show($"Skinning des bras recalculé avec succès ({updatedVerts:N0} sommets mis à jour).\nLe squelette et le reste du corps sont préservés.", "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            glControl.Invalidate();
+        }
+
+        private void RecalculateAllSkinning()
+        {
+            if (_previewModel == null || _previewModel.Parts.Count == 0 || _baseVertices == null) return;
+            EnsurePreviewModel();
+            var part = _previewModel.Parts[0];
+            MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
+            _rawSkin = part.Skin;
+            MessageBox.Show($"Skinning volumétrique Mixamo complet recalculé pour {part.Vertices.Length:N0} sommets.", "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            glControl.Invalidate();
         }
 
         private void ApplyAnimationPose(float time)
@@ -1205,48 +1577,81 @@ namespace UoFiddler.Plugin.Granny3D
             if (_boneWorldMatrices == null || _boneWorldMatrices.Length != nb)
                 _boneWorldMatrices = new Matrix4[nb];
 
+            var children = new List<int>[nb];
+            for (int i = 0; i < nb; i++) children[i] = new List<int>();
+            var roots = new List<int>();
+
             for (int i = 0; i < nb; i++)
             {
-                var bone = _previewModel.Bones[i];
-                GrannyTrack? track = null;
-                _testAnim.TracksByName?.TryGetValue(bone.Name, out track);
-                if (track == null)
-                    track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, bone.Name, StringComparison.OrdinalIgnoreCase));
+                int p = _previewModel.Bones[i].ParentId;
+                int pIdx = _previewModel.Bones.FindIndex(b => b.Id == p);
+                if (pIdx >= 0 && pIdx < nb && pIdx != i)
+                    children[pIdx].Add(i);
+                else
+                    roots.Add(i);
+            }
 
-                Vector3 pos;
-                OpenTK.Mathematics.Quaternion rot;
-                if (track != null)
+            void EvalBone(int idx)
+            {
+                var bone = _previewModel.Bones[idx];
+                GrannyTrack? track = null;
+                if (_testAnim.TracksByName != null && _testAnim.TracksByName.TryGetValue(bone.Name, out track))
                 {
-                    pos = track.EvaluatePos(time);
-                    rot = track.EvaluateRot(time);
                 }
                 else
                 {
-                    var marker = _markers.FirstOrDefault(m => string.Equals(m.BoneName, bone.Name, StringComparison.OrdinalIgnoreCase));
-                    pos = marker != null ? marker.Position : bone.LocalPosition;
-                    rot = bone.LocalRotation;
+                    track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, bone.Name, StringComparison.OrdinalIgnoreCase));
                 }
 
-                Matrix4 localTransform = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
-
-                int parentIdx = -1;
-                if (bone.ParentId >= 0)
+                if (track == null)
                 {
-                    for (int p = 0; p < nb; p++)
+                    string bName = bone.Name;
+                    foreach (var (mix, uo) in MixamoRetarget.BoneMap)
                     {
-                        if (_previewModel.Bones[p].Id == bone.ParentId) { parentIdx = p; break; }
+                        if (string.Equals(bName, mix, StringComparison.OrdinalIgnoreCase) ||
+                            bName.EndsWith(":" + (mix.Contains(':') ? mix.Substring(mix.IndexOf(':') + 1) : mix), StringComparison.OrdinalIgnoreCase))
+                        {
+                            track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, uo, StringComparison.OrdinalIgnoreCase));
+                            if (track != null) break;
+                        }
+                        else if (string.Equals(bName, uo, StringComparison.OrdinalIgnoreCase))
+                        {
+                            track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, mix, StringComparison.OrdinalIgnoreCase) ||
+                                                                        t.Name.EndsWith(":" + (mix.Contains(':') ? mix.Substring(mix.IndexOf(':') + 1) : mix), StringComparison.OrdinalIgnoreCase));
+                            if (track != null) break;
+                        }
                     }
                 }
 
-                if (parentIdx >= 0 && parentIdx < i)
+                Matrix4 localTransform;
+                if (track != null)
                 {
-                    _boneWorldMatrices[i] = localTransform * _boneWorldMatrices[parentIdx];
+                    Vector3 pos = track.EvaluatePos(time);
+                    OpenTK.Mathematics.Quaternion rot = track.EvaluateRot(time);
+                    localTransform = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
                 }
                 else
                 {
-                    _boneWorldMatrices[i] = localTransform;
+                    localTransform = Matrix4.CreateFromQuaternion(bone.LocalRotation) * Matrix4.CreateTranslation(bone.LocalPosition);
                 }
+
+                int p = bone.ParentId;
+                int pIdx = _previewModel.Bones.FindIndex(b => b.Id == p);
+                if (pIdx >= 0 && pIdx < nb && pIdx != idx)
+                {
+                    _boneWorldMatrices[idx] = localTransform * _boneWorldMatrices[pIdx];
+                }
+                else
+                {
+                    _boneWorldMatrices[idx] = localTransform;
+                }
+
+                foreach (int child in children[idx])
+                    EvalBone(child);
             }
+
+            foreach (int r in roots)
+                EvalBone(r);
 
             // CPU skinning deformation for the animated test mesh
             if (_baseVertices != null && _indices != null && _previewModel.Parts.Count > 0)
@@ -1399,7 +1804,19 @@ namespace UoFiddler.Plugin.Granny3D
                 _mirrorX = false;
 
                 RebakeModelTransform();
-                AutoFitMarkersToMesh();
+
+                var meshWithBones = meshes.FirstOrDefault(m => m.Bones != null && m.Bones.Count > 0);
+                if (meshWithBones != null)
+                {
+                    _liveOriginalBones = new List<GrannyBone>(meshWithBones.Bones);
+                    _refBones = new List<GrannyBone>(meshWithBones.Bones);
+                    InitMarkersFromLiveBones(meshWithBones.Bones);
+                }
+                else
+                {
+                    AutoPlaceMixamoLandmarks();
+                }
+
                 EnsurePreviewModel();
                 glControl.Invalidate();
             }
@@ -1465,7 +1882,16 @@ namespace UoFiddler.Plugin.Granny3D
                                             $"Format : Character UO (.char) avec rig intégré";
 
                         RebakeModelTransform();
-                        AutoFitMarkersToMesh();
+                        if (model.Bones != null && model.Bones.Count > 0)
+                        {
+                            _liveOriginalBones = new List<GrannyBone>(model.Bones);
+                            _refBones = new List<GrannyBone>(model.Bones);
+                            InitMarkersFromLiveBones(model.Bones);
+                        }
+                        else
+                        {
+                            AutoPlaceMixamoLandmarks();
+                        }
                         EnsurePreviewModel();
                         glControl.Invalidate();
                         return;
@@ -1512,7 +1938,16 @@ namespace UoFiddler.Plugin.Granny3D
                                             $"Format : Modèle Granny UO (.grn)";
 
                         RebakeModelTransform();
-                        AutoFitMarkersToMesh();
+                        if (parser.Bones != null && parser.Bones.Count > 0)
+                        {
+                            _liveOriginalBones = new List<GrannyBone>(parser.Bones);
+                            _refBones = new List<GrannyBone>(parser.Bones);
+                            InitMarkersFromLiveBones(parser.Bones);
+                        }
+                        else
+                        {
+                            AutoPlaceMixamoLandmarks();
+                        }
                         EnsurePreviewModel();
                         glControl.Invalidate();
                         return;
@@ -1632,7 +2067,7 @@ namespace UoFiddler.Plugin.Granny3D
                 RebakeModelTransform();
                 AutoCenterAndGround();
                 AutoScaleToSkeleton();
-                AutoFitMarkersToMesh();
+                AutoPlaceMixamoLandmarks();
                 EnsurePreviewModel();
                 glControl.Invalidate();
             }
@@ -1760,7 +2195,11 @@ namespace UoFiddler.Plugin.Granny3D
                 var customJoints = _markers.ToDictionary(m => m.BoneName, m => m.Position, StringComparer.OrdinalIgnoreCase);
                 bool forceAuto = chkForceAutoSkin.Checked;
 
-                if (ext == ".fbx" && File.Exists(_currentModelPath) && !forceAuto)
+                if (_liveMeshes != null && _liveMeshes.Count > 0 && _previewModel != null)
+                {
+                    model = _previewModel;
+                }
+                else if (ext == ".fbx" && File.Exists(_currentModelPath) && !forceAuto)
                 {
                     MixamoCharacterImport.TryImport(_currentModelPath, _outFolder, _refPath, out model, out err, customJoints, forceAuto);
                 }
