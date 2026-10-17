@@ -74,6 +74,7 @@ namespace UoFiddler.Plugin.Granny3D
         private float[]? _interleaved;
         private float[]? _animatedInterleaved;
         private GrannyModelFile? _previewModel;
+        private string? _textureName;
 
         // Transform parameters
         private float _scale = 1.0f;
@@ -84,6 +85,23 @@ namespace UoFiddler.Plugin.Granny3D
         private Vector3 _offset = Vector3.Zero;
 
         // Joint markers list
+        public enum RigViewMode
+        {
+            Front,   // Vue de Face: Z/X
+            Profile, // Vue de Profil: Z/Y
+            Back,    // Vue Dos: Z/X
+            Free3D   // 3D Libre
+        }
+
+        private RigViewMode _currentViewMode = RigViewMode.Front;
+        private Button btnVueFace = null!;
+        private Button btnVueProfil = null!;
+        private Button btnVueDos = null!;
+        private Button btnVue3D = null!;
+        private bool _isUpdatingNud = false;
+        private Vector3 _dragStartMarkerPos = Vector3.Zero;
+        private Vector3 _dragGrabOffset = Vector3.Zero;
+
         private readonly List<JointMarker> _markers = new();
         private int _selectedMarkerIndex = -1;
         private bool _isDraggingMarker = false;
@@ -96,7 +114,7 @@ namespace UoFiddler.Plugin.Granny3D
         // Camera
         private Vector3 _cameraTarget = new Vector3(0, 0, 1.0f);
         private float _cameraYaw = 0.0f; // degrees (0 = front)
-        private float _cameraPitch = 10.0f; // degrees
+        private float _cameraPitch = 0.0f; // degrees (0 = front level)
         private float _cameraDist = 2.8f;
         private Vector3 _cameraPan = Vector3.Zero;
 
@@ -225,10 +243,17 @@ namespace UoFiddler.Plugin.Granny3D
                 return b;
             }
 
-            pnlCamTools.Controls.Add(CreateCamBtn("👁 Vue Face (Z/X)", () => { _cameraYaw = 0f; _cameraPitch = 0f; _cameraPan = Vector3.Zero; }));
-            pnlCamTools.Controls.Add(CreateCamBtn("👁 Vue Profil (Z/Y)", () => { _cameraYaw = 90f; _cameraPitch = 0f; _cameraPan = Vector3.Zero; }));
-            pnlCamTools.Controls.Add(CreateCamBtn("🎥 3D Persp", () => { _cameraYaw = 35f; _cameraPitch = 15f; _cameraPan = Vector3.Zero; }));
+            btnVueFace = CreateCamBtn("👁 Vue Face (Z/X)", () => SetViewMode(RigViewMode.Front));
+            btnVueProfil = CreateCamBtn("👁 Vue Profil (Z/Y)", () => SetViewMode(RigViewMode.Profile));
+            btnVueDos = CreateCamBtn("👁 Vue Dos", () => SetViewMode(RigViewMode.Back));
+            btnVue3D = CreateCamBtn("🎥 3D Persp", () => SetViewMode(RigViewMode.Free3D));
+
+            pnlCamTools.Controls.Add(btnVueFace);
+            pnlCamTools.Controls.Add(btnVueProfil);
+            pnlCamTools.Controls.Add(btnVueDos);
+            pnlCamTools.Controls.Add(btnVue3D);
             pnlCamTools.Controls.Add(CreateCamBtn("🎯 Centrer Caméra", () => { _cameraDist = 2.8f; _cameraPan = Vector3.Zero; }));
+            UpdateViewButtonsUI();
 
             var chkWireframe = new CheckBox
             {
@@ -767,10 +792,14 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void NudgeOffset(float dx, float dy, float dz)
         {
-            _offset.X += dx;
-            _offset.Y += dy;
-            _offset.Z += dz;
+            var delta = new Vector3(dx, dy, dz);
+            _offset += delta;
+            foreach (var m in _markers)
+            {
+                m.Position += delta;
+            }
             RebakeModelTransform();
+            UpdateNudValues();
             EnsurePreviewModel();
             glControl.Invalidate();
         }
@@ -848,11 +877,15 @@ namespace UoFiddler.Plugin.Granny3D
             float centerX = (minX + maxX) * 0.5f;
             float centerY = (minY + maxY) * 0.5f;
 
-            _offset.X -= centerX;
-            _offset.Y -= centerY;
-            _offset.Z -= minZ; // Place feet exactly at Z = 0
+            var shift = new Vector3(-centerX, -centerY, -minZ);
+            _offset += shift;
+            foreach (var m in _markers)
+            {
+                m.Position += shift;
+            }
 
             RebakeModelTransform();
+            UpdateNudValues();
             EnsurePreviewModel();
             glControl.Invalidate();
         }
@@ -1131,10 +1164,38 @@ namespace UoFiddler.Plugin.Granny3D
             glControl.Invalidate();
         }
 
+        private static int GetParentIndex(IList<GrannyBone> bones, int i)
+        {
+            if (bones == null || i < 0 || i >= bones.Count) return -1;
+            int p = bones[i].ParentId;
+            if (p < 0 || p == i) return -1;
+            if (p < bones.Count) return p;
+            for (int k = 0; k < bones.Count; k++)
+            {
+                if (bones[k].Id == p && k != i) return k;
+            }
+            return -1;
+        }
+
+        private static bool TrackPositionVaries(GrannyTrack? tr, float eps = 0.002f)
+        {
+            if (tr?.Pos == null || tr.Pos.Length < 2) return false;
+            float eps2 = eps * eps;
+            Vector3 first = tr.Pos[0];
+            for (int k = 1; k < tr.Pos.Length; k++)
+            {
+                if ((tr.Pos[k] - first).LengthSquared > eps2)
+                    return true;
+            }
+            return false;
+        }
+
         private void EnsurePreviewModel()
         {
             if (_refBones == null || _refBones.Count == 0)
                 LoadReferenceBones();
+
+            for (int i = 0; i < _refBones.Count; i++) _refBones[i].Id = i;
 
             if (_previewModel == null)
             {
@@ -1144,11 +1205,12 @@ namespace UoFiddler.Plugin.Granny3D
                     Bones = new List<GrannyBone>()
                 };
 
-                foreach (var b in _refBones)
+                for (int i = 0; i < _refBones.Count; i++)
                 {
+                    var b = _refBones[i];
                     _previewModel.Bones.Add(new GrannyBone
                     {
-                        Id = b.Id,
+                        Id = i,
                         ParentId = b.ParentId,
                         Name = b.Name,
                         LocalPosition = b.LocalPosition,
@@ -1169,7 +1231,9 @@ namespace UoFiddler.Plugin.Granny3D
                     Name = "Mesh",
                     Vertices = _baseVertices,
                     Indices = _indices,
-                    Normals = _baseNormals
+                    Normals = _baseNormals,
+                    UVs = _rawUVs,
+                    TextureName = _textureName ?? string.Empty
                 };
 
                 if (_rawSkin != null && _rawSkin.Length == _baseVertices.Length && _rawSkin.Any(x => x != null && x.Length > 0))
@@ -1190,6 +1254,8 @@ namespace UoFiddler.Plugin.Granny3D
             if (_previewModel == null || _previewModel.Bones.Count == 0 || _refBones == null || _refBones.Count == 0) return;
 
             int nb = _previewModel.Bones.Count;
+            for (int i = 0; i < nb; i++) _previewModel.Bones[i].Id = i;
+
             var uoBindWorld = new Matrix4[nb];
             for (int i = 0; i < nb; i++)
             {
@@ -1200,43 +1266,81 @@ namespace UoFiddler.Plugin.Granny3D
                     uoBindWorld[i] = Matrix4.Identity;
             }
 
-            var fittedWorld = new Matrix4[nb];
+            var children = new List<int>[nb];
+            for (int i = 0; i < nb; i++) children[i] = new List<int>();
+            var roots = new List<int>();
+
             for (int i = 0; i < nb; i++)
             {
-                fittedWorld[i] = uoBindWorld[i];
-                string name = _previewModel.Bones[i].Name;
+                int p = GetParentIndex(_previewModel.Bones, i);
+                if (p >= 0 && p < nb && p != i)
+                    children[p].Add(i);
+                else
+                    roots.Add(i);
+            }
+
+            var fittedWorld = new Matrix4[nb];
+
+            void ComputeFitted(int idx)
+            {
+                string name = _previewModel.Bones[idx].Name;
                 var marker = _markers.FirstOrDefault(m => string.Equals(m.BoneName, name, StringComparison.OrdinalIgnoreCase));
                 if (marker == null)
                 {
-                    int mIdx = _markers.FindIndex(m => FindMatchingBoneIndex(_previewModel.Bones, m.BoneName) == i);
+                    int mIdx = _markers.FindIndex(m => FindMatchingBoneIndex(_previewModel.Bones, m.BoneName) == idx);
                     if (mIdx >= 0) marker = _markers[mIdx];
                 }
 
-                if (marker != null)
+                if (marker == null && name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
                 {
-                    var rot = uoBindWorld[i].ExtractRotation();
-                    fittedWorld[i] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(marker.Position);
+                    var pelvMarker = _markers.FirstOrDefault(m => string.Equals(m.BoneName, "Bip01 Pelvis", StringComparison.OrdinalIgnoreCase));
+                    if (pelvMarker != null)
+                    {
+                        int pelvIdx = FindMatchingBoneIndex(_refBones, "Bip01 Pelvis");
+                        Vector3 pelvToBip = Vector3.Zero;
+                        if (pelvIdx >= 0 && pelvIdx < nb)
+                            pelvToBip = uoBindWorld[idx].Row3.Xyz - uoBindWorld[pelvIdx].Row3.Xyz;
+                        var rot = uoBindWorld[idx].ExtractRotation();
+                        fittedWorld[idx] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pelvMarker.Position + pelvToBip);
+                    }
+                    else
+                    {
+                        fittedWorld[idx] = uoBindWorld[idx];
+                    }
+                }
+                else if (marker != null)
+                {
+                    var rot = uoBindWorld[idx].ExtractRotation();
+                    fittedWorld[idx] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(marker.Position);
                 }
                 else
                 {
-                    int p = _previewModel.Bones[i].ParentId;
-                    int pIdx = _previewModel.Bones.FindIndex(b => b.Id == p);
-                    if (pIdx >= 0 && pIdx < nb && pIdx != i)
+                    int p = GetParentIndex(_previewModel.Bones, idx);
+                    if (p >= 0 && p < nb && p != idx)
                     {
-                        var uoLocal = uoBindWorld[i] * Matrix4.Invert(uoBindWorld[pIdx]);
-                        fittedWorld[i] = uoLocal * fittedWorld[pIdx];
+                        var uoLocal = uoBindWorld[idx] * Matrix4.Invert(uoBindWorld[p]);
+                        fittedWorld[idx] = uoLocal * fittedWorld[p];
+                    }
+                    else
+                    {
+                        fittedWorld[idx] = uoBindWorld[idx];
                     }
                 }
+
+                foreach (int child in children[idx])
+                    ComputeFitted(child);
             }
+
+            foreach (int r in roots)
+                ComputeFitted(r);
 
             // Recompute local transforms and inverse bind matrices for preview bones
             for (int i = 0; i < nb; i++)
             {
-                int p = _previewModel.Bones[i].ParentId;
-                int pIdx = _previewModel.Bones.FindIndex(b => b.Id == p);
-                if (pIdx >= 0 && pIdx < nb && pIdx != i)
+                int p = GetParentIndex(_previewModel.Bones, i);
+                if (p >= 0 && p < nb && p != i)
                 {
-                    var localMat = fittedWorld[i] * Matrix4.Invert(fittedWorld[pIdx]);
+                    var localMat = fittedWorld[i] * Matrix4.Invert(fittedWorld[p]);
                     _previewModel.Bones[i].LocalPosition = localMat.ExtractTranslation();
                     _previewModel.Bones[i].LocalRotation = localMat.ExtractRotation();
                 }
@@ -1327,6 +1431,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (bones == null || bones.Count == 0) return;
 
             int nb = bones.Count;
+            for (int i = 0; i < nb; i++) bones[i].Id = i;
             var boneWorldMat = new Matrix4[nb];
             var boneWorldPos = new Vector3[nb];
 
@@ -1346,10 +1451,9 @@ namespace UoFiddler.Plugin.Granny3D
 
             for (int i = 0; i < nb; i++)
             {
-                int p = bones[i].ParentId;
-                int pIdx = bones.FindIndex(b => b.Id == p);
-                if (pIdx >= 0 && pIdx < nb && pIdx != i)
-                    children[pIdx].Add(i);
+                int p = GetParentIndex(bones, i);
+                if (p >= 0 && p < nb && p != i)
+                    children[p].Add(i);
                 else
                     roots.Add(i);
             }
@@ -1358,11 +1462,10 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (boneWorldPos[idx] == Vector3.Zero)
                 {
-                    int p = bones[idx].ParentId;
-                    int pIdx = bones.FindIndex(b => b.Id == p);
+                    int p = GetParentIndex(bones, idx);
                     var local = Matrix4.CreateFromQuaternion(bones[idx].LocalRotation) * Matrix4.CreateTranslation(bones[idx].LocalPosition);
-                    if (pIdx >= 0 && pIdx < nb && pIdx != idx)
-                        boneWorldMat[idx] = local * boneWorldMat[pIdx];
+                    if (p >= 0 && p < nb && p != idx)
+                        boneWorldMat[idx] = local * boneWorldMat[p];
                     else
                         boneWorldMat[idx] = local;
                     boneWorldPos[idx] = boneWorldMat[idx].Row3.Xyz;
@@ -1477,10 +1580,12 @@ namespace UoFiddler.Plugin.Granny3D
             var armSegments = new List<(int BoneId, Vector3 P0, Vector3 P1)>();
             void AddSeg(string name, string endName)
             {
-                if (boneByName.TryGetValue(name, out int b0) && boneByName.TryGetValue(endName, out int b1))
+                int b0 = FindMatchingBoneIndex(_previewModel.Bones, name);
+                int b1 = FindMatchingBoneIndex(_previewModel.Bones, endName);
+                if (b0 >= 0 && b1 >= 0)
                     armSegments.Add((b0, boneWorldPos[b0], boneWorldPos[b1]));
-                else if (boneByName.TryGetValue(name, out int bs))
-                    armSegments.Add((bs, boneWorldPos[bs], boneWorldPos[bs]));
+                else if (b0 >= 0)
+                    armSegments.Add((b0, boneWorldPos[b0], boneWorldPos[b0]));
             }
 
             AddSeg("Bip01 L Clavicle", "Bip01 L UpperArm");
@@ -1583,10 +1688,9 @@ namespace UoFiddler.Plugin.Granny3D
 
             for (int i = 0; i < nb; i++)
             {
-                int p = _previewModel.Bones[i].ParentId;
-                int pIdx = _previewModel.Bones.FindIndex(b => b.Id == p);
-                if (pIdx >= 0 && pIdx < nb && pIdx != i)
-                    children[pIdx].Add(i);
+                int p = GetParentIndex(_previewModel.Bones, i);
+                if (p >= 0 && p < nb && p != i)
+                    children[p].Add(i);
                 else
                     roots.Add(i);
             }
@@ -1624,9 +1728,27 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 Matrix4 localTransform;
+                int p = GetParentIndex(_previewModel.Bones, idx);
+                bool isRoot = p < 0 || p >= nb || p == idx ||
+                              bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase);
+
                 if (track != null)
                 {
-                    Vector3 pos = track.EvaluatePos(time);
+                    bool useAnimPos = isRoot ||
+                                      bone.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
+                                      TrackPositionVaries(track, 0.002f);
+                    Vector3 pos;
+                    if (bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase) && _refBones != null && idx < _refBones.Count)
+                    {
+                        var refBindPos = Matrix4.Invert(_refBones[idx].InverseBindMatrix).Row3.Xyz;
+                        var animPos = track.EvaluatePos(time);
+                        var animDelta = animPos - refBindPos;
+                        pos = bone.LocalPosition + animDelta;
+                    }
+                    else
+                    {
+                        pos = useAnimPos ? track.EvaluatePos(time) : bone.LocalPosition;
+                    }
                     OpenTK.Mathematics.Quaternion rot = track.EvaluateRot(time);
                     localTransform = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
                 }
@@ -1635,11 +1757,9 @@ namespace UoFiddler.Plugin.Granny3D
                     localTransform = Matrix4.CreateFromQuaternion(bone.LocalRotation) * Matrix4.CreateTranslation(bone.LocalPosition);
                 }
 
-                int p = bone.ParentId;
-                int pIdx = _previewModel.Bones.FindIndex(b => b.Id == p);
-                if (pIdx >= 0 && pIdx < nb && pIdx != idx)
+                if (p >= 0 && p < nb && p != idx)
                 {
-                    _boneWorldMatrices[idx] = localTransform * _boneWorldMatrices[pIdx];
+                    _boneWorldMatrices[idx] = localTransform * _boneWorldMatrices[p];
                 }
                 else
                 {
@@ -1754,7 +1874,8 @@ namespace UoFiddler.Plugin.Granny3D
                         vertList.Add(lm.BaseVertices[i]);
                         Vector3 n = (lm.BaseCornerNormals != null && i < lm.BaseCornerNormals.Length) ? lm.BaseCornerNormals[i] : Vector3.UnitZ;
                         normList.Add(n);
-                        uvList.Add(Vector2.Zero);
+                        Vector2 uv = (lm.SourceMesh?.UVs != null && i < lm.SourceMesh.UVs.Count) ? lm.SourceMesh.UVs[i] : Vector2.Zero;
+                        uvList.Add(uv);
                         if (lm.Skin != null && i < lm.Skin.Length)
                             skinList.Add(lm.Skin[i]);
                         else
@@ -1790,6 +1911,7 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     _currentModelPath = meshes.FirstOrDefault(m => !string.IsNullOrEmpty(m.SourcePath))?.SourcePath;
                 }
+                _textureName = meshes.FirstOrDefault(m => !string.IsNullOrEmpty(m.TextureName))?.TextureName;
                 string fn = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetFileName(_currentModelPath) : "Scène UOFiddler active";
 
                 lblModelInfo.Text = $"Modèle actif : {fn}\n" +
@@ -1808,8 +1930,8 @@ namespace UoFiddler.Plugin.Granny3D
                 var meshWithBones = meshes.FirstOrDefault(m => m.Bones != null && m.Bones.Count > 0);
                 if (meshWithBones != null)
                 {
+                    for (int i = 0; i < meshWithBones.Bones.Count; i++) meshWithBones.Bones[i].Id = i;
                     _liveOriginalBones = new List<GrannyBone>(meshWithBones.Bones);
-                    _refBones = new List<GrannyBone>(meshWithBones.Bones);
                     InitMarkersFromLiveBones(meshWithBones.Bones);
                 }
                 else
@@ -1873,6 +1995,7 @@ namespace UoFiddler.Plugin.Granny3D
                         _rawUVs = uList.ToArray();
                         _indices = iList.ToArray();
                         _rawSkin = sList.ToArray();
+                        _textureName = model.Parts.FirstOrDefault(p => !string.IsNullOrEmpty(p.TextureName))?.TextureName;
 
                         _scale = 1.0f; nudScale.Value = 1.0m;
                         _rotX = 0f; _rotY = 0f; _rotZ = 0f; _offset = Vector3.Zero; _mirrorX = false;
@@ -1885,7 +2008,6 @@ namespace UoFiddler.Plugin.Granny3D
                         if (model.Bones != null && model.Bones.Count > 0)
                         {
                             _liveOriginalBones = new List<GrannyBone>(model.Bones);
-                            _refBones = new List<GrannyBone>(model.Bones);
                             InitMarkersFromLiveBones(model.Bones);
                         }
                         else
@@ -1929,6 +2051,7 @@ namespace UoFiddler.Plugin.Granny3D
                         _rawUVs = uList.ToArray();
                         _indices = iList.ToArray();
                         _rawSkin = sList.ToArray();
+                        _textureName = parser.TextureName;
 
                         _scale = 1.0f; nudScale.Value = 1.0m;
                         _rotX = 0f; _rotY = 0f; _rotZ = 0f; _offset = Vector3.Zero; _mirrorX = false;
@@ -1941,7 +2064,6 @@ namespace UoFiddler.Plugin.Granny3D
                         if (parser.Bones != null && parser.Bones.Count > 0)
                         {
                             _liveOriginalBones = new List<GrannyBone>(parser.Bones);
-                            _refBones = new List<GrannyBone>(parser.Bones);
                             InitMarkersFromLiveBones(parser.Bones);
                         }
                         else
@@ -2146,17 +2268,67 @@ namespace UoFiddler.Plugin.Granny3D
             glControl.Invalidate();
         }
 
+        private void SetViewMode(RigViewMode mode)
+        {
+            _currentViewMode = mode;
+            switch (mode)
+            {
+                case RigViewMode.Front:
+                    _cameraYaw = 0f;
+                    _cameraPitch = 0f;
+                    _cameraPan = Vector3.Zero;
+                    break;
+                case RigViewMode.Profile:
+                    _cameraYaw = 90f;
+                    _cameraPitch = 0f;
+                    _cameraPan = Vector3.Zero;
+                    break;
+                case RigViewMode.Back:
+                    _cameraYaw = 180f;
+                    _cameraPitch = 0f;
+                    _cameraPan = Vector3.Zero;
+                    break;
+                case RigViewMode.Free3D:
+                    _cameraYaw = 35f;
+                    _cameraPitch = 15f;
+                    _cameraPan = Vector3.Zero;
+                    break;
+            }
+            UpdateViewButtonsUI();
+            glControl.Invalidate();
+        }
+
+        private void UpdateViewButtonsUI()
+        {
+            Color activeBg = Color.FromArgb(20, 110, 80);
+            Color normalBg = Color.FromArgb(45, 45, 48);
+
+            if (btnVueFace != null) btnVueFace.BackColor = (_currentViewMode == RigViewMode.Front) ? activeBg : normalBg;
+            if (btnVueProfil != null) btnVueProfil.BackColor = (_currentViewMode == RigViewMode.Profile) ? activeBg : normalBg;
+            if (btnVueDos != null) btnVueDos.BackColor = (_currentViewMode == RigViewMode.Back) ? activeBg : normalBg;
+            if (btnVue3D != null) btnVue3D.BackColor = (_currentViewMode == RigViewMode.Free3D) ? activeBg : normalBg;
+        }
+
         private void UpdateNudValues()
         {
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
-            var m = _markers[_selectedMarkerIndex];
-            nudX.Value = (decimal)Math.Round(m.Position.X, 3);
-            nudY.Value = (decimal)Math.Round(m.Position.Y, 3);
-            nudZ.Value = (decimal)Math.Round(m.Position.Z, 3);
+            _isUpdatingNud = true;
+            try
+            {
+                var m = _markers[_selectedMarkerIndex];
+                nudX.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.Position.X, 3), (float)nudX.Minimum, (float)nudX.Maximum);
+                nudY.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.Position.Y, 3), (float)nudY.Minimum, (float)nudY.Maximum);
+                nudZ.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.Position.Z, 3), (float)nudZ.Minimum, (float)nudZ.Maximum);
+            }
+            finally
+            {
+                _isUpdatingNud = false;
+            }
         }
 
         private void OnNudChanged()
         {
+            if (_isUpdatingNud) return;
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
             var m = _markers[_selectedMarkerIndex];
             m.Position = new Vector3((float)nudX.Value, (float)nudY.Value, (float)nudZ.Value);
@@ -2195,7 +2367,7 @@ namespace UoFiddler.Plugin.Granny3D
                 var customJoints = _markers.ToDictionary(m => m.BoneName, m => m.Position, StringComparer.OrdinalIgnoreCase);
                 bool forceAuto = chkForceAutoSkin.Checked;
 
-                if (_liveMeshes != null && _liveMeshes.Count > 0 && _previewModel != null)
+                if (_previewModel != null && _previewModel.Parts.Count > 0 && _previewModel.Bones.Count > 0)
                 {
                     model = _previewModel;
                 }
@@ -2385,7 +2557,7 @@ void main() {
 
             Vector3 eyeOffset = new Vector3(
                 _cameraDist * MathF.Sin(radYaw) * MathF.Cos(radPitch),
-                _cameraDist * MathF.Cos(radYaw) * MathF.Cos(radPitch),
+                -_cameraDist * MathF.Cos(radYaw) * MathF.Cos(radPitch),
                 _cameraDist * MathF.Sin(radPitch)
             );
             Vector3 eye = _cameraTarget + _cameraPan + eyeOffset;
@@ -2434,21 +2606,21 @@ void main() {
                 int nb = _previewModel.Bones.Count;
                 for (int i = 0; i < nb; i++)
                 {
-                    var bone = _previewModel.Bones[i];
-                    int pIdx = -1;
-                    if (bone.ParentId >= 0)
-                    {
-                        for (int p = 0; p < nb; p++)
-                        {
-                            if (_previewModel.Bones[p].Id == bone.ParentId) { pIdx = p; break; }
-                        }
-                    }
-
+                    int pIdx = GetParentIndex(_previewModel.Bones, i);
                     if (pIdx >= 0 && pIdx < _boneWorldMatrices.Length && i < _boneWorldMatrices.Length)
                     {
+                        string pName = _previewModel.Bones[pIdx].Name;
+                        string cName = _previewModel.Bones[i].Name;
+                        if (pName.Equals("__Root", StringComparison.OrdinalIgnoreCase) ||
+                            pName.Equals("master_h_male", StringComparison.OrdinalIgnoreCase) ||
+                            pName.Equals("Object03", StringComparison.OrdinalIgnoreCase) ||
+                            cName.Equals("Object03", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
                         var p0 = _boneWorldMatrices[pIdx].Row3.Xyz;
                         var p1 = _boneWorldMatrices[i].Row3.Xyz;
-                        if ((p1 - p0).LengthSquared > 1e-6f)
+                        float dSq = (p1 - p0).LengthSquared;
+                        if (dSq > 1e-6f && dSq < 0.64f)
                         {
                             lines.Add(p0.X); lines.Add(p0.Y); lines.Add(p0.Z);
                             lines.Add(p1.X); lines.Add(p1.Y); lines.Add(p1.Z);
@@ -2458,15 +2630,46 @@ void main() {
             }
             else
             {
-                // Draw rest pose marker bones
-                foreach (var m in _markers)
+                // Draw rest pose skeleton connecting bones
+                if (_previewModel != null && _previewModel.Bones.Count > 0)
                 {
-                    if (string.IsNullOrEmpty(m.ParentName)) continue;
-                    var parent = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.ParentName, StringComparison.OrdinalIgnoreCase));
-                    if (parent != null)
+                    int nb = _previewModel.Bones.Count;
+                    for (int i = 0; i < nb; i++)
                     {
-                        lines.Add(parent.Position.X); lines.Add(parent.Position.Y); lines.Add(parent.Position.Z);
-                        lines.Add(m.Position.X); lines.Add(m.Position.Y); lines.Add(m.Position.Z);
+                        int pIdx = GetParentIndex(_previewModel.Bones, i);
+                        if (pIdx >= 0 && pIdx < nb)
+                        {
+                            string pName = _previewModel.Bones[pIdx].Name;
+                            string cName = _previewModel.Bones[i].Name;
+                            if (pName.Equals("__Root", StringComparison.OrdinalIgnoreCase) ||
+                                pName.Equals("master_h_male", StringComparison.OrdinalIgnoreCase) ||
+                                pName.Equals("Object03", StringComparison.OrdinalIgnoreCase) ||
+                                cName.Equals("Object03", StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            var w0 = Matrix4.Invert(_previewModel.Bones[pIdx].InverseBindMatrix).Row3.Xyz;
+                            var w1 = Matrix4.Invert(_previewModel.Bones[i].InverseBindMatrix).Row3.Xyz;
+                            float dSq = (w1 - w0).LengthSquared;
+                            if (dSq > 1e-6f && dSq < 0.64f)
+                            {
+                                lines.Add(w0.X); lines.Add(w0.Y); lines.Add(w0.Z);
+                                lines.Add(w1.X); lines.Add(w1.Y); lines.Add(w1.Z);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Draw rest pose marker bones
+                    foreach (var m in _markers)
+                    {
+                        if (string.IsNullOrEmpty(m.ParentName)) continue;
+                        var parent = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.ParentName, StringComparison.OrdinalIgnoreCase));
+                        if (parent != null)
+                        {
+                            lines.Add(parent.Position.X); lines.Add(parent.Position.Y); lines.Add(parent.Position.Z);
+                            lines.Add(m.Position.X); lines.Add(m.Position.Y); lines.Add(m.Position.Z);
+                        }
                     }
                 }
             }
@@ -2599,23 +2802,55 @@ void main() {
                     UpdateNudValues();
                     _isDraggingMarker = true;
 
-                    // Setup drag plane for 1:1 mouse movement
                     var m = _markers[picked];
+                    _dragStartMarkerPos = m.Position;
                     _dragPlanePoint = m.Position;
 
-                    float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
-                    float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
-                    _dragPlaneNormal = new Vector3(
-                        MathF.Sin(radYaw) * MathF.Cos(radPitch),
-                        MathF.Cos(radYaw) * MathF.Cos(radPitch),
-                        MathF.Sin(radPitch)
-                    ).Normalized();
+                    if (_currentViewMode == RigViewMode.Front || _currentViewMode == RigViewMode.Back ||
+                        ((Math.Abs(_cameraYaw) < 15f || Math.Abs(_cameraYaw - 180f) < 15f) && Math.Abs(_cameraPitch) < 15f))
+                    {
+                        // Plane normal is strictly Y (plane is X/Z)
+                        _dragPlaneNormal = new Vector3(0f, (_cameraYaw > 90f && _cameraYaw < 270f) ? 1f : -1f, 0f);
+                    }
+                    else if (_currentViewMode == RigViewMode.Profile ||
+                        ((Math.Abs(_cameraYaw - 90f) < 15f || Math.Abs(_cameraYaw + 90f) < 15f || Math.Abs(_cameraYaw - 270f) < 15f) && Math.Abs(_cameraPitch) < 15f))
+                    {
+                        // Plane normal is strictly X (plane is Y/Z)
+                        _dragPlaneNormal = new Vector3((_cameraYaw > 0f && _cameraYaw < 180f) ? 1f : -1f, 0f, 0f);
+                    }
+                    else
+                    {
+                        float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
+                        float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
+                        _dragPlaneNormal = new Vector3(
+                            MathF.Sin(radYaw) * MathF.Cos(radPitch),
+                            -MathF.Cos(radYaw) * MathF.Cos(radPitch),
+                            MathF.Sin(radPitch)
+                        ).Normalized();
+                    }
+
+                    if (UnprojectMouseToPlane(e.X, e.Y, _dragPlanePoint, _dragPlaneNormal, out Vector3 initialHit))
+                    {
+                        _dragGrabOffset = _dragStartMarkerPos - initialHit;
+                    }
+                    else
+                    {
+                        _dragGrabOffset = Vector3.Zero;
+                    }
 
                     glControl.Invalidate();
                     return;
                 }
 
-                _isOrbiting = true;
+                if (_currentViewMode == RigViewMode.Free3D)
+                {
+                    _isOrbiting = true;
+                }
+                else
+                {
+                    // In 2D views (Front, Profile, Back), left-drag on empty space pans instead of accidentally rotating the 2D view!
+                    _isPanning = true;
+                }
             }
             else if (e.Button == MouseButtons.Right)
             {
@@ -2629,28 +2864,30 @@ void main() {
             int dy = e.Y - _lastMousePos.Y;
             _lastMousePos = e.Location;
 
-            // 1:1 Ray-Plane unprojection dragging
+            // 1:1 Ray-Plane unprojection dragging with strict orthographic axis locking
             if (_isDraggingMarker && _selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
             {
-                if (UnprojectMouseToPlane(e.X, e.Y, _dragPlanePoint, _dragPlaneNormal, out Vector3 worldHit))
+                if (UnprojectMouseToPlane(e.X, e.Y, _dragPlanePoint, _dragPlaneNormal, out Vector3 rawHit))
                 {
+                    Vector3 targetHit = rawHit + _dragGrabOffset;
                     var m = _markers[_selectedMarkerIndex];
 
-                    // Lock axis if in orthographic presets
-                    if (Math.Abs(_cameraYaw) < 5f && Math.Abs(_cameraPitch) < 5f)
+                    if (_currentViewMode == RigViewMode.Front || _currentViewMode == RigViewMode.Back ||
+                        ((Math.Abs(_cameraYaw) < 15f || Math.Abs(_cameraYaw - 180f) < 15f) && Math.Abs(_cameraPitch) < 15f))
                     {
-                        // Front view: X and Z move, Y stays at original marker depth
-                        m.Position = new Vector3(worldHit.X, m.Position.Y, worldHit.Z);
+                        // Front or Back view: STRICTLY X and Z move! Y is 100% locked to initial marker depth!
+                        m.Position = new Vector3(targetHit.X, _dragStartMarkerPos.Y, targetHit.Z);
                     }
-                    else if (Math.Abs(_cameraYaw - 90f) < 5f && Math.Abs(_cameraPitch) < 5f)
+                    else if (_currentViewMode == RigViewMode.Profile ||
+                        ((Math.Abs(_cameraYaw - 90f) < 15f || Math.Abs(_cameraYaw + 90f) < 15f || Math.Abs(_cameraYaw - 270f) < 15f) && Math.Abs(_cameraPitch) < 15f))
                     {
-                        // Profile view: Y and Z move, X stays at original lateral
-                        m.Position = new Vector3(m.Position.X, worldHit.Y, worldHit.Z);
+                        // Profile view: STRICTLY Y and Z move! X is 100% locked to initial marker lateral!
+                        m.Position = new Vector3(_dragStartMarkerPos.X, targetHit.Y, targetHit.Z);
                     }
                     else
                     {
                         // Free 3D view: follows camera plane
-                        m.Position = worldHit;
+                        m.Position = targetHit;
                     }
 
                     // Automatic X symmetry
@@ -2715,7 +2952,7 @@ void main() {
 
             Vector3 eyeOffset = new Vector3(
                 _cameraDist * MathF.Sin(radYaw) * MathF.Cos(radPitch),
-                _cameraDist * MathF.Cos(radYaw) * MathF.Cos(radPitch),
+                -_cameraDist * MathF.Cos(radYaw) * MathF.Cos(radPitch),
                 _cameraDist * MathF.Sin(radPitch)
             );
             Vector3 eye = _cameraTarget + _cameraPan + eyeOffset;
@@ -2754,7 +2991,7 @@ void main() {
 
             Vector3 eyeOffset = new Vector3(
                 _cameraDist * MathF.Sin(radYaw) * MathF.Cos(radPitch),
-                _cameraDist * MathF.Cos(radYaw) * MathF.Cos(radPitch),
+                -_cameraDist * MathF.Cos(radYaw) * MathF.Cos(radPitch),
                 _cameraDist * MathF.Sin(radPitch)
             );
             Vector3 eye = _cameraTarget + _cameraPan + eyeOffset;
@@ -2762,7 +2999,9 @@ void main() {
             Matrix4 mvp = view * proj;
 
             int bestIdx = -1;
-            float bestDistSq = 30f * 30f; // 30px pick tolerance
+            float maxPickRadiusSq = 28f * 28f; // 28px pick radius
+            float bestDistSq = maxPickRadiusSq;
+            float bestDepth = float.MaxValue;
 
             for (int i = 0; i < _markers.Count; i++)
             {
@@ -2775,10 +3014,32 @@ void main() {
                 float sy = (1.0f - ndc.Y) * 0.5f * glControl.Height;
 
                 float distSq = (sx - mouseX) * (sx - mouseX) + (sy - mouseY) * (sy - mouseY);
-                if (distSq < bestDistSq)
+                if (distSq > maxPickRadiusSq) continue;
+
+                float depth = clip.Z / clip.W;
+
+                if (bestIdx < 0)
                 {
-                    bestDistSq = distSq;
                     bestIdx = i;
+                    bestDistSq = distSq;
+                    bestDepth = depth;
+                }
+                else
+                {
+                    // If marker i is substantially closer to the cursor in screen space, choose it
+                    if (distSq < bestDistSq - 64f) // ~8px closer
+                    {
+                        bestIdx = i;
+                        bestDistSq = distSq;
+                        bestDepth = depth;
+                    }
+                    // If screen distances are comparable, prefer the marker closer in depth (foreground)
+                    else if (Math.Abs(distSq - bestDistSq) <= 64f && depth < bestDepth)
+                    {
+                        bestIdx = i;
+                        bestDistSq = distSq;
+                        bestDepth = depth;
+                    }
                 }
             }
 

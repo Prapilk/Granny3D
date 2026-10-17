@@ -1438,7 +1438,14 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (boneByName.TryGetValue(name, out int b0) && boneByName.TryGetValue(endName, out int b1))
                 {
-                    segments.Add((b0, boneWorldPos[b0], boneWorldPos[b1]));
+                    if ((boneWorldPos[b1] - boneWorldPos[b0]).Length < 0.8f)
+                    {
+                        segments.Add((b0, boneWorldPos[b0], boneWorldPos[b1]));
+                    }
+                    else
+                    {
+                        segments.Add((b0, boneWorldPos[b0], boneWorldPos[b0]));
+                    }
                 }
                 else if (boneByName.TryGetValue(name, out int bSingle))
                 {

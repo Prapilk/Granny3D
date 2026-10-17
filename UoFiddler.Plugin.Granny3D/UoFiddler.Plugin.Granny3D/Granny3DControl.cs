@@ -42,6 +42,7 @@ namespace UoFiddler.Plugin.Granny3D
         public int Vbo;
         public int Vao;
         public int TextureId = -1;
+        public string TextureName = string.Empty;
         public bool HasTexture = false;
         public Vector3 MeshColor = new Vector3(0.72f, 0.66f, 0.55f);
 
@@ -3834,7 +3835,8 @@ namespace UoFiddler.Plugin.Granny3D
                     BaseVertices = part.Vertices,
                     Indices = part.Indices,
                     Skin = (part.Skin != null && part.Skin.Length > 0) ? part.Skin : null,
-                    MeshColor = part.Color
+                    MeshColor = part.Color,
+                    TextureName = part.TextureName ?? string.Empty
                 };
 
                 BuildCornerData(lm);
