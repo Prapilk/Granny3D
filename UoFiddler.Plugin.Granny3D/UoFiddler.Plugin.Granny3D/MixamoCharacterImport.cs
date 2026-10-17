@@ -32,14 +32,21 @@ namespace UoFiddler.Plugin.Granny3D
             return TryImport(fbxPath, null, null, out model, out error);
         }
 
-        public static bool TryImport(string fbxPath, string? outFolder, string? uoRefPath, out GrannyModelFile? model, out string? error)
+        public static bool TryImport(
+            string fbxPath,
+            string? outFolder,
+            string? uoRefPath,
+            out GrannyModelFile? model,
+            out string? error,
+            IReadOnlyDictionary<string, Vector3>? customJointPositions = null,
+            bool forceAutoSkin = false)
         {
             try
             {
-                model = Import(fbxPath, null, outFolder, uoRefPath);
+                model = Import(fbxPath, null, outFolder, uoRefPath, customJointPositions, forceAutoSkin);
                 if (model == null || model.Parts.Count == 0)
                 {
-                    error = "Aucun mesh valide trouvé dans le fichier FBX.";
+                    error = "Aucun mesh valide trouvé dans le fichier 3D.";
                     return false;
                 }
                 error = null;
@@ -53,7 +60,13 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
-        public static GrannyModelFile? Import(string fbxPath, string? characterName = null, string? outFolder = null, string? uoRefPath = null)
+        public static GrannyModelFile? Import(
+            string fbxPath,
+            string? characterName = null,
+            string? outFolder = null,
+            string? uoRefPath = null,
+            IReadOnlyDictionary<string, Vector3>? customJointPositions = null,
+            bool forceAutoSkin = false)
         {
             if (string.IsNullOrEmpty(fbxPath) || !File.Exists(fbxPath)) return null;
 
@@ -155,7 +168,9 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             // Determine unit scale automatically (Mixamo uses cm ~180, 3ds Max often uses mm ~1800-2500, or dm ~25)
-            float maxFbxWorldHeight = 0f;
+            float minX = float.MaxValue, maxX = float.MinValue;
+            float minY = float.MaxValue, maxY = float.MinValue;
+            float minZ = float.MaxValue, maxZ = float.MinValue;
             for (int m = 0; m < scene.MeshCount; m++)
             {
                 var mesh = scene.Meshes[m];
@@ -168,84 +183,51 @@ namespace UoFiddler.Plugin.Granny3D
                         break;
                     }
                 }
-                float minY = float.MaxValue, maxY = float.MinValue;
                 foreach (var v in mesh.Vertices)
                 {
                     var wv = new Vector4(v.X, v.Y, v.Z, 1.0f) * meshMat;
-                    if (wv.Y < minY) minY = wv.Y;
-                    if (wv.Y > maxY) maxY = wv.Y;
+                    if (wv.X < minX) minX = wv.X; if (wv.X > maxX) maxX = wv.X;
+                    if (wv.Y < minY) minY = wv.Y; if (wv.Y > maxY) maxY = wv.Y;
+                    if (wv.Z < minZ) minZ = wv.Z; if (wv.Z > maxZ) maxZ = wv.Z;
                 }
-                float h = maxY - minY;
-                if (h > maxFbxWorldHeight) maxFbxWorldHeight = h;
             }
 
-            if (maxFbxWorldHeight < 1e-3f)
+            if (minX == float.MaxValue)
             {
-                float minY = float.MaxValue, maxY = float.MinValue;
                 for (int ni = 0; ni < nn; ni++)
                 {
-                    float y = wMix[ni].Row3.Y;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
+                    var p = wMix[ni].Row3;
+                    if (p.X < minX) minX = p.X; if (p.X > maxX) maxX = p.X;
+                    if (p.Y < minY) minY = p.Y; if (p.Y > maxY) maxY = p.Y;
+                    if (p.Z < minZ) minZ = p.Z; if (p.Z > maxZ) maxZ = p.Z;
                 }
-                maxFbxWorldHeight = maxY - minY;
             }
 
-            float currentScale = Scale; // default 0.01f
-            if (maxFbxWorldHeight > 500f) currentScale = 0.001f;      // mm -> meters
-            else if (maxFbxWorldHeight > 50f) currentScale = 0.01f;   // cm -> meters
-            else if (maxFbxWorldHeight > 5f) currentScale = 0.1f;     // dm -> meters
-            else if (maxFbxWorldHeight > 0.5f) currentScale = 1.0f;   // m -> meters
+            float dy = (minY != float.MaxValue) ? (maxY - minY) : 0f;
+            float dz = (minZ != float.MaxValue) ? (maxZ - minZ) : 0f;
+            bool isZUp = dz > dy * 1.5f;
+            float rawHeight = isZUp ? dz : dy;
 
-            Matrix4 C = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(90f));
+            float currentScale = Scale; // default 0.01f
+            if (rawHeight > 500f) currentScale = 0.001f;      // mm -> meters
+            else if (rawHeight > 50f) currentScale = 0.01f;   // cm -> meters
+            else if (rawHeight > 5f) currentScale = 0.1f;     // dm -> meters
+            else if (rawHeight > 0.5f) currentScale = 1.0f;   // m -> meters
+
+            Matrix4 C = isZUp ? Matrix4.Identity : Matrix4.CreateRotationX(MathHelper.DegreesToRadians(90f));
             Matrix4 Cinv = Matrix4.Invert(C);
 
             var wU = new Matrix4[nn];
             for (int i = 0; i < nn; i++)
             {
-                var mat = Cinv * wMix[i] * C;
+                var mat = isZUp ? wMix[i] : (Cinv * wMix[i] * C);
                 mat.Row3.X *= currentScale;
                 mat.Row3.Y *= currentScale;
                 mat.Row3.Z *= currentScale;
                 wU[i] = mat;
             }
 
-            // For skinned meshes, the true bind pose of each bone is stored in mesh.Bones[b].OffsetMatrix:
-            // OffsetMatrix = Invert(boneBindWorld) * meshNodeWorld
-            // => boneBindWorld = Invert(OffsetMatrix) * meshNodeWorld
-            // If the FBX has animations or is posed at a frame (e.g. Idle pose), nodes[ni].Transform is the animated pose,
-            // while bone.OffsetMatrix preserves the exact rest/bind pose that matches the vertices!
-            var hasTrueBind = new bool[nn];
-            for (int m = 0; m < scene.MeshCount; m++)
-            {
-                var mesh = scene.Meshes[m];
-                Matrix4 meshNodeWorld = Matrix4.Identity;
-                for (int ni = 0; ni < nn; ni++)
-                {
-                    if (nodes[ni].MeshIndices != null && nodes[ni].MeshIndices.Contains(m))
-                    {
-                        meshNodeWorld = wMix[ni];
-                        break;
-                    }
-                }
 
-                for (int b = 0; b < mesh.BoneCount; b++)
-                {
-                    var bone = mesh.Bones[b];
-                    if (nameToNode.TryGetValue(bone.Name, out int bni) && !hasTrueBind[bni])
-                    {
-                        var inv = ToMatrix4(bone.OffsetMatrix);
-                        var boneMeshBind = Matrix4.Invert(inv);
-                        var boneWorld = boneMeshBind * meshNodeWorld;
-                        var matU = Cinv * boneWorld * C;
-                        matU.Row3.X *= currentScale;
-                        matU.Row3.Y *= currentScale;
-                        matU.Row3.Z *= currentScale;
-                        wU[bni] = matU;
-                        hasTrueBind[bni] = true;
-                    }
-                }
-            }
 
 
 
@@ -292,6 +274,19 @@ namespace UoFiddler.Plugin.Granny3D
                         if (string.Equals(NormalizeBipedBoneName(k), normBase, StringComparison.OrdinalIgnoreCase))
                             return kvp.Value;
                     }
+                    if (MixamoRetarget.TryGetBoneAlias(baseName, out string alias) && nameToNode.TryGetValue(alias, out idx))
+                        return idx;
+
+                    for (int nidx = 0; nidx < nn; nidx++)
+                    {
+                        int res = ResolveBoneToUo(nodes[nidx].Name, uoBoneByName, null, null, null);
+                        if (res >= 0 && refBones != null && res < refBones.Count &&
+                            string.Equals(refBones[res].Name, baseName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return nidx;
+                        }
+                    }
+
                     return -1;
                 }
 
@@ -302,16 +297,64 @@ namespace UoFiddler.Plugin.Granny3D
                     string uoName = refBones[i].Name;
                     fittedWorld[i] = uoBindWorld[i];
 
+                    if (string.Equals(uoName, "__Root", StringComparison.OrdinalIgnoreCase) ||
+                        uoName.StartsWith("master_", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
                     // Find corresponding Mixamo or Biped node.
                     int ni = -1;
-                    if (string.Equals(uoName, "Bip01 L Finger1", StringComparison.OrdinalIgnoreCase))
-                        ni = FindMixNode("LeftHandMiddle1");
+                    if (string.Equals(uoName, "Bip01 L Finger0", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ni = FindMixNode("LeftHandThumb1");
+                        if (ni < 0) ni = FindMixNode("thumb_01_l");
+                        if (ni < 0) ni = FindMixNode("thumb_l");
+                    }
+                    else if (string.Equals(uoName, "Bip01 L Finger01", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ni = FindMixNode("LeftHandThumb2");
+                        if (ni < 0) ni = FindMixNode("thumb_02_l");
+                    }
+                    else if (string.Equals(uoName, "Bip01 L Finger1", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ni = FindMixNode("LeftHandIndex1");
+                        if (ni < 0) ni = FindMixNode("index_01_l");
+                        if (ni < 0) ni = FindMixNode("LeftHandMiddle1");
+                        if (ni < 0) ni = FindMixNode("middle_01_l");
+                    }
                     else if (string.Equals(uoName, "Bip01 L Finger11", StringComparison.OrdinalIgnoreCase))
-                        ni = FindMixNode("LeftHandMiddle2");
+                    {
+                        ni = FindMixNode("LeftHandIndex2");
+                        if (ni < 0) ni = FindMixNode("index_02_l");
+                        if (ni < 0) ni = FindMixNode("LeftHandMiddle2");
+                        if (ni < 0) ni = FindMixNode("middle_02_l");
+                    }
+                    else if (string.Equals(uoName, "Bip01 R Finger0", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ni = FindMixNode("RightHandThumb1");
+                        if (ni < 0) ni = FindMixNode("thumb_01_r");
+                        if (ni < 0) ni = FindMixNode("thumb_r");
+                    }
+                    else if (string.Equals(uoName, "Bip01 R Finger01", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ni = FindMixNode("RightHandThumb2");
+                        if (ni < 0) ni = FindMixNode("thumb_02_r");
+                    }
                     else if (string.Equals(uoName, "Bip01 R Finger1", StringComparison.OrdinalIgnoreCase))
-                        ni = FindMixNode("RightHandMiddle1");
+                    {
+                        ni = FindMixNode("RightHandIndex1");
+                        if (ni < 0) ni = FindMixNode("index_01_r");
+                        if (ni < 0) ni = FindMixNode("RightHandMiddle1");
+                        if (ni < 0) ni = FindMixNode("middle_01_r");
+                    }
                     else if (string.Equals(uoName, "Bip01 R Finger11", StringComparison.OrdinalIgnoreCase))
-                        ni = FindMixNode("RightHandMiddle2");
+                    {
+                        ni = FindMixNode("RightHandIndex2");
+                        if (ni < 0) ni = FindMixNode("index_02_r");
+                        if (ni < 0) ni = FindMixNode("RightHandMiddle2");
+                        if (ni < 0) ni = FindMixNode("middle_02_r");
+                    }
 
                     if (ni < 0 && MixamoRetarget.TryGetBoneAlias(uoName, out string mixAlias))
                     {
@@ -322,7 +365,12 @@ namespace UoFiddler.Plugin.Granny3D
                         ni = FindMixNode(uoName);
                     }
 
-                    if (ni >= 0)
+                    if (customJointPositions != null && customJointPositions.TryGetValue(uoName, out Vector3 customPos))
+                    {
+                        var rot = uoBindWorld[i].ExtractRotation();
+                        fittedWorld[i] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(customPos);
+                    }
+                    else if (ni >= 0)
                     {
                         Vector3 mixPos = wU[ni].Row3.Xyz;
                         var rot = uoBindWorld[i].ExtractRotation();
@@ -516,7 +564,7 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
 
-                // Vertices & Normals (transformed to UO Z-up: X_uo=X, Y_uo=-Z, Z_uo=Y with unit scaling)
+                // Vertices & Normals (transformed to UO Z-up with unit scaling)
                 int vcount = mesh.VertexCount;
                 part.Vertices = new Vector3[vcount];
                 part.Normals = new Vector3[vcount];
@@ -524,19 +572,37 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     var pt = mesh.Vertices[v];
                     var vWorld = new Vector4(pt.X, pt.Y, pt.Z, 1.0f) * meshNodeWorld;
-                    part.Vertices[v] = new Vector3(vWorld.X * currentScale, -vWorld.Z * currentScale, vWorld.Y * currentScale);
-
-                    if (mesh.HasNormals)
+                    if (isZUp)
                     {
-                        var n = mesh.Normals[v];
-                        var nw = new Vector4(n.X, n.Y, n.Z, 0.0f) * meshNodeWorld;
-                        var uoNorm = new Vector3(nw.X, -nw.Z, nw.Y);
-                        if (uoNorm.LengthSquared > 1e-12f) uoNorm = Vector3.Normalize(uoNorm);
-                        part.Normals[v] = uoNorm;
+                        part.Vertices[v] = new Vector3(vWorld.X * currentScale, vWorld.Y * currentScale, vWorld.Z * currentScale);
+                        if (mesh.HasNormals)
+                        {
+                            var n = mesh.Normals[v];
+                            var nw = new Vector4(n.X, n.Y, n.Z, 0.0f) * meshNodeWorld;
+                            var uoNorm = new Vector3(nw.X, nw.Y, nw.Z);
+                            if (uoNorm.LengthSquared > 1e-12f) uoNorm = Vector3.Normalize(uoNorm);
+                            part.Normals[v] = uoNorm;
+                        }
+                        else
+                        {
+                            part.Normals[v] = Vector3.UnitZ;
+                        }
                     }
                     else
                     {
-                        part.Normals[v] = Vector3.UnitZ;
+                        part.Vertices[v] = new Vector3(vWorld.X * currentScale, -vWorld.Z * currentScale, vWorld.Y * currentScale);
+                        if (mesh.HasNormals)
+                        {
+                            var n = mesh.Normals[v];
+                            var nw = new Vector4(n.X, n.Y, n.Z, 0.0f) * meshNodeWorld;
+                            var uoNorm = new Vector3(nw.X, -nw.Z, nw.Y);
+                            if (uoNorm.LengthSquared > 1e-12f) uoNorm = Vector3.Normalize(uoNorm);
+                            part.Normals[v] = uoNorm;
+                        }
+                        else
+                        {
+                            part.Normals[v] = Vector3.UnitZ;
+                        }
                     }
                 }
 
@@ -634,7 +700,22 @@ namespace UoFiddler.Plugin.Granny3D
 
 
 
-                model.Parts.Add(part);
+                    bool hasSkin = false;
+                    for (int v = 0; v < part.Skin.Length; v++)
+                    {
+                        if (part.Skin[v] != null && part.Skin[v].Length > 0)
+                        {
+                            hasSkin = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasSkin || forceAutoSkin)
+                    {
+                        ComputeVolumetricSkinning(part, model.Bones);
+                    }
+
+                    model.Parts.Add(part);
             }
 
             return model;
@@ -1195,33 +1276,49 @@ namespace UoFiddler.Plugin.Granny3D
             bool isLeft = clean.IndexOf("Left", StringComparison.OrdinalIgnoreCase) >= 0 ||
                           clean.StartsWith("L_", StringComparison.OrdinalIgnoreCase) ||
                           clean.StartsWith("L-", StringComparison.OrdinalIgnoreCase) ||
-                          clean.StartsWith("L ", StringComparison.OrdinalIgnoreCase);
+                          clean.StartsWith("L ", StringComparison.OrdinalIgnoreCase) ||
+                          clean.StartsWith("L.", StringComparison.OrdinalIgnoreCase) ||
+                          clean.EndsWith("_l", StringComparison.OrdinalIgnoreCase) ||
+                          clean.EndsWith(".l", StringComparison.OrdinalIgnoreCase) ||
+                          clean.EndsWith("-l", StringComparison.OrdinalIgnoreCase) ||
+                          clean.EndsWith("_left", StringComparison.OrdinalIgnoreCase);
             bool isRight = clean.IndexOf("Right", StringComparison.OrdinalIgnoreCase) >= 0 ||
                            clean.StartsWith("R_", StringComparison.OrdinalIgnoreCase) ||
                            clean.StartsWith("R-", StringComparison.OrdinalIgnoreCase) ||
-                           clean.StartsWith("R ", StringComparison.OrdinalIgnoreCase);
+                           clean.StartsWith("R ", StringComparison.OrdinalIgnoreCase) ||
+                           clean.StartsWith("R.", StringComparison.OrdinalIgnoreCase) ||
+                           clean.EndsWith("_r", StringComparison.OrdinalIgnoreCase) ||
+                           clean.EndsWith(".r", StringComparison.OrdinalIgnoreCase) ||
+                           clean.EndsWith("-r", StringComparison.OrdinalIgnoreCase) ||
+                           clean.EndsWith("_right", StringComparison.OrdinalIgnoreCase);
 
             if (clean.IndexOf("Thumb", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                string targetUo = clean.IndexOf("Thumb1", StringComparison.OrdinalIgnoreCase) >= 0
+                bool isBase = clean.IndexOf("Thumb1", StringComparison.OrdinalIgnoreCase) >= 0 || clean.IndexOf("01", StringComparison.OrdinalIgnoreCase) >= 0;
+                string targetUo = isBase
                     ? (isLeft ? "Bip01 L Finger0" : (isRight ? "Bip01 R Finger0" : null))
                     : (isLeft ? "Bip01 L Finger01" : (isRight ? "Bip01 R Finger01" : null));
                 if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out uoIdx))
                     return uoIdx;
             }
 
-            if (clean.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                clean.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                clean.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                clean.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (clean.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                bool isBase = clean.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                              clean.IndexOf("Middle1", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                              clean.IndexOf("Ring1", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                              clean.IndexOf("Pinky1", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isBase = clean.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0 || clean.IndexOf("01", StringComparison.OrdinalIgnoreCase) >= 0;
                 string targetUo = isBase
                     ? (isLeft ? "Bip01 L Finger1" : (isRight ? "Bip01 R Finger1" : null))
                     : (isLeft ? "Bip01 L Finger11" : (isRight ? "Bip01 R Finger11" : null));
+                if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out uoIdx))
+                    return uoIdx;
+            }
+
+            if (clean.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Little", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                // Map other fingers to Hand to preserve their rest geometry and avoid elongation
+                string targetUo = isLeft ? "Bip01 L Hand" : (isRight ? "Bip01 R Hand" : null);
                 if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out uoIdx))
                     return uoIdx;
             }
@@ -1240,7 +1337,59 @@ namespace UoFiddler.Plugin.Granny3D
             if (MixamoRetarget.TryGetBoneAlias(clean, out aliasName) && uoBoneByName.TryGetValue(aliasName, out uoIdx))
                 return uoIdx;
 
-            // 9) Fallback: Traverse ancestors up the node hierarchy until an ancestor maps to a UO bone
+            // 9) Explicit Humanoid matching
+            string lower = clean.ToLowerInvariant();
+            if (lower == "pelvis" || lower == "hips" || lower == "hip")
+                if (uoBoneByName.TryGetValue("Bip01 Pelvis", out uoIdx)) return uoIdx;
+            if (lower == "spine_01" || lower == "spine1" || lower == "spine")
+                if (uoBoneByName.TryGetValue("Bip01 Spine", out uoIdx)) return uoIdx;
+            if (lower == "spine_02" || lower == "spine2" || lower == "chest")
+                if (uoBoneByName.TryGetValue("Bip01 Spine1", out uoIdx)) return uoIdx;
+            if (lower == "spine_03" || lower == "spine3" || lower == "upperchest" || lower == "upper_chest")
+                if (uoBoneByName.TryGetValue("Bip01 Spine2", out uoIdx)) return uoIdx;
+            if (lower == "neck_01" || lower == "neck")
+                if (uoBoneByName.TryGetValue("Bip01 Neck", out uoIdx)) return uoIdx;
+            if (lower == "head")
+                if (uoBoneByName.TryGetValue("Bip01 Head", out uoIdx)) return uoIdx;
+
+            if (isLeft || isRight)
+            {
+                string s = isLeft ? "L" : "R";
+                if (lower.Contains("clavicle") || lower.Contains("shoulder"))
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} Clavicle", out uoIdx)) return uoIdx;
+                if (lower.Contains("upperarm") || lower.Contains("upper_arm") || lower.Contains("uparm") || (lower.Contains("arm") && !lower.Contains("lower") && !lower.Contains("fore")))
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} UpperArm", out uoIdx)) return uoIdx;
+                if (lower.Contains("lowerarm") || lower.Contains("lower_arm") || lower.Contains("forearm"))
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} Forearm", out uoIdx)) return uoIdx;
+                if (lower.Contains("hand") || lower.Contains("wrist"))
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} Hand", out uoIdx)) return uoIdx;
+                if (lower.Contains("thigh") || lower.Contains("upperleg") || lower.Contains("upper_leg") || lower.Contains("upleg"))
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} Thigh", out uoIdx)) return uoIdx;
+                if (lower.Contains("calf") || lower.Contains("lowerleg") || lower.Contains("lower_leg") || lower.Contains("shin") || (lower.Contains("leg") && !lower.Contains("up") && !lower.Contains("upper")))
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} Calf", out uoIdx)) return uoIdx;
+                if (lower.Contains("foot") || lower.Contains("ankle"))
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} Foot", out uoIdx)) return uoIdx;
+                if (lower.Contains("ball") || lower.Contains("toe"))
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} Toe0", out uoIdx)) return uoIdx;
+
+                if (lower.Contains("thumb"))
+                {
+                    string target = (lower.Contains("01") || lower.Contains("thumb1")) ? $"Bip01 {s} Finger0" : $"Bip01 {s} Finger01";
+                    if (uoBoneByName.TryGetValue(target, out uoIdx)) return uoIdx;
+                }
+                if (lower.Contains("index") || (lower.Contains("finger") && !lower.Contains("middle") && !lower.Contains("ring") && !lower.Contains("pinky")))
+                {
+                    string target = (lower.Contains("01") || lower.Contains("index1"))
+                        ? $"Bip01 {s} Finger1" : $"Bip01 {s} Finger11";
+                    if (uoBoneByName.TryGetValue(target, out uoIdx)) return uoIdx;
+                }
+                if (lower.Contains("middle") || lower.Contains("ring") || lower.Contains("pinky") || lower.Contains("little"))
+                {
+                    if (uoBoneByName.TryGetValue($"Bip01 {s} Hand", out uoIdx)) return uoIdx;
+                }
+            }
+
+            // 10) Fallback: Traverse ancestors up the node hierarchy until an ancestor maps to a UO bone
             if (nameToNode != null && nodes != null && nodeParent != null && nameToNode.TryGetValue(bname, out int ni))
             {
                 int cur = nodeParent[ni];
@@ -1264,6 +1413,131 @@ namespace UoFiddler.Plugin.Granny3D
                 m.A3, m.B3, m.C3, m.D3,
                 m.A4, m.B4, m.C4, m.D4
             );
+        }
+
+        public static void ComputeVolumetricSkinning(GrannyModelPart part, List<GrannyBone> bones)
+        {
+            if (part == null || part.Vertices == null || part.Vertices.Length == 0 || bones == null || bones.Count == 0)
+                return;
+
+            int nb = bones.Count;
+            var boneWorldPos = new Vector3[nb];
+            for (int i = 0; i < nb; i++)
+            {
+                var inv = bones[i].InverseBindMatrix;
+                var w = Matrix4.Invert(inv);
+                boneWorldPos[i] = w.Row3.Xyz;
+            }
+
+            var boneByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < nb; i++)
+                boneByName[bones[i].Name] = i;
+
+            var segments = new List<(int BoneId, Vector3 P0, Vector3 P1)>();
+            void AddSeg(string name, string endName)
+            {
+                if (boneByName.TryGetValue(name, out int b0) && boneByName.TryGetValue(endName, out int b1))
+                {
+                    segments.Add((b0, boneWorldPos[b0], boneWorldPos[b1]));
+                }
+                else if (boneByName.TryGetValue(name, out int bSingle))
+                {
+                    segments.Add((bSingle, boneWorldPos[bSingle], boneWorldPos[bSingle]));
+                }
+            }
+
+            // Spine & Head
+            AddSeg("Bip01 Pelvis", "Bip01 Spine");
+            AddSeg("Bip01 Spine", "Bip01 Spine1");
+            AddSeg("Bip01 Spine1", "Bip01 Spine2");
+            AddSeg("Bip01 Spine2", "Bip01 Neck");
+            AddSeg("Bip01 Neck", "Bip01 Head");
+            if (boneByName.TryGetValue("Bip01 Head", out int headIdx))
+                segments.Add((headIdx, boneWorldPos[headIdx], boneWorldPos[headIdx] + new Vector3(0, 0, 0.15f)));
+
+            // Left Arm
+            AddSeg("Bip01 L Clavicle", "Bip01 L UpperArm");
+            AddSeg("Bip01 L UpperArm", "Bip01 L Forearm");
+            AddSeg("Bip01 L Forearm", "Bip01 L Hand");
+            AddSeg("Bip01 L Hand", "Bip01 L Finger1");
+            AddSeg("Bip01 L Finger0", "Bip01 L Finger01");
+            AddSeg("Bip01 L Finger1", "Bip01 L Finger11");
+
+            // Right Arm
+            AddSeg("Bip01 R Clavicle", "Bip01 R UpperArm");
+            AddSeg("Bip01 R UpperArm", "Bip01 R Forearm");
+            AddSeg("Bip01 R Forearm", "Bip01 R Hand");
+            AddSeg("Bip01 R Hand", "Bip01 R Finger1");
+            AddSeg("Bip01 R Finger0", "Bip01 R Finger01");
+            AddSeg("Bip01 R Finger1", "Bip01 R Finger11");
+
+            // Left Leg
+            AddSeg("Bip01 L Thigh", "Bip01 L Calf");
+            AddSeg("Bip01 L Calf", "Bip01 L Foot");
+            AddSeg("Bip01 L Foot", "Bip01 L Toe0");
+
+            // Right Leg
+            AddSeg("Bip01 R Thigh", "Bip01 R Calf");
+            AddSeg("Bip01 R Calf", "Bip01 R Foot");
+            AddSeg("Bip01 R Foot", "Bip01 R Toe0");
+
+            if (part.Skin == null || part.Skin.Length != part.Vertices.Length)
+                part.Skin = new VertexInfluence[part.Vertices.Length][];
+
+            for (int v = 0; v < part.Vertices.Length; v++)
+            {
+                var p = part.Vertices[v];
+                var candidates = new List<(int BoneId, float Weight)>();
+                foreach (var seg in segments)
+                {
+                    string bName = bones[seg.BoneId].Name;
+                    bool isLeft = bName.Contains(" L ");
+                    bool isRight = bName.Contains(" R ");
+
+                    if (isLeft && p.X < -0.02f) continue;
+                    if (isRight && p.X > 0.02f) continue;
+
+                    float dist = DistanceToSegment(p, seg.P0, seg.P1);
+                    float w = 1.0f / (MathF.Pow(dist, 4f) + 1e-4f);
+                    candidates.Add((seg.BoneId, w));
+                }
+
+                candidates.Sort((a, b) => b.Weight.CompareTo(a.Weight));
+
+                int count = Math.Min(4, candidates.Count);
+                if (count == 0)
+                {
+                    if (boneByName.TryGetValue("Bip01 Pelvis", out int pelv))
+                        part.Skin[v] = new[] { new VertexInfluence { BoneId = pelv, Weight = 1.0f } };
+                    else
+                        part.Skin[v] = Array.Empty<VertexInfluence>();
+                    continue;
+                }
+
+                float sum = 0f;
+                for (int i = 0; i < count; i++) sum += candidates[i].Weight;
+
+                var infs = new VertexInfluence[count];
+                for (int i = 0; i < count; i++)
+                {
+                    infs[i] = new VertexInfluence
+                    {
+                        BoneId = candidates[i].BoneId,
+                        Weight = sum > 1e-6f ? (candidates[i].Weight / sum) : (i == 0 ? 1f : 0f)
+                    };
+                }
+                part.Skin[v] = infs;
+            }
+        }
+
+        private static float DistanceToSegment(Vector3 p, Vector3 a, Vector3 b)
+        {
+            Vector3 ab = b - a;
+            float l2 = ab.LengthSquared;
+            if (l2 < 1e-6f) return (p - a).Length;
+            float t = MathHelper.Clamp(Vector3.Dot(p - a, ab) / l2, 0f, 1f);
+            Vector3 proj = a + t * ab;
+            return (p - proj).Length;
         }
     }
 }

@@ -297,6 +297,9 @@ namespace UoFiddler.Plugin.Granny3D
         private ContextMenuStrip tvMenu;
         private ContextMenuStrip tvAnimMenu;
         private ContextMenuStrip lstLoadedMenu;
+        private ContextMenuStrip glContextMenu;
+        private bool _glRightDrag;
+        private Point _glRightDownPos;
         private bool _populatingTree;
         // UI - animations panel
         private GroupBox grpAnimations;
@@ -306,6 +309,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Button btnImportAnim;
         private Button btnImportMesh;
         private Button btnImportModel;
+        private Button btnApplyMixamo;
         // animation categories (Male / Female / Animals / ...)
         private class AnimCat
         {
@@ -521,6 +525,19 @@ namespace UoFiddler.Plugin.Granny3D
             tvAnimMenu.Opening += TvAnimMenu_Opening;
             tvAnims.ContextMenuStrip = tvAnimMenu;
             tvAnims.NodeMouseClick += TvAnims_NodeMouseClick;
+            tvAnims.MouseDown += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right)
+                {
+                    var n = tvAnims.GetNodeAt(e.Location);
+                    if (n != null)
+                    {
+                        _suppressAnimSelect = true;
+                        try { tvAnims.SelectedNode = n; }
+                        finally { _suppressAnimSelect = false; }
+                    }
+                }
+            };
             tvAnims.AfterSelect += TvAnims_AfterSelect;
             tvAnims.BeforeExpand += TvAnims_BeforeExpand;
 
@@ -564,6 +581,14 @@ namespace UoFiddler.Plugin.Granny3D
             lstLoadedMenu = new ContextMenuStrip();
             lstLoadedMenu.Opening += LstLoadedMenu_Opening;
             lstLoaded.ContextMenuStrip = lstLoadedMenu;
+            lstLoaded.MouseDown += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right)
+                {
+                    int idx = lstLoaded.IndexFromPoint(e.Location);
+                    if (idx >= 0) lstLoaded.SelectedIndex = idx;
+                }
+            };
             lstLoaded.DoubleClick += LstLoaded_DoubleClick;
             lstLoaded.SelectedIndexChanged += LstLoaded_SelectedIndexChanged;
 
@@ -629,6 +654,19 @@ namespace UoFiddler.Plugin.Granny3D
             tvModels.BeforeExpand += TvModels_BeforeExpand;
             tvModels.DoubleClick += TvModels_DoubleClick;
             tvModels.NodeMouseClick += TvModels_NodeMouseClick;
+            tvModels.MouseDown += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right)
+                {
+                    var n = tvModels.GetNodeAt(e.Location);
+                    if (n != null)
+                    {
+                        _suppressSelect = true;
+                        try { tvModels.SelectedNode = n; }
+                        finally { _suppressSelect = false; }
+                    }
+                }
+            };
             tvModels.KeyDown += (s, e) =>
             {
                 if (e.KeyCode == Keys.F2 && tvModels.SelectedNode != null)
@@ -657,7 +695,23 @@ namespace UoFiddler.Plugin.Granny3D
 
             // ---- Left column: models tree (top) / animations + meshes (bottom),
             //      separated by draggable splitters so every zone can be enlarged. ----
-            var pnlModelTools = new Panel { Dock = DockStyle.Bottom, Height = 56 };
+            var pnlModelTools = new Panel { Dock = DockStyle.Bottom, Height = 84 };
+            btnApplyMixamo = new Button
+            {
+                Text = "⚡ Apply Mixamo for UO…",
+                Dock = DockStyle.Top,
+                Height = 28,
+                BackColor = Color.FromArgb(35, 75, 110),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font(Font, FontStyle.Bold)
+            };
+            btnApplyMixamo.Click += (s, e) =>
+            {
+                var info = tvModels.SelectedNode?.Tag as TreeNodeInfo;
+                ApplyMixamoForUo(info?.MeshPath ?? info?.Folder ?? _currentModelPath);
+            };
+
             btnImportMesh = new Button
             {
                 Text = "Importer un mesh…",
@@ -680,6 +734,7 @@ namespace UoFiddler.Plugin.Granny3D
             btnImportModel.Click += BtnImportModel_Click;
             pnlModelTools.Controls.Add(btnImportModel);
             pnlModelTools.Controls.Add(btnImportMesh);
+            pnlModelTools.Controls.Add(btnApplyMixamo);
 
             var pnlModels = new Panel { Dock = DockStyle.Fill };
             pnlModels.Controls.Add(tvModels);
@@ -721,6 +776,9 @@ namespace UoFiddler.Plugin.Granny3D
             glControl.MouseMove += GlControl_MouseMove;
             glControl.MouseWheel += GlControl_MouseWheel;
             glControl.MouseEnter += (s, e) => glControl.Focus();
+            glContextMenu = new ContextMenuStrip();
+            glContextMenu.Opening += GlContextMenu_Opening;
+            glControl.ContextMenuStrip = glContextMenu;
 
             // ---- Playback panel (bottom of right column) ----
             var pnlRightBottom = new Panel { Dock = DockStyle.Bottom, Height = 620, Padding = new Padding(0, 6, 0, 0) };
@@ -1661,7 +1719,24 @@ namespace UoFiddler.Plugin.Granny3D
             tvMenu.Items.Clear();
             var node = tvModels.SelectedNode;
             var info = node?.Tag as TreeNodeInfo;
-            if (info == null) { e.Cancel = true; return; }
+
+            // If right-clicked on empty area or no node selected
+            if (node == null || info == null)
+            {
+                var applyMixamoGen = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer & Adapter un modèle)...", null, (s, a) =>
+                {
+                    ApplyMixamoForUo(null);
+                });
+                applyMixamoGen.Font = new Font(tvMenu.Font, FontStyle.Bold);
+                tvMenu.Items.Add(applyMixamoGen);
+
+                tvMenu.Items.Add("Importer un Character Mixamo (FBX)...", null, BtnImportModel_Click);
+                tvMenu.Items.Add("Importer un mesh (FBX / OBJ)...", null, BtnImportMesh_Click);
+                tvMenu.Items.Add("Importer une animation FBX Mixamo...", null, BtnImportAnim_Click);
+                tvMenu.Items.Add(new ToolStripSeparator());
+                tvMenu.Items.Add("Rafraîchir la liste des modèles", null, (s, a) => RestoreModelsTree());
+                return;
+            }
 
             if (info.IsFolder)
             {
@@ -1670,6 +1745,14 @@ namespace UoFiddler.Plugin.Granny3D
                     if (!info.Populated) AddCreatureNodes(node, info.Folder);
                     node.Toggle();
                 });
+
+                tvMenu.Items.Add(new ToolStripSeparator());
+                var applyMixamoFolder = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer & Adapter un modèle)...", null, (s, a) =>
+                {
+                    ApplyMixamoForUo(info.Folder);
+                });
+                applyMixamoFolder.Font = new Font(tvMenu.Font, FontStyle.Bold);
+                tvMenu.Items.Add(applyMixamoFolder);
             }
             else if (info.LeafPath != null)
             {
@@ -1684,6 +1767,15 @@ namespace UoFiddler.Plugin.Granny3D
                     var parentInfo = node.Parent?.Tag as TreeNodeInfo;
                     if (parentInfo?.MeshPath != null) LoadModel(parentInfo.MeshPath);
                 });
+
+                tvMenu.Items.Add(new ToolStripSeparator());
+                var applyMixamoLeaf = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter une animation / modèle)...", null, (s, a) =>
+                {
+                    var parentInfo = node.Parent?.Tag as TreeNodeInfo;
+                    ApplyMixamoForUo(parentInfo?.MeshPath);
+                });
+                applyMixamoLeaf.Font = new Font(tvMenu.Font, FontStyle.Bold);
+                tvMenu.Items.Add(applyMixamoLeaf);
             }
             else
             {
@@ -1695,6 +1787,14 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     if (info.MeshPath != null) AddToScene(info.MeshPath);
                 });
+
+                tvMenu.Items.Add(new ToolStripSeparator());
+                var applyMixamoModel = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+                {
+                    ApplyMixamoForUo(info.MeshPath);
+                });
+                applyMixamoModel.Font = new Font(tvMenu.Font, FontStyle.Bold);
+                tvMenu.Items.Add(applyMixamoModel);
             }
 
             bool isCustomChar = !string.IsNullOrEmpty(info.MeshPath) &&
@@ -1707,6 +1807,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (isCustomChar)
             {
                 tvMenu.Items.Add(new ToolStripSeparator());
+
                 tvMenu.Items.Add("Assigner / Modifier les textures...", null, (s, a) =>
                 {
                     OpenTextureManagerForModel(info.MeshPath);
@@ -1758,6 +1859,77 @@ namespace UoFiddler.Plugin.Granny3D
             tvMenu.Items.Add("Retirer le dernier mesh", null, (s, a) =>
                 RemoveMeshAt(_loadedMeshes.Count - 1));
             tvMenu.Items.Add("Vider la scène", null, (s, a) => ClearScene());
+        }
+
+        private void ApplyMixamoForUo(string pathOrFolder)
+        {
+            try
+            {
+                string sourceFile = null;
+                string outFolder = null;
+
+                if (!string.IsNullOrEmpty(pathOrFolder))
+                {
+                    if (Directory.Exists(pathOrFolder))
+                    {
+                        outFolder = pathOrFolder;
+                    }
+                    else if (File.Exists(pathOrFolder))
+                    {
+                        sourceFile = pathOrFolder;
+                        outFolder = Path.GetDirectoryName(pathOrFolder);
+                    }
+                }
+
+                // If no file found directly from pathOrFolder, check selected node in treeview
+                if (string.IsNullOrEmpty(sourceFile) && tvModels.SelectedNode?.Tag is TreeNodeInfo selInfo)
+                {
+                    if (!string.IsNullOrEmpty(selInfo.MeshPath) && File.Exists(selInfo.MeshPath))
+                    {
+                        sourceFile = selInfo.MeshPath;
+                        if (string.IsNullOrEmpty(outFolder)) outFolder = Path.GetDirectoryName(sourceFile);
+                    }
+                }
+
+                // If still no file, check _currentModelPath
+                if (string.IsNullOrEmpty(sourceFile) && !string.IsNullOrEmpty(_currentModelPath) && File.Exists(_currentModelPath))
+                {
+                    sourceFile = _currentModelPath;
+                    if (string.IsNullOrEmpty(outFolder)) outFolder = Path.GetDirectoryName(sourceFile);
+                }
+
+                // If still no file, check loaded meshes in active preview
+                if (string.IsNullOrEmpty(sourceFile) && _loadedMeshes != null && _loadedMeshes.Count > 0)
+                {
+                    foreach (var m in _loadedMeshes)
+                    {
+                        if (!string.IsNullOrEmpty(m.SourcePath) && File.Exists(m.SourcePath))
+                        {
+                            sourceFile = m.SourcePath;
+                            if (string.IsNullOrEmpty(outFolder)) outFolder = Path.GetDirectoryName(sourceFile);
+                            break;
+                        }
+                    }
+                }
+
+                if (string.IsNullOrEmpty(outFolder))
+                    outFolder = Path.Combine(BasePath, "Others");
+
+                // Pass BOTH sourceFile AND active _loadedMeshes so AutoRigDialog has the 3D model immediately
+                using var dlg = new AutoRigDialog(sourceFile, BasePath, outFolder, _loadedMeshes);
+                if (dlg.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(dlg.GeneratedCharPath))
+                {
+                    string charPath = dlg.GeneratedCharPath;
+                    LoadCustomCharacter(charPath);
+                    RestoreModelsTree();
+                    RevealModelFile(charPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Auto-Rig Studio error: {ex.Message}\n{ex}");
+                MessageBox.Show("Erreur dans Auto-Rig Studio : " + ex.Message, "Apply Mixamo for UO", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void RenameCustomModel(TreeNode node, TreeNodeInfo info)
@@ -2860,7 +3032,17 @@ namespace UoFiddler.Plugin.Granny3D
         {
             tvAnimMenu.Items.Clear();
             var node = tvAnims.SelectedNode;
-            if (node == null) { e.Cancel = true; return; }
+            if (node == null)
+            {
+                var applyMixamoGen = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer & Adapter un FBX)...", null, (s, a) =>
+                {
+                    ApplyMixamoForUo(null);
+                });
+                applyMixamoGen.Font = new Font(tvAnimMenu.Font, FontStyle.Bold);
+                tvAnimMenu.Items.Add(applyMixamoGen);
+                tvAnimMenu.Items.Add("Importer une animation FBX Mixamo...", null, BtnImportAnim_Click);
+                return;
+            }
 
             string animPath = node.Tag as string;
             var cat = node.Tag as AnimCat;
@@ -2868,16 +3050,29 @@ namespace UoFiddler.Plugin.Granny3D
             if (cat != null)
             {
                 tvAnimMenu.Items.Add(node.IsExpanded ? "Réduire" : "Développer", null, (s, a) => node.Toggle());
+                tvAnimMenu.Items.Add(new ToolStripSeparator());
+                var applyCat = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer une animation FBX)...", null, (s, a) => BtnImportAnim_Click(s, a));
+                applyCat.Font = new Font(tvAnimMenu.Font, FontStyle.Bold);
+                tvAnimMenu.Items.Add(applyCat);
                 return;
             }
 
             if (string.IsNullOrEmpty(animPath))
             {
-                e.Cancel = true;
+                var applyMixamoGen = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer & Adapter un FBX)...", null, (s, a) =>
+                {
+                    ApplyMixamoForUo(null);
+                });
+                applyMixamoGen.Font = new Font(tvAnimMenu.Font, FontStyle.Bold);
+                tvAnimMenu.Items.Add(applyMixamoGen);
                 return;
             }
 
             tvAnimMenu.Items.Add("Lire l'animation", null, (s, a) => PlayAnimationFile(animPath));
+            tvAnimMenu.Items.Add(new ToolStripSeparator());
+            var applyMixamoClip = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer une animation FBX)...", null, (s, a) => BtnImportAnim_Click(s, a));
+            applyMixamoClip.Font = new Font(tvAnimMenu.Font, FontStyle.Bold);
+            tvAnimMenu.Items.Add(applyMixamoClip);
 
             bool isCustomAnim = animPath.EndsWith(".anim", StringComparison.OrdinalIgnoreCase) ||
                                 (node.Parent?.Tag as AnimCat)?.Pattern == "*.anim";
@@ -4638,7 +4833,16 @@ namespace UoFiddler.Plugin.Granny3D
             int idx = lstLoaded.SelectedIndex;
             if (idx < 0 || idx >= _loadedMeshes.Count)
             {
-                e.Cancel = true;
+                var applyMixamoFallback = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+                {
+                    string target = !string.IsNullOrEmpty(_currentModelPath) ? _currentModelPath : null;
+                    ApplyMixamoForUo(target);
+                });
+                applyMixamoFallback.Font = new Font(lstLoadedMenu.Font, FontStyle.Bold);
+                lstLoadedMenu.Items.Add(applyMixamoFallback);
+
+                lstLoadedMenu.Items.Add("Importer un Character Mixamo (FBX)...", null, BtnImportModel_Click);
+                lstLoadedMenu.Items.Add("Importer un mesh...", null, BtnImportMesh_Click);
                 return;
             }
             var lm = _loadedMeshes[idx];
@@ -4670,6 +4874,14 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             lstLoadedMenu.Items.Add(new ToolStripSeparator());
+            var applyMixamoLoaded = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+            {
+                string target = !string.IsNullOrEmpty(lm.SourcePath) ? lm.SourcePath : _currentModelPath;
+                ApplyMixamoForUo(target);
+            });
+            applyMixamoLoaded.Font = new Font(lstLoadedMenu.Font, FontStyle.Bold);
+            lstLoadedMenu.Items.Add(applyMixamoLoaded);
+
             lstLoadedMenu.Items.Add("Retirer ce mesh de la scène", null, (s, a) =>
             {
                 RemoveMeshAt(idx);
@@ -7620,6 +7832,11 @@ void main(){
         private void GlControl_MouseDown(object sender, MouseEventArgs e)
         {
             glControl.Focus();
+            if (e.Button == MouseButtons.Right)
+            {
+                _glRightDrag = false;
+                _glRightDownPos = e.Location;
+            }
             if (_uoView)
             {
                 int sx = UoSplitX();
@@ -7637,6 +7854,13 @@ void main(){
 
         private void GlControl_MouseMove(object sender, MouseEventArgs e)
         {
+            if (e.Button == MouseButtons.Right)
+            {
+                if (Math.Abs(e.X - _glRightDownPos.X) > 5 || Math.Abs(e.Y - _glRightDownPos.Y) > 5)
+                {
+                    _glRightDrag = true;
+                }
+            }
             if (_uoDragSplit)
             {
                 _uoSplit = MathHelper.Clamp((float)e.X / Math.Max(1, glControl.Width), 0.15f, 0.85f);
@@ -7649,6 +7873,49 @@ void main(){
             if (_uoView && e.X > sx) return;   // right (UO) half
             _camera.OnMouseMove(e);
             glControl.Invalidate();
+        }
+
+        private void GlContextMenu_Opening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            if (_glRightDrag)
+            {
+                _glRightDrag = false;
+                e.Cancel = true;
+                return;
+            }
+
+            glContextMenu.Items.Clear();
+
+            var applyMixamoItem = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+            {
+                string target = !string.IsNullOrEmpty(_currentModelPath) ? _currentModelPath : null;
+                ApplyMixamoForUo(target);
+            });
+            applyMixamoItem.Font = new Font(glContextMenu.Font, FontStyle.Bold);
+            glContextMenu.Items.Add(applyMixamoItem);
+
+            glContextMenu.Items.Add("Importer un Character Mixamo (FBX)...", null, BtnImportModel_Click);
+            glContextMenu.Items.Add("Importer une animation FBX Mixamo...", null, BtnImportAnim_Click);
+            glContextMenu.Items.Add(new ToolStripSeparator());
+
+            if (!string.IsNullOrEmpty(_currentModelPath))
+            {
+                glContextMenu.Items.Add("Assigner / Modifier les textures...", null, (s, a) =>
+                {
+                    OpenTextureManagerForModel(_currentModelPath);
+                });
+            }
+
+            glContextMenu.Items.Add("Recentrer la caméra", null, (s, a) =>
+            {
+                _camera.Target = Vector3.Zero;
+                _camera.Distance = 5f;
+                _camera.Yaw = 0f;
+                _camera.Pitch = -0.35f;
+                glControl.Invalidate();
+            });
+
+            glContextMenu.Items.Add("Réinitialiser la pose (Stop)", null, BtnStop_Click);
         }
 
         private void GlControl_MouseWheel(object sender, MouseEventArgs e)

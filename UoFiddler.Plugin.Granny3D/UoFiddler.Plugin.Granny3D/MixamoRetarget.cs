@@ -48,6 +48,30 @@ namespace UoFiddler.Plugin.Granny3D
             ("mixamorig:RightLeg",     "Bip01 R Calf"),
             ("mixamorig:RightFoot",    "Bip01 R Foot"),
             ("mixamorig:RightToeBase", "Bip01 R Toe0"),
+
+            // Standard Unreal / Unity Humanoid rig aliases:
+            ("pelvis",        "Bip01 Pelvis"),
+            ("spine_01",      "Bip01 Spine"),
+            ("spine_02",      "Bip01 Spine1"),
+            ("spine_03",      "Bip01 Spine2"),
+            ("neck_01",       "Bip01 Neck"),
+            ("head",          "Bip01 Head"),
+            ("clavicle_l",    "Bip01 L Clavicle"),
+            ("upperarm_l",    "Bip01 L UpperArm"),
+            ("lowerarm_l",    "Bip01 L Forearm"),
+            ("hand_l",        "Bip01 L Hand"),
+            ("thigh_l",       "Bip01 L Thigh"),
+            ("calf_l",        "Bip01 L Calf"),
+            ("foot_l",        "Bip01 L Foot"),
+            ("ball_l",        "Bip01 L Toe0"),
+            ("clavicle_r",    "Bip01 R Clavicle"),
+            ("upperarm_r",    "Bip01 R UpperArm"),
+            ("lowerarm_r",    "Bip01 R Forearm"),
+            ("hand_r",        "Bip01 R Hand"),
+            ("thigh_r",       "Bip01 R Thigh"),
+            ("calf_r",        "Bip01 R Calf"),
+            ("foot_r",        "Bip01 R Foot"),
+            ("ball_r",        "Bip01 R Toe0"),
         };
 
         // Mixamo is Y-up, UO models are Z-up: +/-90deg about X bridges the two when
@@ -88,6 +112,67 @@ namespace UoFiddler.Plugin.Granny3D
                     return true;
                 }
             }
+
+            // Pattern-based humanoid resolver
+            string lower = cleanName.ToLowerInvariant();
+            if (lower == "pelvis" || lower == "hips" || lower == "hip") { alias = "Bip01 Pelvis"; return true; }
+            if (lower == "spine_01" || lower == "spine1" || lower == "spine") { alias = "Bip01 Spine"; return true; }
+            if (lower == "spine_02" || lower == "spine2" || lower == "chest") { alias = "Bip01 Spine1"; return true; }
+            if (lower == "spine_03" || lower == "spine3" || lower == "upperchest" || lower == "upper_chest") { alias = "Bip01 Spine2"; return true; }
+            if (lower == "neck_01" || lower == "neck") { alias = "Bip01 Neck"; return true; }
+            if (lower == "head") { alias = "Bip01 Head"; return true; }
+
+            bool isLeft = cleanName.IndexOf("Left", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                          cleanName.StartsWith("L_", StringComparison.OrdinalIgnoreCase) ||
+                          cleanName.StartsWith("L-", StringComparison.OrdinalIgnoreCase) ||
+                          cleanName.StartsWith("L.", StringComparison.OrdinalIgnoreCase) ||
+                          cleanName.StartsWith("L ", StringComparison.OrdinalIgnoreCase) ||
+                          cleanName.EndsWith("_L", StringComparison.OrdinalIgnoreCase) ||
+                          cleanName.EndsWith(".L", StringComparison.OrdinalIgnoreCase) ||
+                          cleanName.EndsWith("-L", StringComparison.OrdinalIgnoreCase) ||
+                          cleanName.EndsWith("_left", StringComparison.OrdinalIgnoreCase);
+
+            bool isRight = cleanName.IndexOf("Right", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                           cleanName.StartsWith("R_", StringComparison.OrdinalIgnoreCase) ||
+                           cleanName.StartsWith("R-", StringComparison.OrdinalIgnoreCase) ||
+                           cleanName.StartsWith("R.", StringComparison.OrdinalIgnoreCase) ||
+                           cleanName.StartsWith("R ", StringComparison.OrdinalIgnoreCase) ||
+                           cleanName.EndsWith("_R", StringComparison.OrdinalIgnoreCase) ||
+                           cleanName.EndsWith(".R", StringComparison.OrdinalIgnoreCase) ||
+                           cleanName.EndsWith("-R", StringComparison.OrdinalIgnoreCase) ||
+                           cleanName.EndsWith("_right", StringComparison.OrdinalIgnoreCase);
+
+            string side = isLeft ? "L" : (isRight ? "R" : null);
+            if (side != null)
+            {
+                if (lower.Contains("clavicle") || lower.Contains("shoulder")) { alias = $"Bip01 {side} Clavicle"; return true; }
+                if (lower.Contains("upperarm") || lower.Contains("upper_arm") || lower.Contains("uparm") || (lower.Contains("arm") && !lower.Contains("lower") && !lower.Contains("fore"))) { alias = $"Bip01 {side} UpperArm"; return true; }
+                if (lower.Contains("lowerarm") || lower.Contains("lower_arm") || lower.Contains("forearm")) { alias = $"Bip01 {side} Forearm"; return true; }
+                if (lower.Contains("hand") || lower.Contains("wrist")) { alias = $"Bip01 {side} Hand"; return true; }
+                if (lower.Contains("thigh") || lower.Contains("upperleg") || lower.Contains("upper_leg") || lower.Contains("upleg")) { alias = $"Bip01 {side} Thigh"; return true; }
+                if (lower.Contains("calf") || lower.Contains("lowerleg") || lower.Contains("lower_leg") || lower.Contains("shin") || (lower.Contains("leg") && !lower.Contains("up") && !lower.Contains("upper"))) { alias = $"Bip01 {side} Calf"; return true; }
+                if (lower.Contains("foot") || lower.Contains("ankle")) { alias = $"Bip01 {side} Foot"; return true; }
+                if (lower.Contains("ball") || lower.Contains("toe")) { alias = $"Bip01 {side} Toe0"; return true; }
+
+                if (lower.Contains("thumb"))
+                {
+                    alias = (lower.Contains("01") || lower.Contains("thumb1")) ? $"Bip01 {side} Finger0" : $"Bip01 {side} Finger01";
+                    return true;
+                }
+                if (lower.Contains("index") || (lower.Contains("finger") && !lower.Contains("middle") && !lower.Contains("ring") && !lower.Contains("pinky")))
+                {
+                    alias = (lower.Contains("01") || lower.Contains("index1"))
+                        ? $"Bip01 {side} Finger1" : $"Bip01 {side} Finger11";
+                    return true;
+                }
+                if (lower.Contains("middle") || lower.Contains("ring") || lower.Contains("pinky") || lower.Contains("little"))
+                {
+                    // Map non-index fingers to Hand so they stay naturally shaped and don't stretch
+                    alias = $"Bip01 {side} Hand";
+                    return true;
+                }
+            }
+
             return false;
         }
 
@@ -162,7 +247,19 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             var wBindMix = WorldStatic(q0, p0, s0, nodeParent, nn);
-            int mixHead = nameToNode.TryGetValue("mixamorig:Head", out int mh) ? mh : -1;
+
+            // Determine if the source animation skeleton is Z-up or Y-up:
+            float minY = float.MaxValue, maxY = float.MinValue;
+            float minZ = float.MaxValue, maxZ = float.MinValue;
+            for (int i = 0; i < nn; i++)
+            {
+                var p = wBindMix[i].Row3;
+                if (p.Y < minY) minY = p.Y; if (p.Y > maxY) maxY = p.Y;
+                if (p.Z < minZ) minZ = p.Z; if (p.Z > maxZ) maxZ = p.Z;
+            }
+            bool isZUp = (maxZ - minZ) > (maxY - minY) * 1.5f;
+            Matrix4 cAnim = isZUp ? Matrix4.Identity : C;
+            Matrix4 cInvAnim = isZUp ? Matrix4.Identity : Cinv;
 
             // Which UO bone each mix node maps to.
             var uo2mix = new int[nb];
@@ -170,6 +267,12 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (var m in BoneMap)
                 if (nameToUo.TryGetValue(m.Uo, out int uo) && nameToNode.TryGetValue(m.Mix, out int mi))
                     if (uo2mix[uo] < 0) uo2mix[uo] = mi;
+
+            for (int ni = 0; ni < nn; ni++)
+            {
+                if (TryGetBoneAlias(nodes[ni].Name, out string uoName) && nameToUo.TryGetValue(uoName, out int uo))
+                    if (uo2mix[uo] < 0) uo2mix[uo] = ni;
+            }
 
             int frames = (int)Math.Round(anim.DurationInTicks) + 1;
             if (frames < 2) frames = 2;
@@ -190,7 +293,7 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         int mi = uo2mix[i];
                         var dmix = Matrix4.Invert(Rot(wBindMix[mi])) * Rot(wMix[mi]);
-                        dR = Cinv * dmix * C;
+                        dR = cInvAnim * dmix * cAnim;
                     }
                     wU[i] = Rot(wbindU[i]) * dR;
                 }
