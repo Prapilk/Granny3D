@@ -19,6 +19,7 @@ namespace UoFiddler.Plugin.Granny3D
         private readonly string _othersFolder;
         private readonly Func<string, string, int>? _tryLoadTextureFunc;
         private readonly Action? _invalidateGlFunc;
+        private readonly Action? _extractPartsAction;
 
         private DataGridView _dgv = null!;
         private PictureBox _pbPreview = null!;
@@ -35,7 +36,8 @@ namespace UoFiddler.Plugin.Granny3D
             List<LoadedMesh>? liveMeshes = null,
             string? initialFbxDir = null,
             Func<string, string, int>? tryLoadTextureFunc = null,
-            Action? invalidateGlFunc = null)
+            Action? invalidateGlFunc = null,
+            Action? extractPartsAction = null)
         {
             _charPath = charPath;
             _model = model;
@@ -44,6 +46,8 @@ namespace UoFiddler.Plugin.Granny3D
             _othersFolder = Path.GetDirectoryName(charPath) ?? string.Empty;
             _tryLoadTextureFunc = tryLoadTextureFunc;
             _invalidateGlFunc = invalidateGlFunc;
+            _extractPartsAction = extractPartsAction;
+
 
             InitializeComponentCustom();
             PopulateTable();
@@ -275,12 +279,34 @@ namespace UoFiddler.Plugin.Granny3D
                 catch { }
             };
 
+            if (_extractPartsAction != null && _model.Parts.Count > 1)
+            {
+                var btnExtractMesh = new Button
+                {
+                    Text = "Extraire pièces vers 'Meshs custom'...",
+                    Dock = DockStyle.Left,
+                    Width = 240,
+                    BackColor = Color.FromArgb(35, 120, 75),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+                };
+                btnExtractMesh.Click += (s, e) =>
+                {
+                    Close();
+                    _extractPartsAction();
+                };
+                pnlBottom.Controls.Add(btnExtractMesh);
+                pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Left, Width = 8 });
+            }
+
             pnlBottom.Controls.Add(btnOpenFolder);
             pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Left, Width = 8 });
             pnlBottom.Controls.Add(btnExtractFbx);
             pnlBottom.Controls.Add(_btnCancel);
             pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 10 });
             pnlBottom.Controls.Add(_btnApply);
+
 
             Controls.Add(_dgv);
             Controls.Add(pnlRight);

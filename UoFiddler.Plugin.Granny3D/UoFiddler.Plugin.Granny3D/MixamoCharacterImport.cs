@@ -210,6 +210,45 @@ namespace UoFiddler.Plugin.Granny3D
                 wU[i] = mat;
             }
 
+            // For skinned meshes, the true bind pose of each bone is stored in mesh.Bones[b].OffsetMatrix:
+            // OffsetMatrix = Invert(boneBindWorld) * meshNodeWorld
+            // => boneBindWorld = Invert(OffsetMatrix) * meshNodeWorld
+            // If the FBX has animations or is posed at a frame (e.g. Idle pose), nodes[ni].Transform is the animated pose,
+            // while bone.OffsetMatrix preserves the exact rest/bind pose that matches the vertices!
+            var hasTrueBind = new bool[nn];
+            for (int m = 0; m < scene.MeshCount; m++)
+            {
+                var mesh = scene.Meshes[m];
+                Matrix4 meshNodeWorld = Matrix4.Identity;
+                for (int ni = 0; ni < nn; ni++)
+                {
+                    if (nodes[ni].MeshIndices != null && nodes[ni].MeshIndices.Contains(m))
+                    {
+                        meshNodeWorld = wMix[ni];
+                        break;
+                    }
+                }
+
+                for (int b = 0; b < mesh.BoneCount; b++)
+                {
+                    var bone = mesh.Bones[b];
+                    if (nameToNode.TryGetValue(bone.Name, out int bni) && !hasTrueBind[bni])
+                    {
+                        var inv = ToMatrix4(bone.OffsetMatrix);
+                        var boneMeshBind = Matrix4.Invert(inv);
+                        var boneWorld = boneMeshBind * meshNodeWorld;
+                        var matU = Cinv * boneWorld * C;
+                        matU.Row3.X *= currentScale;
+                        matU.Row3.Y *= currentScale;
+                        matU.Row3.Z *= currentScale;
+                        wU[bni] = matU;
+                        hasTrueBind[bni] = true;
+                    }
+                }
+            }
+
+
+
             // Adapt skeleton in model.Bones to match the character's exact proportions:
             var uoBoneByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             if (refBones != null && refBones.Count > 0)
@@ -356,6 +395,7 @@ namespace UoFiddler.Plugin.Granny3D
                     }
 
                     string texName = null;
+                    string cleanMesh = !string.IsNullOrEmpty(mesh.Name) ? Granny3DControl.MakeSafeFilename(mesh.Name) : $"mesh_{m}";
                     if (mat.HasTextureDiffuse && !string.IsNullOrEmpty(mat.TextureDiffuse.FilePath))
                     {
                         string fp = mat.TextureDiffuse.FilePath;
@@ -371,16 +411,38 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                         else
                         {
-                            // Check on disk next to FBX
+                            // Check on disk next to FBX (direct or relative)
                             string fbxDir = Path.GetDirectoryName(fbxPath) ?? string.Empty;
-                            string candidate = Path.Combine(fbxDir, fn);
-                            if (File.Exists(candidate))
+                            string? foundCandidate = null;
+
+                            // 1) Direct file next to FBX
+                            if (File.Exists(Path.Combine(fbxDir, fn))) foundCandidate = Path.Combine(fbxDir, fn);
+                            // 2) Exact relative path
+                            else if (File.Exists(Path.Combine(fbxDir, fp))) foundCandidate = Path.Combine(fbxDir, fp);
+                            else
                             {
-                                texName = $"{name}_{fn}";
+                                // 3) Strip leading folder (e.g. "Texture\Spear\BaseColor.png" -> "Spear\BaseColor.png")
+                                string normFp = fp.Replace('/', '\\');
+                                int slash = normFp.IndexOf('\\');
+                                if (slash >= 0)
+                                {
+                                    string stripped = normFp.Substring(slash + 1);
+                                    if (File.Exists(Path.Combine(fbxDir, stripped))) foundCandidate = Path.Combine(fbxDir, stripped);
+                                }
+                            }
+
+                            if (foundCandidate != null)
+                            {
+                                string ext = Path.GetExtension(foundCandidate);
+                                string candParent = Path.GetFileName(Path.GetDirectoryName(foundCandidate));
+                                string tag = (!string.IsNullOrEmpty(candParent) && !string.Equals(candParent, Path.GetFileName(fbxDir), StringComparison.OrdinalIgnoreCase))
+                                    ? $"{cleanMesh}_{candParent}"
+                                    : cleanMesh;
+                                texName = $"{name}_{tag}{ext}";
                                 if (!string.IsNullOrEmpty(outFolder))
                                 {
                                     if (!Directory.Exists(outFolder)) Directory.CreateDirectory(outFolder);
-                                    File.Copy(candidate, Path.Combine(outFolder, texName), true);
+                                    File.Copy(foundCandidate, Path.Combine(outFolder, texName), true);
                                 }
                             }
                             else
@@ -395,7 +457,6 @@ namespace UoFiddler.Plugin.Granny3D
                                         break;
                                     }
                                 }
-                                if (string.IsNullOrEmpty(texName)) texName = fn;
                             }
                         }
                     }
@@ -409,6 +470,7 @@ namespace UoFiddler.Plugin.Granny3D
                             texName = diskTex;
                         }
                     }
+
 
                     // Fallback if no texture found on disk or material but embedded textures exist:
                     // pick diffuse/albedo texture or first extracted texture
@@ -833,8 +895,50 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
                 }
+
+                // 3) Chemins relatifs dérivés de embeddedRefPath (ex: "Texture\Spear\BaseColor.png" -> "Spear\BaseColor.png")
+                if (!string.IsNullOrEmpty(embeddedRefPath))
+                {
+                    string p1 = Path.Combine(fbxDir, embeddedRefPath);
+                    if (File.Exists(p1) && supportedExts.Contains(Path.GetExtension(p1)) && !candidateFiles.Contains(p1))
+                        candidateFiles.Add(p1);
+
+                    string normEmb = embeddedRefPath.Replace('/', '\\');
+                    int slash = normEmb.IndexOf('\\');
+                    if (slash >= 0)
+                    {
+                        string subRel = normEmb.Substring(slash + 1);
+                        string p2 = Path.Combine(fbxDir, subRel);
+                        if (File.Exists(p2) && supportedExts.Contains(Path.GetExtension(p2)) && !candidateFiles.Contains(p2))
+                            candidateFiles.Add(p2);
+                    }
+                }
+
+                // 4) Sous-dossiers immédiats si le dossier n'est pas un répertoire générique (ex: "1", "CrossBow", "Spear")
+                string dirName = Path.GetFileName(fbxDir);
+                bool isGenericDir = dirName.Equals("Downloads", StringComparison.OrdinalIgnoreCase) ||
+                                    dirName.Equals("Desktop", StringComparison.OrdinalIgnoreCase) ||
+                                    dirName.Equals("Bureau", StringComparison.OrdinalIgnoreCase) ||
+                                    dirName.Equals("Téléchargements", StringComparison.OrdinalIgnoreCase) ||
+                                    dirName.Equals("Temp", StringComparison.OrdinalIgnoreCase);
+                if (!isGenericDir)
+                {
+                    foreach (var sub in Directory.GetDirectories(fbxDir, "*", SearchOption.TopDirectoryOnly))
+                    {
+                        string sName = Path.GetFileName(sub);
+                        if (sName.StartsWith(".") || sName.Equals("bin", StringComparison.OrdinalIgnoreCase) || sName.Equals("obj", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var f in Directory.GetFiles(sub, "*.*", SearchOption.TopDirectoryOnly))
+                        {
+                            if (supportedExts.Contains(Path.GetExtension(f)) && !candidateFiles.Contains(f))
+                            {
+                                candidateFiles.Add(f);
+                            }
+                        }
+                    }
+                }
             }
             catch { }
+
 
             if (candidateFiles.Count == 0) return null;
 
@@ -929,6 +1033,21 @@ namespace UoFiddler.Plugin.Granny3D
                     hasContextMatch = true;
                 }
 
+                // 5b) Correspondance avec le sous-dossier (ex: dossier "Spear", "CrossBow", "1" qui correspond à embeddedRefPath ou meshName)
+                string parentDir = Path.GetFileName(Path.GetDirectoryName(filePath)) ?? "";
+                if (!string.IsNullOrEmpty(parentDir) && !string.IsNullOrEmpty(embeddedRefPath) &&
+                    embeddedRefPath.IndexOf(parentDir, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    score += 500;
+                    hasContextMatch = true;
+                }
+                else if (!string.IsNullOrEmpty(parentDir) && !string.IsNullOrEmpty(mNameLower) &&
+                         mNameLower.IndexOf(parentDir, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    score += 350;
+                    hasContextMatch = true;
+                }
+
                 string relPath = Path.GetRelativePath(fbxDir, filePath).ToLowerInvariant();
                 bool isDedicatedSubfolder = relPath.Contains(Path.DirectorySeparatorChar) || relPath.Contains('/') || relPath.Contains('\\');
 
@@ -973,7 +1092,12 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 string ext = Path.GetExtension(bestFile);
                 string cleanMesh = !string.IsNullOrEmpty(meshName) ? Granny3DControl.MakeSafeFilename(meshName) : "mesh";
-                string destName = $"{charName}_{cleanMesh}{ext}";
+                string candParent = Path.GetFileName(Path.GetDirectoryName(bestFile));
+                string tag = (!string.IsNullOrEmpty(candParent) && !string.Equals(candParent, Path.GetFileName(fbxDir), StringComparison.OrdinalIgnoreCase))
+                    ? $"{cleanMesh}_{candParent}"
+                    : cleanMesh;
+                string destName = $"{charName}_{tag}{ext}";
+
 
                 if (!string.IsNullOrEmpty(outFolder))
                 {
@@ -1131,5 +1255,16 @@ namespace UoFiddler.Plugin.Granny3D
 
             return -1;
         }
+
+        private static Matrix4 ToMatrix4(Assimp.Matrix4x4 m)
+        {
+            return new Matrix4(
+                m.A1, m.B1, m.C1, m.D1,
+                m.A2, m.B2, m.C2, m.D2,
+                m.A3, m.B3, m.C3, m.D3,
+                m.A4, m.B4, m.C4, m.D4
+            );
+        }
     }
 }
+

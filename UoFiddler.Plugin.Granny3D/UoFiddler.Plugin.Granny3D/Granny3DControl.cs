@@ -629,6 +629,21 @@ namespace UoFiddler.Plugin.Granny3D
             tvModels.BeforeExpand += TvModels_BeforeExpand;
             tvModels.DoubleClick += TvModels_DoubleClick;
             tvModels.NodeMouseClick += TvModels_NodeMouseClick;
+            tvModels.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.F2 && tvModels.SelectedNode != null)
+                {
+                    var info = tvModels.SelectedNode.Tag as TreeNodeInfo;
+                    if (info != null && (info.IsOthersCategory || info.IsCustomMeshCategory ||
+                        (tvModels.SelectedNode.Parent?.Tag as TreeNodeInfo)?.IsOthersCategory == true ||
+                        (tvModels.SelectedNode.Parent?.Tag as TreeNodeInfo)?.IsCustomMeshCategory == true))
+                    {
+                        RenameCustomModel(tvModels.SelectedNode, info);
+                        e.Handled = true;
+                    }
+                }
+            };
+
 
             // Search box for the LOD2 models tree (same idea as the Animations filter).
             txtModelFilter = new TextBox
@@ -1696,7 +1711,39 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     OpenTextureManagerForModel(info.MeshPath);
                 });
-                string delLabel = ((node.Parent?.Tag as TreeNodeInfo)?.IsCustomMeshCategory == true || info.IsCustomMeshCategory)
+
+                tvMenu.Items.Add("Renommer...", null, (s, a) =>
+                {
+                    RenameCustomModel(node, info);
+                });
+
+                bool isCustomMeshCat = (node.Parent?.Tag as TreeNodeInfo)?.IsCustomMeshCategory == true || info.IsCustomMeshCategory;
+                bool isOthersCat = (node.Parent?.Tag as TreeNodeInfo)?.IsOthersCategory == true || info.IsOthersCategory;
+
+                if (isOthersCat)
+                {
+                    tvMenu.Items.Add("Déplacer vers 'Meshs custom'", null, (s, a) =>
+                    {
+                        MoveCustomModel(node, info, Path.Combine(BasePath, "Meshs custom"), "Meshs custom");
+                    });
+                }
+                else if (isCustomMeshCat)
+                {
+                    tvMenu.Items.Add("Déplacer vers 'Others'", null, (s, a) =>
+                    {
+                        MoveCustomModel(node, info, Path.Combine(BasePath, "Others"), "Others");
+                    });
+                }
+
+                if (!string.IsNullOrEmpty(info.MeshPath) && info.MeshPath.EndsWith(GrannyModelFile.Extension, StringComparison.OrdinalIgnoreCase))
+                {
+                    tvMenu.Items.Add("Extraire des pièces vers 'Meshs custom'...", null, (s, a) =>
+                    {
+                        OpenExtractPartsDialog(info.MeshPath);
+                    });
+                }
+
+                string delLabel = isCustomMeshCat
                     ? "Supprimer ce mesh"
                     : "Supprimer ce character";
                 var deleteItem = new ToolStripMenuItem(delLabel, null, (s, a) =>
@@ -1711,6 +1758,454 @@ namespace UoFiddler.Plugin.Granny3D
             tvMenu.Items.Add("Retirer le dernier mesh", null, (s, a) =>
                 RemoveMeshAt(_loadedMeshes.Count - 1));
             tvMenu.Items.Add("Vider la scène", null, (s, a) => ClearScene());
+        }
+
+        private void RenameCustomModel(TreeNode node, TreeNodeInfo info)
+        {
+            if (info == null || string.IsNullOrEmpty(info.MeshPath) || !File.Exists(info.MeshPath)) return;
+
+            string oldName = !string.IsNullOrEmpty(node.Text) ? node.Text : Path.GetFileNameWithoutExtension(info.MeshPath);
+            using var dlg = new Form
+            {
+                Text = "Renommer le modèle",
+                Size = new Size(380, 160),
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                BackColor = Color.FromArgb(40, 40, 40),
+                ForeColor = Color.Gainsboro
+            };
+
+            var lbl = new Label { Text = "Nouveau nom :", Location = new Point(16, 16), AutoSize = true, ForeColor = Color.Gainsboro };
+            var txt = new TextBox
+            {
+                Text = oldName,
+                Location = new Point(16, 40),
+                Width = 330,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            txt.SelectAll();
+
+            var btnOk = new Button
+            {
+                Text = "OK",
+                DialogResult = DialogResult.OK,
+                Location = new Point(170, 80),
+                Width = 80,
+                Height = 28,
+                BackColor = Color.FromArgb(48, 48, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            var btnCancel = new Button
+            {
+                Text = "Annuler",
+                DialogResult = DialogResult.Cancel,
+                Location = new Point(266, 80),
+                Width = 80,
+                Height = 28,
+                BackColor = Color.FromArgb(48, 48, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            dlg.Controls.AddRange(new Control[] { lbl, txt, btnOk, btnCancel });
+            dlg.AcceptButton = btnOk;
+            dlg.CancelButton = btnCancel;
+
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            string newName = MakeSafeFilename(txt.Text.Trim());
+            if (string.IsNullOrEmpty(newName) || string.Equals(newName, oldName, StringComparison.OrdinalIgnoreCase)) return;
+
+            string folder = Path.GetDirectoryName(info.MeshPath) ?? string.Empty;
+            string ext = Path.GetExtension(info.MeshPath);
+            string newPath = Path.Combine(folder, newName + ext);
+
+            if (File.Exists(newPath))
+            {
+                MessageBox.Show($"Un fichier nommé '{newName}{ext}' existe déjà dans ce dossier.", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                // If it's a .char model file, update internal Name and texture names
+                if (info.MeshPath.EndsWith(GrannyModelFile.Extension, StringComparison.OrdinalIgnoreCase))
+                {
+                    var model = GrannyModelFile.Load(info.MeshPath);
+                    if (model != null)
+                    {
+                        model.Name = newName;
+                        for (int i = 0; i < model.Parts.Count; i++)
+                        {
+                            var part = model.Parts[i];
+                            if (!string.IsNullOrEmpty(part.TextureName) && part.TextureName.StartsWith(oldName + "_", StringComparison.OrdinalIgnoreCase))
+                            {
+                                string oldTexFile = Path.Combine(folder, part.TextureName);
+                                string newTexName = newName + "_" + part.TextureName.Substring(oldName.Length + 1);
+                                string newTexFile = Path.Combine(folder, newTexName);
+                                if (File.Exists(oldTexFile) && !File.Exists(newTexFile))
+                                {
+                                    try { File.Move(oldTexFile, newTexFile); } catch { }
+                                }
+                                part.TextureName = newTexName;
+                            }
+                        }
+                        GrannyModelFile.Save(model, newPath);
+                        try { File.Delete(info.MeshPath); } catch { }
+                    }
+                    else
+                    {
+                        File.Move(info.MeshPath, newPath);
+                    }
+                }
+                else
+                {
+                    File.Move(info.MeshPath, newPath);
+                }
+
+                // Rename any other associated textures starting with oldName_
+                string prefix = oldName + "_";
+                foreach (var f in Directory.GetFiles(folder, prefix + "*.*"))
+                {
+                    try
+                    {
+                        string fn = Path.GetFileName(f);
+                        string newFn = newName + "_" + fn.Substring(prefix.Length);
+                        string target = Path.Combine(folder, newFn);
+                        if (!File.Exists(target)) File.Move(f, target);
+                    }
+                    catch { }
+                }
+
+                // Update currently loaded path if applicable
+                if (string.Equals(_currentModelPath, info.MeshPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    _currentModelPath = newPath;
+                }
+
+                info.MeshPath = newPath;
+                info.CreatureKey = newName;
+                info.Display = newName;
+                node.Text = newName;
+
+                Log($"Modèle renommé : '{oldName}' -> '{newName}'");
+            }
+            catch (Exception ex)
+            {
+                Log($"Erreur renommage modèle: {ex.Message}");
+                MessageBox.Show("Erreur lors du renommage : " + ex.Message);
+            }
+        }
+
+        private void MoveCustomModel(TreeNode node, TreeNodeInfo info, string targetDir, string targetCatName)
+        {
+            if (info == null || string.IsNullOrEmpty(info.MeshPath) || !File.Exists(info.MeshPath)) return;
+            if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
+
+            string oldFile = info.MeshPath;
+            string fileName = Path.GetFileName(oldFile);
+            string targetFile = Path.Combine(targetDir, fileName);
+
+            if (File.Exists(targetFile))
+            {
+                var res = MessageBox.Show(
+                    $"Un fichier '{fileName}' existe déjà dans '{targetCatName}'. Voulez-vous le remplacer ?",
+                    "Remplacer le fichier",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+                if (res != DialogResult.Yes) return;
+                try { File.Delete(targetFile); } catch { }
+            }
+
+            try
+            {
+                // Move model file
+                File.Move(oldFile, targetFile);
+
+                // Move all associated textures (prefix + *.*)
+                string srcFolder = Path.GetDirectoryName(oldFile) ?? string.Empty;
+                string prefix = Path.GetFileNameWithoutExtension(oldFile) + "_";
+                foreach (var f in Directory.GetFiles(srcFolder, prefix + "*.*"))
+                {
+                    string tPath = Path.Combine(targetDir, Path.GetFileName(f));
+                    try
+                    {
+                        if (File.Exists(tPath)) File.Delete(tPath);
+                        File.Move(f, tPath);
+                    }
+                    catch { }
+                }
+
+                // If the model was loaded, update current path
+                if (string.Equals(_currentModelPath, oldFile, StringComparison.OrdinalIgnoreCase))
+                {
+                    _currentModelPath = targetFile;
+                }
+
+                Log($"Modèle déplacé vers '{targetCatName}' : {fileName}");
+
+                RestoreModelsTree();
+                RevealModelFile(targetFile);
+            }
+            catch (Exception ex)
+            {
+                Log($"Erreur déplacement modèle: {ex.Message}");
+                MessageBox.Show("Erreur lors du déplacement : " + ex.Message);
+            }
+        }
+
+        private void OpenExtractPartsDialog(string charPath)
+        {
+            if (string.IsNullOrEmpty(charPath) || !File.Exists(charPath)) return;
+            try
+            {
+                var model = GrannyModelFile.Load(charPath);
+                if (model == null || model.Parts.Count == 0)
+                {
+                    MessageBox.Show("Impossible de charger les données du modèle.", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                if (model.Parts.Count <= 1)
+                {
+                    MessageBox.Show(
+                        "Ce modèle ne contient qu'une seule pièce.\nPour déplacer le modèle entier, faites un clic droit dessus et choisissez 'Déplacer vers Meshs custom'.",
+                        "Extraction impossible",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
+                using var dlg = new Form
+                {
+                    Text = $"Extraire des pièces vers 'Meshs custom' - {model.Name}",
+                    Size = new Size(720, 480),
+                    StartPosition = FormStartPosition.CenterParent,
+                    FormBorderStyle = FormBorderStyle.FixedDialog,
+                    MaximizeBox = false,
+                    MinimizeBox = false,
+                    BackColor = Color.FromArgb(36, 36, 36),
+                    ForeColor = Color.Gainsboro
+                };
+
+                var pnlTop = new Panel { Dock = DockStyle.Top, Height = 45, Padding = new Padding(12, 10, 12, 0) };
+                var lblIntro = new Label
+                {
+                    Text = "Cochez les pièces (armes, équipements, accessoires...) à extraire vers la catégorie 'Meshs custom' :",
+                    Dock = DockStyle.Fill,
+                    ForeColor = Color.Gainsboro,
+                    Font = new Font("Segoe UI", 9.5f, FontStyle.Regular)
+                };
+                pnlTop.Controls.Add(lblIntro);
+
+                var dgv = new DataGridView
+                {
+                    Dock = DockStyle.Fill,
+                    BackgroundColor = Color.FromArgb(28, 28, 28),
+                    GridColor = Color.FromArgb(50, 50, 50),
+                    BorderStyle = BorderStyle.None,
+                    AutoGenerateColumns = false,
+                    AllowUserToAddRows = false,
+                    AllowUserToDeleteRows = false,
+                    SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                    RowHeadersVisible = false,
+                    EnableHeadersVisualStyles = false,
+                    Font = new Font("Segoe UI", 9f)
+                };
+
+                dgv.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(45, 45, 45);
+                dgv.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
+                dgv.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+                dgv.ColumnHeadersHeight = 30;
+
+                dgv.DefaultCellStyle.BackColor = Color.FromArgb(32, 32, 32);
+                dgv.DefaultCellStyle.ForeColor = Color.Gainsboro;
+                dgv.DefaultCellStyle.SelectionBackColor = Color.FromArgb(60, 90, 140);
+                dgv.DefaultCellStyle.SelectionForeColor = Color.White;
+
+                var colCheck = new DataGridViewCheckBoxColumn { HeaderText = "Extraire", Width = 65 };
+                var colIndex = new DataGridViewTextBoxColumn { HeaderText = "#", Width = 35, ReadOnly = true };
+                var colPartName = new DataGridViewTextBoxColumn { HeaderText = "Pièce originale", Width = 130, ReadOnly = true };
+                var colMat = new DataGridViewTextBoxColumn { HeaderText = "Matériau", Width = 110, ReadOnly = true };
+                var colVerts = new DataGridViewTextBoxColumn { HeaderText = "Sommets", Width = 75, ReadOnly = true };
+                var colNewName = new DataGridViewTextBoxColumn { HeaderText = "Nouveau nom dans 'Meshs custom'", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill };
+
+                dgv.Columns.AddRange(colCheck, colIndex, colPartName, colMat, colVerts, colNewName);
+
+                for (int i = 0; i < model.Parts.Count; i++)
+                {
+                    var p = model.Parts[i];
+                    string pName = !string.IsNullOrEmpty(p.Name) ? p.Name : $"Mesh_{i + 1}";
+                    string candidateName = pName;
+
+                    if (pName.StartsWith("Object", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.IsNullOrEmpty(p.TextureName))
+                        {
+                            string texLower = p.TextureName.ToLowerInvariant();
+                            if (texLower.Contains("crossbow") || texLower.Contains("bow")) candidateName = $"{model.Name}_CrossBow";
+                            else if (texLower.Contains("spear") || texLower.Contains("lance")) candidateName = $"{model.Name}_Spear";
+                            else if (texLower.Contains("sword") || texLower.Contains("weapon")) candidateName = $"{model.Name}_Weapon";
+                            else if (texLower.Contains("shield")) candidateName = $"{model.Name}_Shield";
+                            else candidateName = $"{model.Name}_{pName}";
+                        }
+                        else
+                        {
+                            candidateName = $"{model.Name}_{pName}";
+                        }
+                    }
+
+                    bool preCheck = (i < model.Parts.Count - 1 && p.Vertices.Length < 5000);
+                    dgv.Rows.Add(preCheck, i + 1, pName, p.MaterialName, p.Vertices.Length, candidateName);
+                }
+
+                var pnlBottom = new Panel { Dock = DockStyle.Bottom, Height = 80, Padding = new Padding(12, 8, 12, 10), BackColor = Color.FromArgb(30, 30, 30) };
+
+                var chkRemove = new CheckBox
+                {
+                    Text = "Retirer les pièces extraites de ce modèle (ne garder que le character dans Others)",
+                    Checked = true,
+                    ForeColor = Color.Gold,
+                    Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                    Location = new Point(12, 10),
+                    AutoSize = true
+                };
+
+                var btnExtract = new Button
+                {
+                    Text = "Extraire vers 'Meshs custom'",
+                    DialogResult = DialogResult.OK,
+                    Size = new Size(210, 32),
+                    Location = new Point(350, 38),
+                    BackColor = Color.FromArgb(35, 120, 75),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+                };
+
+                var btnCancel = new Button
+                {
+                    Text = "Annuler",
+                    DialogResult = DialogResult.Cancel,
+                    Size = new Size(110, 32),
+                    Location = new Point(570, 38),
+                    BackColor = Color.FromArgb(50, 50, 50),
+                    ForeColor = Color.Gainsboro,
+                    FlatStyle = FlatStyle.Flat
+                };
+
+                pnlBottom.Controls.AddRange(new Control[] { chkRemove, btnExtract, btnCancel });
+                dlg.Controls.Add(dgv);
+                dlg.Controls.Add(pnlTop);
+                dlg.Controls.Add(pnlBottom);
+                dlg.AcceptButton = btnExtract;
+                dlg.CancelButton = btnCancel;
+
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                var checkedIndices = new List<int>();
+                var targetNames = new Dictionary<int, string>();
+                for (int r = 0; r < dgv.Rows.Count; r++)
+                {
+                    bool isChecked = Convert.ToBoolean(dgv.Rows[r].Cells[0].Value);
+                    if (isChecked)
+                    {
+                        checkedIndices.Add(r);
+                        string customName = MakeSafeFilename(dgv.Rows[r].Cells[5].Value?.ToString()?.Trim() ?? "");
+                        if (string.IsNullOrEmpty(customName)) customName = $"{model.Name}_Part_{r + 1}";
+                        targetNames[r] = customName;
+                    }
+                }
+
+                if (checkedIndices.Count == 0)
+                {
+                    MessageBox.Show("Aucune pièce sélectionnée pour l'extraction.", "Information", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (checkedIndices.Count >= model.Parts.Count && chkRemove.Checked)
+                {
+                    MessageBox.Show("Vous ne pouvez pas retirer toutes les pièces du modèle (le modèle n'aurait plus aucun mesh). Laissez au moins une pièce ou décochez l'option de retrait.", "Attention", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                string targetDir = Path.Combine(BasePath, "Meshs custom");
+                if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
+                string srcFolder = Path.GetDirectoryName(charPath) ?? string.Empty;
+
+                int extractedCount = 0;
+                foreach (int idx in checkedIndices)
+                {
+                    var part = model.Parts[idx];
+                    string targetName = targetNames[idx];
+                    string outCharPath = Path.Combine(targetDir, targetName + GrannyModelFile.Extension);
+
+                    var pieceModel = new GrannyModelFile
+                    {
+                        Name = targetName,
+                        Parts = new List<GrannyModelPart> { part },
+                        Bones = model.Bones
+                    };
+
+                    if (!string.IsNullOrEmpty(part.TextureName))
+                    {
+                        string srcTex = Path.Combine(srcFolder, part.TextureName);
+                        if (File.Exists(srcTex))
+                        {
+                            string ext = Path.GetExtension(part.TextureName);
+                            string newTexName = $"{targetName}_{Path.GetFileNameWithoutExtension(part.TextureName)}{ext}";
+                            string dstTex = Path.Combine(targetDir, newTexName);
+                            try
+                            {
+                                File.Copy(srcTex, dstTex, true);
+                                part.TextureName = newTexName;
+                            }
+                            catch { }
+                        }
+                    }
+
+                    if (GrannyModelFile.Save(pieceModel, outCharPath))
+                    {
+                        extractedCount++;
+                        Log($"Pièce extraite vers 'Meshs custom' : {Path.GetFileName(outCharPath)}");
+                    }
+                }
+
+                if (chkRemove.Checked)
+                {
+                    checkedIndices.Sort((a, b) => b.CompareTo(a));
+                    foreach (int idx in checkedIndices)
+                    {
+                        model.Parts.RemoveAt(idx);
+                    }
+
+                    GrannyModelFile.Save(model, charPath);
+                    Log($"Pièces retirées de {Path.GetFileName(charPath)} (restant : {model.Parts.Count} mesh(es))");
+                }
+
+                RestoreModelsTree();
+
+                if (string.Equals(_currentModelPath, charPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    LoadModel(charPath);
+                }
+
+                MessageBox.Show(
+                    $"{extractedCount} pièce(s) ont été extraites avec succès dans la catégorie 'Meshs custom' !" +
+                    (chkRemove.Checked ? $"\nLe modèle original ne contient plus que {model.Parts.Count} mesh(es)." : ""),
+                    "Extraction réussie",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Log($"Erreur extraction pièces: {ex.Message}\n{ex}");
+                MessageBox.Show("Erreur lors de l'extraction : " + ex.Message);
+            }
         }
 
         private void DeleteCustomCharacter(TreeNode node, TreeNodeInfo info)
@@ -1757,6 +2252,7 @@ namespace UoFiddler.Plugin.Granny3D
                 Log($"Erreur suppression character: {ex.Message}");
             }
         }
+
 
         // Append every mesh of a .grn file to the current scene (used to layer
         // equipment/extra pieces onto an already-loaded character). The base
@@ -4121,7 +4617,9 @@ namespace UoFiddler.Plugin.Granny3D
                     _loadedMeshes,
                     initialFbxDir,
                     TryLoadTexture,
-                    () => { if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate(); });
+                    () => { if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate(); },
+                    () => { OpenExtractPartsDialog(charPath); });
+
 
                 if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
