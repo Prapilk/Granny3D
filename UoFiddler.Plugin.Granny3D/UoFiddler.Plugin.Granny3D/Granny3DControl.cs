@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 using OpenTK.Graphics.OpenGL;
 using OpenTK.Mathematics;
@@ -244,6 +245,7 @@ namespace UoFiddler.Plugin.Granny3D
         public bool IsFolder;
         public bool Populated;       // children already enumerated (expand/collapse idempotent)
         public bool IsOthersCategory;
+        public bool IsCustomMeshCategory;
         public string Folder;
         public string CreatureKey;
         public string MeshPath;      // creature's base/LOD mesh file
@@ -259,11 +261,11 @@ namespace UoFiddler.Plugin.Granny3D
         // Category folder -> display name
         private static readonly string[] CategoryFolders =
         {
-            "Humans", "Monsters", "Animals", "SeaCreatures", "Others", "Others"
+            "Humans", "Monsters", "Animals", "SeaCreatures", "Others", "Others", "Meshs custom"
         };
         private static readonly string[] CategoryDisplay =
         {
-            "Humans", "Monsters", "Animals", "Sea Creatures", "Equipment", "Others"
+            "Humans", "Monsters", "Animals", "Sea Creatures", "Equipment", "Others", "Meshs custom"
         };
 
         // Action words used to split "<creature>_<action>" filenames (longest first).
@@ -293,6 +295,8 @@ namespace UoFiddler.Plugin.Granny3D
         private ListBox lstLoaded;
         private GroupBox grpLoaded;
         private ContextMenuStrip tvMenu;
+        private ContextMenuStrip tvAnimMenu;
+        private ContextMenuStrip lstLoadedMenu;
         private bool _populatingTree;
         // UI - animations panel
         private GroupBox grpAnimations;
@@ -300,6 +304,7 @@ namespace UoFiddler.Plugin.Granny3D
         private TextBox txtAnimFilter;
         private TreeView tvAnims;
         private Button btnImportAnim;
+        private Button btnImportMesh;
         private Button btnImportModel;
         // animation categories (Male / Female / Animals / ...)
         private class AnimCat
@@ -512,6 +517,10 @@ namespace UoFiddler.Plugin.Granny3D
                 ShowPlusMinus = true,
                 ShowRootLines = true
             };
+            tvAnimMenu = new ContextMenuStrip();
+            tvAnimMenu.Opening += TvAnimMenu_Opening;
+            tvAnims.ContextMenuStrip = tvAnimMenu;
+            tvAnims.NodeMouseClick += TvAnims_NodeMouseClick;
             tvAnims.AfterSelect += TvAnims_AfterSelect;
             tvAnims.BeforeExpand += TvAnims_BeforeExpand;
 
@@ -552,6 +561,9 @@ namespace UoFiddler.Plugin.Granny3D
                 ForeColor = Color.Gainsboro,
                 BorderStyle = BorderStyle.FixedSingle
             };
+            lstLoadedMenu = new ContextMenuStrip();
+            lstLoadedMenu.Opening += LstLoadedMenu_Opening;
+            lstLoaded.ContextMenuStrip = lstLoadedMenu;
             lstLoaded.DoubleClick += LstLoaded_DoubleClick;
             lstLoaded.SelectedIndexChanged += LstLoaded_SelectedIndexChanged;
 
@@ -630,7 +642,18 @@ namespace UoFiddler.Plugin.Granny3D
 
             // ---- Left column: models tree (top) / animations + meshes (bottom),
             //      separated by draggable splitters so every zone can be enlarged. ----
-            var pnlModelTools = new Panel { Dock = DockStyle.Bottom, Height = 28 };
+            var pnlModelTools = new Panel { Dock = DockStyle.Bottom, Height = 56 };
+            btnImportMesh = new Button
+            {
+                Text = "Importer un mesh…",
+                Dock = DockStyle.Top,
+                Height = 28,
+                BackColor = Color.FromArgb(48, 48, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnImportMesh.Click += BtnImportMesh_Click;
+
             btnImportModel = new Button
             {
                 Text = "Importer un Character Mixamo…",
@@ -641,6 +664,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnImportModel.Click += BtnImportModel_Click;
             pnlModelTools.Controls.Add(btnImportModel);
+            pnlModelTools.Controls.Add(btnImportMesh);
 
             var pnlModels = new Panel { Dock = DockStyle.Fill };
             pnlModels.Controls.Add(tvModels);
@@ -1143,16 +1167,23 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int i = 0; i < CategoryFolders.Length; i++)
                 {
                     string folder = Path.Combine(BasePath, CategoryFolders[i]);
+                    if (CategoryFolders[i] == "Meshs custom" && !Directory.Exists(folder))
+                    {
+                        try { Directory.CreateDirectory(folder); } catch { }
+                    }
+
                     if (!Directory.Exists(folder))
                         continue;
 
                     bool isOthersCat = (i == 5);
+                    bool isCustomMeshCat = (i == 6);
                     var info = new TreeNodeInfo
                     {
                         IsFolder = true,
                         Folder = folder,
                         Display = CategoryDisplay[i],
-                        IsOthersCategory = isOthersCat
+                        IsOthersCategory = isOthersCat,
+                        IsCustomMeshCategory = isCustomMeshCat
                     };
                     var node = new TreeNode(CategoryDisplay[i]) { Tag = info };
                     node.Nodes.Add(new TreeNode("..."));
@@ -1221,26 +1252,32 @@ namespace UoFiddler.Plugin.Granny3D
 
                 try
                 {
-                    string othersFolder = Path.Combine(BasePath, "Others");
-                    if (Directory.Exists(othersFolder))
+                    foreach (var customDirName in new[] { "Others", "Meshs custom" })
                     {
-                        var extraFiles = new List<string>();
-                        extraFiles.AddRange(Directory.GetFiles(othersFolder, "*.char", SearchOption.AllDirectories));
-                        extraFiles.AddRange(Directory.GetFiles(othersFolder, "*.fbx", SearchOption.AllDirectories));
-                        foreach (var f in extraFiles)
+                        string customFolder = Path.Combine(BasePath, customDirName);
+                        if (Directory.Exists(customFolder))
                         {
-                            string name = Path.GetFileNameWithoutExtension(f);
-                            if (name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                            if (!results.ContainsKey(name))
+                            var extraFiles = new List<string>();
+                            extraFiles.AddRange(Directory.GetFiles(customFolder, "*.char", SearchOption.AllDirectories));
+                            extraFiles.AddRange(Directory.GetFiles(customFolder, "*.fbx", SearchOption.AllDirectories));
+                            extraFiles.AddRange(Directory.GetFiles(customFolder, "*.obj", SearchOption.AllDirectories));
+                            foreach (var f in extraFiles)
                             {
-                                results[name] = new TreeNodeInfo
+                                string name = Path.GetFileNameWithoutExtension(f);
+                                if (name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                                if (!results.ContainsKey(name))
                                 {
-                                    IsFolder = false,
-                                    Folder = Path.GetDirectoryName(f),
-                                    CreatureKey = name,
-                                    MeshPath = f,
-                                    Display = name
-                                };
+                                    results[name] = new TreeNodeInfo
+                                    {
+                                        IsFolder = false,
+                                        Folder = Path.GetDirectoryName(f),
+                                        CreatureKey = name,
+                                        MeshPath = f,
+                                        Display = name,
+                                        IsCustomMeshCategory = (customDirName == "Meshs custom"),
+                                        IsOthersCategory = (customDirName == "Others")
+                                    };
+                                }
                             }
                         }
                     }
@@ -1343,7 +1380,7 @@ namespace UoFiddler.Plugin.Granny3D
             // Clear any "..." placeholder before adding the real children.
             folderNode.Nodes.Clear();
 
-            if (folderInfo != null && folderInfo.IsOthersCategory)
+            if (folderInfo != null && (folderInfo.IsOthersCategory || folderInfo.IsCustomMeshCategory))
             {
                 try
                 {
@@ -1352,6 +1389,7 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         modelFiles.AddRange(Directory.GetFiles(folder, "*.char", SearchOption.AllDirectories));
                         modelFiles.AddRange(Directory.GetFiles(folder, "*.fbx", SearchOption.AllDirectories));
+                        modelFiles.AddRange(Directory.GetFiles(folder, "*.obj", SearchOption.AllDirectories));
                     }
                     modelFiles.Sort(StringComparer.OrdinalIgnoreCase);
 
@@ -1365,6 +1403,8 @@ namespace UoFiddler.Plugin.Granny3D
                             CreatureKey = name,
                             MeshPath = f,
                             Display = name,
+                            IsCustomMeshCategory = folderInfo.IsCustomMeshCategory,
+                            IsOthersCategory = folderInfo.IsOthersCategory,
                             Populated = true
                         };
                         var node = new TreeNode(name) { Tag = info };
@@ -1645,12 +1685,21 @@ namespace UoFiddler.Plugin.Granny3D
             bool isCustomChar = !string.IsNullOrEmpty(info.MeshPath) &&
                 (info.MeshPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase) ||
                  info.MeshPath.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) ||
-                 (node.Parent?.Tag as TreeNodeInfo)?.IsOthersCategory == true);
+                 info.MeshPath.EndsWith(".obj", StringComparison.OrdinalIgnoreCase) ||
+                 (node.Parent?.Tag as TreeNodeInfo)?.IsOthersCategory == true ||
+                 (node.Parent?.Tag as TreeNodeInfo)?.IsCustomMeshCategory == true);
 
             if (isCustomChar)
             {
                 tvMenu.Items.Add(new ToolStripSeparator());
-                var deleteItem = new ToolStripMenuItem("Supprimer ce character", null, (s, a) =>
+                tvMenu.Items.Add("Assigner / Modifier les textures...", null, (s, a) =>
+                {
+                    OpenTextureManagerForModel(info.MeshPath);
+                });
+                string delLabel = ((node.Parent?.Tag as TreeNodeInfo)?.IsCustomMeshCategory == true || info.IsCustomMeshCategory)
+                    ? "Supprimer ce mesh"
+                    : "Supprimer ce character";
+                var deleteItem = new ToolStripMenuItem(delLabel, null, (s, a) =>
                 {
                     DeleteCustomCharacter(node, info);
                 });
@@ -1725,6 +1774,74 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             glControl.MakeCurrent();
+
+            if (GrannyModelFile.IsModelFile(path))
+            {
+                var model = GrannyModelFile.Load(path);
+                if (model == null)
+                {
+                    Log($"AddToScene parse failed for .char: {path}");
+                    return;
+                }
+
+                int addedChar = 0;
+                foreach (var part in model.Parts)
+                {
+                    if (part.Vertices.Length == 0 || part.Indices.Length == 0) continue;
+
+                    var gmesh = new GrannyMesh();
+                    gmesh.Vertices.AddRange(part.Vertices);
+                    gmesh.Indices.AddRange(part.Indices);
+                    if (part.UVs != null) gmesh.UVs.AddRange(part.UVs);
+                    if (part.Skin != null) gmesh.Skin.AddRange(part.Skin);
+
+                    var lm = new LoadedMesh
+                    {
+                        Name = string.IsNullOrEmpty(part.Name) ? Path.GetFileNameWithoutExtension(path) : part.Name,
+                        SourcePath = path,
+                        SourceMesh = gmesh,
+                        Bones = new List<GrannyBone>(model.Bones),
+                        BaseVertices = part.Vertices,
+                        Indices = part.Indices,
+                        Skin = (part.Skin != null && part.Skin.Length > 0) ? part.Skin : null,
+                        MeshColor = part.Color,
+                        CutoutRole = role
+                    };
+
+                    BuildCornerData(lm);
+                    SetupMeshVBO(lm);
+                    lm.TextureId = !string.IsNullOrEmpty(part.TextureName) ? TryLoadTexture(path, part.TextureName) : -1;
+                    lm.HasTexture = lm.TextureId > 0;
+                    _loadedMeshes.Add(lm);
+                    addedChar++;
+                }
+
+                if (addedChar == 0)
+                {
+                    Log($"AddToScene: no meshes in {path}");
+                    return;
+                }
+
+                RefreshLoadedList();
+                PopulateBoneCombo();
+
+                if (_currentAnimation != null)
+                {
+                    EnsureAnimationBindings(_currentAnimation);
+                    ApplyAnimationPose(_currentTime);
+                }
+                else
+                {
+                    RefreshVertexBuffers(true);
+                }
+
+                _sceneExtras.Add(path);
+                UpdateModelInfo();
+                glControl.Invalidate();
+                Log($"AddToScene done: +{addedChar} meshes, total={_loadedMeshes.Count} ({Path.GetFileName(path)})");
+                return;
+            }
+
             var parser = new GrannyFormatParser();
             if (!parser.Load(path))
             {
@@ -2235,6 +2352,115 @@ namespace UoFiddler.Plugin.Granny3D
             catch { }
         }
 
+        private void TvAnims_NodeMouseClick(object sender, TreeNodeMouseClickEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right || e.Node == null) return;
+            _suppressAnimSelect = true;
+            try { tvAnims.SelectedNode = e.Node; }
+            finally { _suppressAnimSelect = false; }
+        }
+
+        private void TvAnimMenu_Opening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            tvAnimMenu.Items.Clear();
+            var node = tvAnims.SelectedNode;
+            if (node == null) { e.Cancel = true; return; }
+
+            string animPath = node.Tag as string;
+            var cat = node.Tag as AnimCat;
+
+            if (cat != null)
+            {
+                tvAnimMenu.Items.Add(node.IsExpanded ? "Réduire" : "Développer", null, (s, a) => node.Toggle());
+                return;
+            }
+
+            if (string.IsNullOrEmpty(animPath))
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            tvAnimMenu.Items.Add("Lire l'animation", null, (s, a) => PlayAnimationFile(animPath));
+
+            bool isCustomAnim = animPath.EndsWith(".anim", StringComparison.OrdinalIgnoreCase) ||
+                                (node.Parent?.Tag as AnimCat)?.Pattern == "*.anim";
+
+            if (isCustomAnim)
+            {
+                tvAnimMenu.Items.Add(new ToolStripSeparator());
+                var deleteItem = new ToolStripMenuItem("Supprimer cette animation", null, (s, a) =>
+                {
+                    DeleteCustomAnimation(node, animPath);
+                });
+                deleteItem.ForeColor = Color.Crimson;
+                tvAnimMenu.Items.Add(deleteItem);
+            }
+
+            tvAnimMenu.Items.Add(new ToolStripSeparator());
+            tvAnimMenu.Items.Add("Ouvrir le dossier contenant...", null, (s, a) =>
+            {
+                try
+                {
+                    string dir = Path.GetDirectoryName(animPath);
+                    if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                    {
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                        {
+                            FileName = dir,
+                            UseShellExecute = true
+                        });
+                    }
+                }
+                catch { }
+            });
+        }
+
+        private void DeleteCustomAnimation(TreeNode node, string animPath)
+        {
+            if (string.IsNullOrEmpty(animPath)) return;
+            string animName = !string.IsNullOrEmpty(node.Text) ? node.Text : Path.GetFileNameWithoutExtension(animPath);
+
+            var res = MessageBox.Show(
+                $"Voulez-vous vraiment supprimer l'animation '{animName}' ?",
+                "Supprimer l'animation",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+
+            if (res != DialogResult.Yes) return;
+
+            try
+            {
+                if (string.Equals(_currentAnimPath, animPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    _playing = false;
+                    _currentAnimation = null;
+                    _animParser = null;
+                    _currentTime = 0f;
+                    _currentAnimPath = null;
+                    if (lblAnimHeader != null) lblAnimHeader.Text = string.Empty;
+                    if (trackTime != null) trackTime.Value = 0;
+                    if (btnPlay != null) btnPlay.Enabled = false;
+                    if (btnPause != null) btnPause.Enabled = false;
+                    if (btnStop != null) btnStop.Enabled = false;
+                    if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+                }
+
+                if (File.Exists(animPath))
+                {
+                    File.Delete(animPath);
+                }
+
+                node.Remove();
+                Log($"Animation supprimée : {animName} ({animPath})");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Erreur lors de la suppression de l'animation : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Log($"Erreur suppression animation: {ex.Message}");
+            }
+        }
+
         private void TvAnims_AfterSelect(object sender, TreeViewEventArgs e)
         {
             if (_suppressAnimSelect) return;
@@ -2296,6 +2522,142 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        // Import an individual 3D mesh (weapon, armor, shield, prop, etc.) into "Meshs custom".
+        private void BtnImportMesh_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                using var ofd = new OpenFileDialog
+                {
+                    Title = "Importer un Mesh (Arme, Armure, Équipement...)",
+                    Filter = "Fichiers 3D (*.fbx;*.obj;*.dae;*.3ds;*.ply)|*.fbx;*.obj;*.dae;*.3ds;*.ply|FBX (*.fbx)|*.fbx|Wavefront OBJ (*.obj)|*.obj|Tous les fichiers (*.*)|*.*"
+                };
+                if (ofd.ShowDialog() != DialogResult.OK) return;
+
+                string meshName = Path.GetFileNameWithoutExtension(ofd.FileName);
+                string outFolder = Path.Combine(BasePath, "Meshs custom");
+                if (!Directory.Exists(outFolder)) Directory.CreateDirectory(outFolder);
+
+                string refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
+                if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Female_Lod2.grn");
+
+                if (!MixamoCharacterImport.TryImport(ofd.FileName, outFolder, refPath, out var model, out string err) || model == null)
+                {
+                    MessageBox.Show("Import du mesh échoué : " + (err ?? "raison inconnue"));
+                    return;
+                }
+
+                int totalParts = model.Parts.Count;
+                var missingTextures = new List<GrannyModelPart>();
+                foreach (var p in model.Parts)
+                {
+                    bool hasTex = !string.IsNullOrEmpty(p.TextureName) && File.Exists(Path.Combine(outFolder, p.TextureName));
+                    if (!hasTex) missingTextures.Add(p);
+                }
+
+                string fbxDir = Path.GetDirectoryName(ofd.FileName) ?? string.Empty;
+
+                if (missingTextures.Count > 0)
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine($"Le fichier 3D contient {totalParts} sous-mesh(es) :");
+                    for (int i = 0; i < model.Parts.Count; i++)
+                    {
+                        var p = model.Parts[i];
+                        bool hasTex = !string.IsNullOrEmpty(p.TextureName) && File.Exists(Path.Combine(outFolder, p.TextureName));
+                        sb.AppendLine($"  • Mesh #{i + 1} : '{p.Name}' [Mat: {p.MaterialName}] -> {(hasTex ? $"Texture : {p.TextureName}" : "AUCUNE TEXTURE")}");
+                    }
+                    sb.AppendLine();
+                    sb.AppendLine($"{missingTextures.Count} mesh(es) n'ont pas de texture.");
+                    sb.AppendLine("Souhaitez-vous sélectionner une texture (BaseColor / Diffuse) pour chaque mesh manquant ?");
+
+                    var promptResult = MessageBox.Show(
+                        sb.ToString(),
+                        $"Import Mesh - {totalParts} Mesh(es) détecté(s)",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+
+                    if (promptResult == DialogResult.Yes)
+                    {
+                        string initDir = Directory.Exists(Path.Combine(fbxDir, "textures"))
+                            ? Path.Combine(fbxDir, "textures")
+                            : (Directory.Exists(Path.Combine(fbxDir, "Textures")) ? Path.Combine(fbxDir, "Textures") : fbxDir);
+
+                        for (int i = 0; i < missingTextures.Count; i++)
+                        {
+                            var part = missingTextures[i];
+                            using var texOfd = new OpenFileDialog
+                            {
+                                Title = $"Texture BaseColor / Diffuse pour '{part.Name}' (Mesh {i + 1}/{missingTextures.Count})",
+                                Filter = "Textures (*.png;*.tga;*.jpg;*.jpeg;*.bmp;*.dds)|*.png;*.tga;*.jpg;*.jpeg;*.bmp;*.dds|Tous (*.*)|*.*",
+                                InitialDirectory = initDir
+                            };
+                            if (texOfd.ShowDialog() == DialogResult.OK && File.Exists(texOfd.FileName))
+                            {
+                                string ext = Path.GetExtension(texOfd.FileName);
+                                string cleanMesh = MakeSafeFilename(part.Name);
+                                string savedName = $"{meshName}_{cleanMesh}{ext}";
+                                File.Copy(texOfd.FileName, Path.Combine(outFolder, savedName), true);
+                                part.TextureName = savedName;
+                                Log($"Texture manuelle assignée à {part.Name} : {savedName}");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine($"Le fichier 3D contient {totalParts} sous-mesh(es) :");
+                    for (int i = 0; i < model.Parts.Count; i++)
+                    {
+                        var p = model.Parts[i];
+                        sb.AppendLine($"  • Mesh #{i + 1} : '{p.Name}' -> Texture : {p.TextureName}");
+                    }
+                    MessageBox.Show(
+                        sb.ToString(),
+                        $"Import Mesh - {totalParts} Mesh(es) détecté(s)",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+
+                string outPath = Path.Combine(outFolder, meshName + GrannyModelFile.Extension);
+
+                if (!GrannyModelFile.Save(model, outPath))
+                {
+                    MessageBox.Show("Écriture impossible : " + outPath);
+                    return;
+                }
+
+                Log($"Import Mesh OK: {Path.GetFileName(outPath)} parts={model.Parts.Count} saved in {outFolder}");
+
+                RestoreModelsTree();
+                RevealModelFile(outPath);
+
+                if (_loadedMeshes.Count > 0)
+                {
+                    var choice = MessageBox.Show(
+                        $"Mesh '{meshName}' importé avec succès dans 'Meshs custom' !\n\nUne scène est actuellement affichée. Souhaitez-vous l'ajouter à la scène en tant qu'équipement ?",
+                        "Ajouter à la scène",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+
+                    if (choice == DialogResult.Yes)
+                    {
+                        AddToScene(outPath);
+                    }
+                }
+                else
+                {
+                    LoadModel(outPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Import Mesh error: {ex.Message}\n{ex}");
+                MessageBox.Show("Erreur d'import du mesh : " + ex.Message);
+            }
+        }
+
         // Import a Mixamo FBX character: extract meshes, skeleton, materials and skinning,
         // convert to UO coordinate system (Z-up), save as .char in BasePath\Others,
         // refresh the treeview and load/display the character.
@@ -2321,6 +2683,79 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     MessageBox.Show("Import Mixamo échoué : " + (err ?? "raison inconnue"));
                     return;
+                }
+
+                int totalParts = model.Parts.Count;
+                var missingTextures = new List<GrannyModelPart>();
+                foreach (var p in model.Parts)
+                {
+                    bool hasTex = !string.IsNullOrEmpty(p.TextureName) && File.Exists(Path.Combine(outFolder, p.TextureName));
+                    if (!hasTex) missingTextures.Add(p);
+                }
+
+                string fbxDir = Path.GetDirectoryName(ofd.FileName) ?? string.Empty;
+
+                if (missingTextures.Count > 0)
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine($"Le modèle FBX contient {totalParts} mesh(es) :");
+                    for (int i = 0; i < model.Parts.Count; i++)
+                    {
+                        var p = model.Parts[i];
+                        bool hasTex = !string.IsNullOrEmpty(p.TextureName) && File.Exists(Path.Combine(outFolder, p.TextureName));
+                        sb.AppendLine($"  • Mesh #{i + 1} : '{p.Name}' [Mat: {p.MaterialName}] -> {(hasTex ? $"Texture : {p.TextureName}" : "AUCUNE TEXTURE")}");
+                    }
+                    sb.AppendLine();
+                    sb.AppendLine($"{missingTextures.Count} mesh(es) n'ont pas de texture.");
+                    sb.AppendLine("Souhaitez-vous sélectionner une texture (BaseColor / Diffuse) pour chaque mesh manquant ?");
+
+                    var promptResult = MessageBox.Show(
+                        sb.ToString(),
+                        $"Import FBX - {totalParts} Mesh(es) détecté(s)",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+
+                    if (promptResult == DialogResult.Yes)
+                    {
+                        string initDir = Directory.Exists(Path.Combine(fbxDir, "textures"))
+                            ? Path.Combine(fbxDir, "textures")
+                            : (Directory.Exists(Path.Combine(fbxDir, "Textures")) ? Path.Combine(fbxDir, "Textures") : fbxDir);
+
+                        for (int i = 0; i < missingTextures.Count; i++)
+                        {
+                            var part = missingTextures[i];
+                            using var texOfd = new OpenFileDialog
+                            {
+                                Title = $"Texture BaseColor / Diffuse pour '{part.Name}' (Mesh {i + 1}/{missingTextures.Count})",
+                                Filter = "Textures (*.png;*.tga;*.jpg;*.jpeg;*.bmp;*.dds)|*.png;*.tga;*.jpg;*.jpeg;*.bmp;*.dds|Tous (*.*)|*.*",
+                                InitialDirectory = initDir
+                            };
+                            if (texOfd.ShowDialog() == DialogResult.OK && File.Exists(texOfd.FileName))
+                            {
+                                string ext = Path.GetExtension(texOfd.FileName);
+                                string cleanMesh = MakeSafeFilename(part.Name);
+                                string savedName = $"{charName}_{cleanMesh}{ext}";
+                                File.Copy(texOfd.FileName, Path.Combine(outFolder, savedName), true);
+                                part.TextureName = savedName;
+                                Log($"Texture manuelle assignée à {part.Name} : {savedName}");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine($"Le modèle FBX contient {totalParts} mesh(es) :");
+                    for (int i = 0; i < model.Parts.Count; i++)
+                    {
+                        var p = model.Parts[i];
+                        sb.AppendLine($"  • Mesh #{i + 1} : '{p.Name}' -> Texture : {p.TextureName}");
+                    }
+                    MessageBox.Show(
+                        sb.ToString(),
+                        $"Import FBX - {totalParts} Mesh(es) détecté(s)",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
                 }
 
                 string outPath = Path.Combine(outFolder, charName + GrannyModelFile.Extension);
@@ -2351,16 +2786,18 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (TreeNode catNode in tvModels.Nodes)
             {
                 var info = catNode.Tag as TreeNodeInfo;
-                if (info != null && info.IsOthersCategory)
+                if (info != null && (info.IsOthersCategory || info.IsCustomMeshCategory))
                 {
                     catNode.Expand();
                     foreach (TreeNode child in catNode.Nodes)
                     {
                         var cinfo = child.Tag as TreeNodeInfo;
                         if (cinfo != null && (string.Equals(cinfo.CreatureKey, targetName, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(Path.GetFileNameWithoutExtension(cinfo.MeshPath), targetName, StringComparison.OrdinalIgnoreCase)))
+                            string.Equals(Path.GetFileNameWithoutExtension(cinfo.MeshPath), targetName, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(cinfo.MeshPath, path, StringComparison.OrdinalIgnoreCase)))
                         {
                             tvModels.SelectedNode = child;
+                            child.EnsureVisible();
                             return;
                         }
                     }
@@ -2481,8 +2918,9 @@ namespace UoFiddler.Plugin.Granny3D
             else if (string.Equals(folderName, "Animals", StringComparison.OrdinalIgnoreCase)) want = "Animals";
             else if (string.Equals(folderName, "Monsters", StringComparison.OrdinalIgnoreCase)) want = "Monsters";
             else if (string.Equals(folderName, "SeaCreatures", StringComparison.OrdinalIgnoreCase)) want = "SeaCreatures";
-            else if (string.Equals(folderName, "Others", StringComparison.OrdinalIgnoreCase))
-                want = (info.IsOthersCategory || GrannyModelFile.IsModelFile(info.MeshPath)) ? "Importés (Mixamo)" : "Equipment";
+            else if (string.Equals(folderName, "Others", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(folderName, "Meshs custom", StringComparison.OrdinalIgnoreCase))
+                want = (info.IsOthersCategory || info.IsCustomMeshCategory || GrannyModelFile.IsModelFile(info.MeshPath)) ? "Importés (Mixamo)" : "Equipment";
 
             if (lblAnimHeader != null)
                 lblAnimHeader.Text = want == null
@@ -3633,8 +4071,200 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        public static string MakeSafeFilename(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "mesh";
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder(name.Length);
+            foreach (char c in name)
+            {
+                if (Array.IndexOf(invalid, c) >= 0 || c == ' ' || c == ':' || c == '/' || c == '\\')
+                    sb.Append('_');
+                else
+                    sb.Append(c);
+            }
+            return sb.ToString();
+        }
+
+        public static Bitmap? LoadImageBitmap(string file)
+        {
+            if (string.IsNullOrEmpty(file) || !File.Exists(file)) return null;
+            try
+            {
+                if (Path.GetExtension(file).Equals(".tga", StringComparison.OrdinalIgnoreCase))
+                    return LoadTga(file);
+                using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var temp = Image.FromStream(stream);
+                return new Bitmap(temp);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void OpenTextureManagerForModel(string charPath, string? initialFbxDir = null)
+        {
+            if (string.IsNullOrEmpty(charPath) || !File.Exists(charPath)) return;
+            try
+            {
+                var model = GrannyModelFile.Load(charPath);
+                if (model == null || model.Parts.Count == 0)
+                {
+                    MessageBox.Show("Impossible de charger les données du modèle .char.", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                using var dlg = new ModelTexturesDialog(
+                    charPath,
+                    model,
+                    _loadedMeshes,
+                    initialFbxDir,
+                    TryLoadTexture,
+                    () => { if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate(); });
+
+                if (dlg.ShowDialog(this) == DialogResult.OK)
+                {
+                    Log($"Textures mises à jour pour {Path.GetFileName(charPath)}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Erreur lors de l'ouverture du gestionnaire de textures : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LstLoadedMenu_Opening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            lstLoadedMenu.Items.Clear();
+            int idx = lstLoaded.SelectedIndex;
+            if (idx < 0 || idx >= _loadedMeshes.Count)
+            {
+                e.Cancel = true;
+                return;
+            }
+            var lm = _loadedMeshes[idx];
+
+            var headerItem = new ToolStripMenuItem($"Mesh : {lm.Name}") { Enabled = false };
+            lstLoadedMenu.Items.Add(headerItem);
+            lstLoadedMenu.Items.Add(new ToolStripSeparator());
+
+            lstLoadedMenu.Items.Add("Assigner une texture...", null, (s, a) =>
+            {
+                AssignTextureToLoadedMesh(lm);
+            });
+
+            if (lm.HasTexture && lm.TextureId > 0)
+            {
+                lstLoadedMenu.Items.Add("Retirer la texture", null, (s, a) =>
+                {
+                    RemoveTextureFromLoadedMesh(lm);
+                });
+            }
+
+            if (!string.IsNullOrEmpty(lm.SourcePath) && lm.SourcePath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+            {
+                lstLoadedMenu.Items.Add(new ToolStripSeparator());
+                lstLoadedMenu.Items.Add("Gérer toutes les textures du modèle...", null, (s, a) =>
+                {
+                    OpenTextureManagerForModel(lm.SourcePath);
+                });
+            }
+
+            lstLoadedMenu.Items.Add(new ToolStripSeparator());
+            lstLoadedMenu.Items.Add("Retirer ce mesh de la scène", null, (s, a) =>
+            {
+                RemoveMeshAt(idx);
+            });
+        }
+
+        private void AssignTextureToLoadedMesh(LoadedMesh lm)
+        {
+            if (lm == null) return;
+            string initDir = Path.Combine(BasePath, "Others");
+            using var ofd = new OpenFileDialog
+            {
+                Title = $"Choisir une texture BaseColor / Diffuse pour '{lm.Name}'",
+                Filter = "Textures (*.png;*.tga;*.jpg;*.jpeg;*.bmp;*.dds)|*.png;*.tga;*.jpg;*.jpeg;*.bmp;*.dds|Tous (*.*)|*.*",
+                InitialDirectory = initDir
+            };
+            if (ofd.ShowDialog() != DialogResult.OK || !File.Exists(ofd.FileName)) return;
+
+            string outFolder = Path.Combine(BasePath, "Others");
+            string ext = Path.GetExtension(ofd.FileName);
+            string safeName = MakeSafeFilename(lm.Name);
+            string charName = !string.IsNullOrEmpty(lm.SourcePath) ? Path.GetFileNameWithoutExtension(lm.SourcePath) : "custom";
+            string destName = $"{charName}_{safeName}{ext}";
+            string destPath = Path.Combine(outFolder, destName);
+            try
+            {
+                if (!string.Equals(ofd.FileName, destPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Copy(ofd.FileName, destPath, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Erreur copie texture : {ex.Message}");
+                return;
+            }
+
+            int newTex = LoadTexture(destPath);
+            if (newTex > 0)
+            {
+                if (lm.TextureId > 0 && lm.TextureId != newTex) GL.DeleteTexture(lm.TextureId);
+                lm.TextureId = newTex;
+                lm.HasTexture = true;
+            }
+
+            if (!string.IsNullOrEmpty(lm.SourcePath) && File.Exists(lm.SourcePath) && lm.SourcePath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+            {
+                var model = GrannyModelFile.Load(lm.SourcePath);
+                if (model != null)
+                {
+                    var part = model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                    if (part != null)
+                    {
+                        part.TextureName = destName;
+                        GrannyModelFile.Save(model, lm.SourcePath);
+                    }
+                }
+            }
+
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            Log($"Texture assignée à {lm.Name} : {destName}");
+        }
+
+        private void RemoveTextureFromLoadedMesh(LoadedMesh lm)
+        {
+            if (lm == null) return;
+            if (lm.TextureId > 0)
+            {
+                GL.DeleteTexture(lm.TextureId);
+                lm.TextureId = -1;
+                lm.HasTexture = false;
+            }
+
+            if (!string.IsNullOrEmpty(lm.SourcePath) && File.Exists(lm.SourcePath) && lm.SourcePath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+            {
+                var model = GrannyModelFile.Load(lm.SourcePath);
+                if (model != null)
+                {
+                    var part = model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                    if (part != null)
+                    {
+                        part.TextureName = string.Empty;
+                        GrannyModelFile.Save(model, lm.SourcePath);
+                    }
+                }
+            }
+
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            Log($"Texture retirée de {lm.Name}");
+        }
+
         // Minimal TGA reader: 24/32-bit uncompressed (type 2) or RLE (type 10).
-        private static Bitmap LoadTga(string file)
+        public static Bitmap LoadTga(string file)
         {
             using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read))
             using (var br = new BinaryReader(fs))

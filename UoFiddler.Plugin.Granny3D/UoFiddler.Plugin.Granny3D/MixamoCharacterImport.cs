@@ -355,7 +355,17 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
 
-                    // Fallback if no texture found for material but embedded textures exist:
+                    // Check disk near FBX and in textures/ subfolders with smart scoring (prioritizing BaseColor/Diffuse and ignoring Normal/Spec/Roughness)
+                    if (string.IsNullOrEmpty(texName) || (!string.IsNullOrEmpty(outFolder) && !File.Exists(Path.Combine(outFolder, texName))))
+                    {
+                        string? diskTex = FindMatchingTextureOnDisk(fbxPath, mesh.Name, mat?.Name, mat?.HasTextureDiffuse == true ? mat.TextureDiffuse.FilePath : null, outFolder, name);
+                        if (!string.IsNullOrEmpty(diskTex))
+                        {
+                            texName = diskTex;
+                        }
+                    }
+
+                    // Fallback if no texture found on disk or material but embedded textures exist:
                     // pick diffuse/albedo texture or first extracted texture
                     if (string.IsNullOrEmpty(texName) || (!string.IsNullOrEmpty(outFolder) && !File.Exists(Path.Combine(outFolder, texName))))
                     {
@@ -363,10 +373,13 @@ namespace UoFiddler.Plugin.Granny3D
                         foreach (var kvp in extractedMap)
                         {
                             if (kvp.Key.StartsWith("*")) continue;
-                            if (kvp.Key.IndexOf("diffuse", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                kvp.Key.IndexOf("albedo", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                kvp.Key.IndexOf("basecolor", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                kvp.Key.IndexOf("color", StringComparison.OrdinalIgnoreCase) >= 0)
+                            string kLower = kvp.Key.ToLowerInvariant();
+                            if (kLower.Contains("normal") || kLower.Contains("spec") || kLower.Contains("rough") || kLower.Contains("metal") || kLower.Contains("ao")) continue;
+
+                            if (kLower.Contains("diffuse") ||
+                                kLower.Contains("albedo") ||
+                                kLower.Contains("basecolor") ||
+                                kLower.Contains("color"))
                             {
                                 bestDiffuse = kvp.Value;
                                 break;
@@ -811,6 +824,185 @@ namespace UoFiddler.Plugin.Granny3D
                 if (match) return i;
             }
             return -1;
+        }
+
+        /// <summary>
+        /// Scanne le dossier du FBX et ses sous-dossiers (textures, Textures, tex...) pour trouver
+        /// la texture BaseColor / Diffuse la plus pertinente pour un mesh / matériau donné,
+        /// en excluant rigoureusement les textures Normal, Specular, Roughness, Metallic, AO, etc.
+        /// </summary>
+        public static string? FindMatchingTextureOnDisk(
+            string fbxPath,
+            string? meshName,
+            string? matName,
+            string? embeddedRefPath,
+            string? outFolder,
+            string charName)
+        {
+            if (string.IsNullOrEmpty(fbxPath) || !File.Exists(fbxPath)) return null;
+            string fbxDir = Path.GetDirectoryName(fbxPath) ?? string.Empty;
+            if (string.IsNullOrEmpty(fbxDir) || !Directory.Exists(fbxDir)) return null;
+
+            var supportedExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".png", ".tga", ".jpg", ".jpeg", ".bmp", ".dds"
+            };
+
+            var candidateFiles = new List<string>();
+            try
+            {
+                foreach (var f in Directory.GetFiles(fbxDir, "*.*", SearchOption.AllDirectories))
+                {
+                    string ext = Path.GetExtension(f);
+                    if (supportedExts.Contains(ext))
+                    {
+                        candidateFiles.Add(f);
+                    }
+                }
+            }
+            catch
+            {
+                try
+                {
+                    foreach (var f in Directory.GetFiles(fbxDir, "*.*", SearchOption.TopDirectoryOnly))
+                    {
+                        if (supportedExts.Contains(Path.GetExtension(f))) candidateFiles.Add(f);
+                    }
+                }
+                catch { }
+            }
+
+            if (candidateFiles.Count == 0) return null;
+
+            string? bestFile = null;
+            int bestScore = 0;
+
+            string? embFnWithoutExt = !string.IsNullOrEmpty(embeddedRefPath)
+                ? Path.GetFileNameWithoutExtension(embeddedRefPath).ToLowerInvariant()
+                : null;
+
+            string mNameLower = (meshName ?? string.Empty).ToLowerInvariant();
+            string matNameLower = (matName ?? string.Empty).ToLowerInvariant();
+
+            foreach (var filePath in candidateFiles)
+            {
+                string fn = Path.GetFileNameWithoutExtension(filePath);
+                string fnLower = fn.ToLowerInvariant();
+
+                // 1) EXCLUSIONS STRICTES (Normal, Specular, Roughness, Metallic, AO, Height, Bump, Opacity...)
+                bool isExcluded =
+                    fnLower.Contains("normal") || fnLower.Contains("_norm") || fnLower.Contains("_nor") ||
+                    fnLower.Contains("_n.") || fnLower.EndsWith("_n") || fnLower.Contains("-normal") ||
+                    fnLower.Contains("_n_") || fnLower.Contains("nrm") ||
+                    fnLower.Contains("spec") || fnLower.Contains("specular") || fnLower.EndsWith("_s") ||
+                    fnLower.Contains("_s_") ||
+                    fnLower.Contains("rough") || fnLower.Contains("roughness") || fnLower.EndsWith("_r") ||
+                    fnLower.Contains("_r_") ||
+                    fnLower.Contains("metal") || fnLower.Contains("metallic") || fnLower.Contains("metalness") ||
+                    fnLower.EndsWith("_m") || fnLower.Contains("_m_") ||
+                    fnLower.Contains("ambientocclusion") || fnLower.Contains("ambient_occlusion") ||
+                    fnLower.EndsWith("_ao") || fnLower.Contains("_ao_") || fnLower.Contains("occlusion") ||
+                    fnLower.Contains("height") || fnLower.Contains("displacement") || fnLower.Contains("_disp") ||
+                    fnLower.Contains("bump") ||
+                    fnLower.Contains("opacity") || fnLower.Contains("alpha") || fnLower.Contains("transparency") ||
+                    fnLower.Contains("emission") || fnLower.Contains("emissive") || fnLower.Contains("glow") ||
+                    fnLower.Contains("gloss") || fnLower.Contains("glossiness");
+
+                if (isExcluded) continue;
+
+                int score = 0;
+
+                // 2) MOTS-CLÉS POSITIFS DIFFUSE / BASECOLOR
+                if (fnLower.Contains("basecolor") || fnLower.Contains("base_color") ||
+                    fnLower.Contains("basecolour") || fnLower.Contains("base_colour") ||
+                    fnLower.EndsWith("_bc") || fnLower.Contains("_bc_"))
+                {
+                    score += 350;
+                }
+                else if (fnLower.Contains("diffuse") || fnLower.Contains("_diff") ||
+                         fnLower.EndsWith("_d") || fnLower.Contains("_d_") || fnLower.Contains("_dif"))
+                {
+                    score += 300;
+                }
+                else if (fnLower.Contains("albedo") || fnLower.Contains("_alb"))
+                {
+                    score += 300;
+                }
+                else if (fnLower.Contains("color") || fnLower.Contains("colour") || fnLower.Contains("_col"))
+                {
+                    score += 200;
+                }
+                else
+                {
+                    score += 50;
+                }
+
+                // 3) CORRESPONDANCE AVEC LA RÉFÉRENCE ASSIMP (mat.TextureDiffuse)
+                if (!string.IsNullOrEmpty(embFnWithoutExt))
+                {
+                    if (fnLower == embFnWithoutExt) score += 600;
+                    else if (fnLower.Contains(embFnWithoutExt)) score += 350;
+                }
+
+                // 4) CORRESPONDANCE AVEC LE NOM DU MESH
+                if (!string.IsNullOrEmpty(mNameLower))
+                {
+                    if (fnLower.Contains(mNameLower)) score += 200;
+                    var tokens = mNameLower.Split(new[] { '_', '-', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var tok in tokens)
+                    {
+                        if (tok.Length >= 3 && fnLower.Contains(tok)) score += 60;
+                    }
+                }
+
+                // 5) CORRESPONDANCE AVEC LE NOM DU MATÉRIAU
+                if (!string.IsNullOrEmpty(matNameLower) &&
+                    !matNameLower.Contains("default") &&
+                    !matNameLower.Equals("material") &&
+                    !matNameLower.StartsWith("material_"))
+                {
+                    if (fnLower.Contains(matNameLower)) score += 200;
+                    var tokens = matNameLower.Split(new[] { '_', '-', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var tok in tokens)
+                    {
+                        if (tok.Length >= 3 && fnLower.Contains(tok)) score += 60;
+                    }
+                }
+
+                // 6) EMPLACEMENT FAVORABLE (dossier textures ou racine)
+                string relPath = Path.GetRelativePath(fbxDir, filePath).ToLowerInvariant();
+                if (relPath.StartsWith("texture") || !relPath.Contains(Path.DirectorySeparatorChar))
+                {
+                    score += 30;
+                }
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestFile = filePath;
+                }
+            }
+
+            if (bestFile != null && bestScore >= 80)
+            {
+                string ext = Path.GetExtension(bestFile);
+                string cleanMesh = !string.IsNullOrEmpty(meshName) ? Granny3DControl.MakeSafeFilename(meshName) : "mesh";
+                string destName = $"{charName}_{cleanMesh}{ext}";
+
+                if (!string.IsNullOrEmpty(outFolder))
+                {
+                    if (!Directory.Exists(outFolder)) Directory.CreateDirectory(outFolder);
+                    string destPath = Path.Combine(outFolder, destName);
+                    if (!File.Exists(destPath) || !string.Equals(bestFile, destPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Copy(bestFile, destPath, true);
+                    }
+                }
+
+                return destName;
+            }
+
+            return null;
         }
     }
 }
