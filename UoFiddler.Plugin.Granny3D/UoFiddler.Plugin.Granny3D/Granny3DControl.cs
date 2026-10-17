@@ -3966,7 +3966,7 @@ namespace UoFiddler.Plugin.Granny3D
         // Compute every mesh's local/world/skin matrices for animation time t, plus the
         // rigid attach matrices. Pure CPU: it only fills the matrix arrays (no vertex
         // deformation, no GL upload), so the cloth bake can reuse it frame by frame.
-        private void PoseSkeletons(float t)
+        private void PoseSkeletons(float t, Vector3 riderOffset = default)
         {
             // Direct application: each track's local transforms are played straight on the
             // model skeleton (tracks are authored on the same joint frames as the mesh bones),
@@ -4041,6 +4041,19 @@ namespace UoFiddler.Plugin.Granny3D
                         bool isRoot = p < 0 || p >= boneCount || p == i;
                         if (!isRoot) continue;
                         lm.LocalMatrices[i] = Matrix4.CreateScale(lm.MountScale) * Matrix4.CreateTranslation(lm.MountOffset) * lm.LocalMatrices[i];
+                    }
+                    ComputeWorldMatrices(lm);
+                }
+
+                // Rider / Character action offset (e.g. Z = +0.38 for mounted actions)
+                if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
+                {
+                    for (int i = 0; i < boneCount; i++)
+                    {
+                        int p = lm.Bones[i].ParentId;
+                        bool isRoot = p < 0 || p >= boneCount || p == i;
+                        if (!isRoot) continue;
+                        lm.LocalMatrices[i] = lm.LocalMatrices[i] * Matrix4.CreateTranslation(riderOffset);
                     }
                     ComputeWorldMatrices(lm);
                 }
@@ -4704,7 +4717,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
-        private void RefreshVertexBuffers(bool includeNormals)
+        private void RefreshVertexBuffers(bool includeNormals, Vector3 riderOffset = default)
         {
             foreach (var lm in _loadedMeshes)
             {
@@ -4748,7 +4761,9 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     if (!skinned)
                     {
-                        lm.DeformedCache[v] = orig;
+                        lm.DeformedCache[v] = (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
+                            ? orig + riderOffset
+                            : orig;
                         continue;
                     }
 
@@ -5453,8 +5468,17 @@ namespace UoFiddler.Plugin.Granny3D
         //   25 Horse_Idle_01  -> idle      26 Horse_Attack1H -> idle
         //   27 Horse_AttackBow-> fidget    28 Horse_AttackXB -> idle
         //   29 Horse_Attack2H -> fidget
-        private static string MountClipKeywordForAction(int action)
+        private static string MountClipKeywordForAction(int action, VdTargetDef target = null)
         {
+            if (target != null && target.Uop)
+            {
+                switch (action)
+                {
+                    case 29: return "walk";
+                    case 30: return "run";
+                    case 31: return "idle";
+                }
+            }
             switch (action)
             {
                 case 23: return "walk";
@@ -5634,6 +5658,7 @@ namespace UoFiddler.Plugin.Granny3D
                 if (target == null) return;
 
                 var mapping = form.GetMapping();     // action -> source path or null
+                var offsets = form.GetOffsets();      // action -> 3D offset (X, Y, Z)
                 int fps = form.Fps, size = form.FrameSize, offsetY = form.OffsetY;
 
                 int mapped = 0;
@@ -5651,12 +5676,16 @@ namespace UoFiddler.Plugin.Granny3D
                         string src = (a < mapping.Length) ? mapping[a] : null;
                         if (string.IsNullOrEmpty(src)) continue;
 
-                        // Mount clip is action-specific, so cache per (source, mount keyword).
-                        string kw = MountClipKeywordForAction(a);
-                        string cacheKey = (kw != null) ? src + "|" + kw : src;
+                        Vector3 actOff = (offsets != null && a < offsets.Length) ? offsets[a] : Vector3.Zero;
+
+                        // Mount clip is action-specific, so cache per (source, mount keyword, action offset).
+                        string kw = MountClipKeywordForAction(a, target);
+                        string cacheKey = (kw != null)
+                            ? $"{src}|{kw}|{actOff.X:F3}_{actOff.Y:F3}_{actOff.Z:F3}"
+                            : $"{src}|{actOff.X:F3}_{actOff.Y:F3}_{actOff.Z:F3}";
                         if (!cache.TryGetValue(cacheKey, out var blocks))
                         {
-                            blocks = BakeAnimFrames(src, size, fps, cutout, kw, offsetY);
+                            blocks = BakeAnimFrames(src, size, fps, cutout, kw, offsetY, actOff);
                             if (blocks == null) continue;
                             cache[cacheKey] = blocks;
                         }
@@ -5695,7 +5724,7 @@ namespace UoFiddler.Plugin.Granny3D
         // the plain full-model render.
         private VdAnimBlock[] BakeAnimFrames(string animPath, int size, int fps,
             (Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout = null,
-            string mountKeyword = null, int offsetY = 0)
+            string mountKeyword = null, int offsetY = 0, Vector3 actionOffset = default)
         {
             var savedAnim = _currentAnimation;
             float savedTime = _currentTime;
@@ -5780,8 +5809,8 @@ namespace UoFiddler.Plugin.Granny3D
                     float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
                     for (int f = 0; f < n; f++)
                     {
-                        PoseSkeletons(dur * f / n);
-                        RefreshVertexBuffers(false);
+                        PoseSkeletons(dur * f / n, actionOffset);
+                        RefreshVertexBuffers(false, actionOffset);
                         AccumulateBounds(modelToView, ref minX, ref maxX, ref minY, ref maxY, boundsFilter);
                     }
                     if (minX > maxX) { minX = -1f; maxX = 1f; minY = -1f; maxY = 1f; }
@@ -5822,8 +5851,8 @@ namespace UoFiddler.Plugin.Granny3D
                     var frames = new List<Bitmap>(n);
                     for (int f = 0; f < n; f++)
                     {
-                        PoseSkeletons(dur * f / n);
-                        RefreshVertexBuffers(false);
+                        PoseSkeletons(dur * f / n, actionOffset);
+                        RefreshVertexBuffers(false, actionOffset);
                         using (var big = cutout.HasValue
                                    ? RenderFrameCutout(rw, rh, mvp, cut.occluder, cut.target)
                                    : RenderFrame(rw, rh, mvp, lm2 => lm2.CutoutRole != MeshCutoutRole.Mount))
@@ -5831,7 +5860,7 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     blocks[d] = VdExport.BuildBlock(frames, centerX, centerY);
                     foreach (var b in frames) b.Dispose();
-                    Log($"  bake dir={d} frames={n} px={cw}x{ch} ss={ss} center=({centerX},{centerY}) offsetY={offsetY} ({Path.GetFileName(animPath)})");
+                    Log($"  bake dir={d} frames={n} px={cw}x{ch} ss={ss} center=({centerX},{centerY}) offsetY={offsetY} actOff=({actionOffset.X:F2},{actionOffset.Y:F2},{actionOffset.Z:F2}) ({Path.GetFileName(animPath)})");
                 }
                 return blocks;
             }
