@@ -916,10 +916,10 @@ namespace UoFiddler.Plugin.Granny3D
             grpEquip.Controls.Add(btnClothBake);
 
             // Manual cutout role for the selected mesh (auto-classified on load, editable
-            // here). Body = export target; Accessory = occluder that carves the body.
+            // here). Body = export target; Accessory = occluder that carves the body; Mount = mount occluder.
             grpEquip.Controls.Add(new Label { Text = "Rôle cutout du mesh :", Location = new Point(8, 462), Width = 150, ForeColor = Color.Gainsboro });
-            cmbCutoutRole = new ComboBox { Location = new Point(160, 459), Width = 170, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
-            cmbCutoutRole.Items.AddRange(new object[] { "Body (corps visible)", "Accessory (découpe le corps)" });
+            cmbCutoutRole = new ComboBox { Location = new Point(160, 459), Width = 175, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            cmbCutoutRole.Items.AddRange(new object[] { "Body (corps visible)", "Accessory (découpe le corps)", "Mount (monture / occluder)" });
             cmbCutoutRole.SelectedIndexChanged += CmbCutoutRole_SelectedIndexChanged;
             grpEquip.Controls.Add(cmbCutoutRole);
 
@@ -3198,15 +3198,24 @@ namespace UoFiddler.Plugin.Granny3D
                 if (nudThickness != null) SetNud(nudThickness, ok ? lm.Thickness : 0f);
                 if (chkCloth != null) chkCloth.Checked = ok && lm.IsCloth;
                 if (nudClothGrav != null) SetNud(nudClothGrav, ok ? lm.ClothGravity : 9.8f);
-                if (cmbCutoutRole != null) cmbCutoutRole.SelectedIndex = ok ? (int)lm.CutoutRole : 0;
+                if (cmbCutoutRole != null)
+                {
+                    int roleIdx = ok ? (int)lm.CutoutRole : 0;
+                    if (roleIdx >= 0 && roleIdx < cmbCutoutRole.Items.Count)
+                        cmbCutoutRole.SelectedIndex = roleIdx;
+                    else if (cmbCutoutRole.Items.Count > 0)
+                        cmbCutoutRole.SelectedIndex = 0;
+                }
             }
             finally { _suppressEquip = false; }
         }
 
         private void CmbCutoutRole_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (_suppressEquip) return;
-            var role = (MeshCutoutRole)Math.Max(0, cmbCutoutRole.SelectedIndex);
+            if (_suppressEquip || cmbCutoutRole == null) return;
+            int sel = cmbCutoutRole.SelectedIndex;
+            if (sel < 0) return;
+            var role = (MeshCutoutRole)sel;
             foreach (var i in GetSelectedMeshIndices())
                 _loadedMeshes[i].CutoutRole = role;
         }
