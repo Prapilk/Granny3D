@@ -2750,9 +2750,9 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     u = explicitCornerUVs[c].X; v = explicitCornerUVs[c].Y;
                 }
-                else if (uvIdx != null && uvIdx.Count == cornerCount && uvs.Count > 0)
+                else if (uvIdx != null && uvIdx.Count > 0 && uvs.Count > 0)
                 {
-                    int ui = uvIdx[c];
+                    int ui = (c < uvIdx.Count) ? uvIdx[c] : -1;
                     if (ui >= 0 && ui < uvs.Count) { u = uvs[ui].X; v = uvs[ui].Y; }
                 }
                 else if (uvs.Count == lm.BaseVertices.Length && vi >= 0 && vi < uvs.Count)
@@ -3464,40 +3464,63 @@ namespace UoFiddler.Plugin.Granny3D
             // 0) Direct texture name embedded in the model/mesh (authoritative)
             if (!string.IsNullOrEmpty(embeddedName))
             {
-                if (!string.IsNullOrEmpty(dir))
+                var embCandidates = new List<string> { embeddedName };
+                if (embeddedName.Contains(" "))
+                    embCandidates.Add(embeddedName.Replace(" ", "_"));
+                if (embeddedName.Contains("_"))
+                    embCandidates.Add(embeddedName.Replace("_", ""));
+
+                // Known aliases for legacy Granny models
+                if (embeddedName.Equals("CrystalEle_256x256", StringComparison.OrdinalIgnoreCase))
+                    embCandidates.Add("Crystal_Elemental_256x256");
+                else if (embeddedName.Equals("Light-n-lad", StringComparison.OrdinalIgnoreCase))
+                    embCandidates.Add("LightingElemental01_512");
+                else if (embeddedName.Equals("Wailing_Banshee_256x256", StringComparison.OrdinalIgnoreCase))
+                    embCandidates.Add("WailBanshee_256x256");
+                else if (embeddedName.Equals("UT256_Samurai_Haidate_Studded_V2", StringComparison.OrdinalIgnoreCase))
+                    embCandidates.Add("UT256_Samurai_Studded_V2");
+                else if (embeddedName.Equals("Shirt", StringComparison.OrdinalIgnoreCase))
+                    embCandidates.Add("UT256_Armor_Japanese_1_V2");
+                else if (embeddedName.Equals("Weapons01", StringComparison.OrdinalIgnoreCase))
+                    embCandidates.Add("Weapons01_256x256");
+
+                foreach (var emb in embCandidates)
                 {
-                    string direct = Path.Combine(dir, embeddedName);
-                    if (File.Exists(direct)) { int t = LoadTexture(direct); if (t > 0) return t; }
-                }
-                if (Directory.Exists(MapsPath))
-                {
-                    string mapDirect = Path.Combine(MapsPath, embeddedName);
-                    if (File.Exists(mapDirect)) { int t = LoadTexture(mapDirect); if (t > 0) return t; }
-                }
-                if (Directory.Exists(MapsPath))
-                {
-                    try
+                    if (!string.IsNullOrEmpty(dir))
                     {
-                        foreach (var f in Directory.GetFiles(MapsPath, "*", SearchOption.TopDirectoryOnly))
+                        string direct = Path.Combine(dir, emb);
+                        if (File.Exists(direct)) { int t = LoadTexture(direct); if (t > 0) return t; }
+                        foreach (var ext in exts)
                         {
-                            if (!f.EndsWith(".tga", StringComparison.OrdinalIgnoreCase)) continue;
-                            string fn = Path.GetFileNameWithoutExtension(f);
-                            if (fn.EndsWith("_m", StringComparison.OrdinalIgnoreCase)) continue;
-                            if (fn.Equals(embeddedName, StringComparison.OrdinalIgnoreCase))
-                            {
-                                int tex = LoadTexture(f);
-                                if (tex > 0) return tex;
-                            }
+                            string p = Path.Combine(dir, emb + ext);
+                            if (File.Exists(p)) { int t = LoadTexture(p); if (t > 0) return t; }
                         }
                     }
-                    catch { }
-                }
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    foreach (var ext in exts)
+                    if (Directory.Exists(MapsPath))
                     {
-                        string p = Path.Combine(dir, embeddedName + ext);
-                        if (File.Exists(p)) { int t = LoadTexture(p); if (t > 0) return t; }
+                        string mapDirect = Path.Combine(MapsPath, emb);
+                        if (File.Exists(mapDirect)) { int t = LoadTexture(mapDirect); if (t > 0) return t; }
+                        foreach (var ext in exts)
+                        {
+                            string p = Path.Combine(MapsPath, emb + ext);
+                            if (File.Exists(p)) { int t = LoadTexture(p); if (t > 0) return t; }
+                        }
+
+                        try
+                        {
+                            foreach (var f in Directory.GetFiles(MapsPath, "*", SearchOption.TopDirectoryOnly))
+                            {
+                                if (!f.EndsWith(".tga", StringComparison.OrdinalIgnoreCase)) continue;
+                                string fn = Path.GetFileNameWithoutExtension(f);
+                                if (fn.EndsWith("_m", StringComparison.OrdinalIgnoreCase)) continue;
+                                if (fn.Equals(emb, StringComparison.OrdinalIgnoreCase) || fn.StartsWith(emb + "_", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    int tex = LoadTexture(f);
+                                    if (tex > 0) return tex;
+                                }
+                            }
+                        }
+                        catch { }
                     }
                 }
             }
@@ -3514,47 +3537,56 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
 
-            // 2) Models/Maps: <creature>.tga (+ UT256_* human skins, armor variants)
+            // 2) Models/Maps: <creature>.tga (+ UT256_* human skins, armor variants, Npc_ strip)
             string creature = DeriveCreature(baseName);
+            var creatureCandidates = new List<string> { creature };
+            if (creature.StartsWith("Npc_", StringComparison.OrdinalIgnoreCase))
+                creatureCandidates.Add(creature.Substring(4));
+            if (creature.StartsWith("Npc_Cpt_", StringComparison.OrdinalIgnoreCase))
+                creatureCandidates.Add(creature.Substring(8));
+
             if (Directory.Exists(MapsPath))
             {
-                // Try exact creature name
-                foreach (var ext in exts)
+                foreach (var cname in creatureCandidates)
                 {
-                    string p = Path.Combine(MapsPath, creature + ext);
-                    if (!File.Exists(p)) continue;
-                    int tex = LoadTexture(p);
-                    if (tex > 0) return tex;
-                }
-
-                // Try human base skins
-                foreach (var cand in new[]
-                {
-                    "UT256_H_" + creature.Replace("H_Male", "Male").Replace("H_Female", "Female") + "_V2",
-                    "UT256_H_" + creature.Replace("H_Male", "Male").Replace("H_Female", "Female") + "A_V2",
-                    "Ut256_H_" + creature.Replace("H_Male", "Male").Replace("H_Female", "Female"),
-                    "UT256_H_Male_V2", "UT256_H_Female_V2"
-                })
-                {
-                    string p = Path.Combine(MapsPath, cand + ".tga");
-                    if (!File.Exists(p)) continue;
-                    int tex = LoadTexture(p);
-                    if (tex > 0) return tex;
-                }
-
-                // First Map file starting with the creature name (skip _M normal maps)
-                try
-                {
-                    foreach (var f in Directory.GetFiles(MapsPath, creature + "*", SearchOption.TopDirectoryOnly))
+                    // Try exact creature name
+                    foreach (var ext in exts)
                     {
-                        string fn = Path.GetFileName(f);
-                        if (fn.EndsWith("_M.tga", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!fn.EndsWith(".tga", StringComparison.OrdinalIgnoreCase)) continue;
-                        int tex = LoadTexture(f);
+                        string p = Path.Combine(MapsPath, cname + ext);
+                        if (!File.Exists(p)) continue;
+                        int tex = LoadTexture(p);
                         if (tex > 0) return tex;
                     }
+
+                    // Try human base skins
+                    foreach (var cand in new[]
+                    {
+                        "UT256_H_" + cname.Replace("H_Male", "Male").Replace("H_Female", "Female") + "_V2",
+                        "UT256_H_" + cname.Replace("H_Male", "Male").Replace("H_Female", "Female") + "A_V2",
+                        "Ut256_H_" + cname.Replace("H_Male", "Male").Replace("H_Female", "Female"),
+                        "UT256_H_Male_V2", "UT256_H_Female_V2"
+                    })
+                    {
+                        string p = Path.Combine(MapsPath, cand + ".tga");
+                        if (!File.Exists(p)) continue;
+                        int tex = LoadTexture(p);
+                        if (tex > 0) return tex;
+                    }
+
+                    // First Map file starting with the creature name (skip _M normal maps)
+                    try
+                    {
+                        foreach (var f in Directory.GetFiles(MapsPath, cname + "*", SearchOption.TopDirectoryOnly))
+                        {
+                            string fn = Path.GetFileName(f);
+                            if (fn.EndsWith("_M.tga", StringComparison.OrdinalIgnoreCase)) continue;
+                            if (!fn.EndsWith(".tga", StringComparison.OrdinalIgnoreCase)) continue;
+                            int tex = LoadTexture(f);
+                            if (tex > 0) return tex;
+                        }
+                    }
+                    catch { }
                 }
-                catch { }
             }
 
             return -1;

@@ -397,10 +397,6 @@ namespace UoFiddler.Plugin.Granny3D
             // a zero-size polygon chunk and a 12-byte skin header appear BEFORE the real
             // chunks. Pairing these per-mesh lists by index then slides out of phase and
             // the real mesh is silently dropped (the mesh ends up with 0 indices).
-            // When a list has more entries than the vertex list, drop its payload-less
-            // entries to restore the 1:1 alignment — but only if that exactly matches the
-            // vertex count, so genuine degenerate meshes (e.g. a 1-vertex / 0-polygon
-            // slot in Four_Armed_Demon) keep their slot and are unaffected.
             if (polChunks.Count > ptsChunks.Count)
             {
                 var trimmed = polChunks.Where(c => c.DataSize != 0).ToList();
@@ -415,9 +411,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             // Mesh skin weights reference bones through the per-mesh "bone tie" list
-            // (chunk 0xCA5E0C0A). Each tie stores the skeleton bone index as its first
-            // field, and the mesh's vertex influences index this tie list directly.
-            // Map local weight index -> skeleton bone index.
+            // (chunk 0xCA5E0C0A). Map local weight index -> skeleton bone index.
             var skinBoneMap = new List<int>();
             for (int i = 0; i < c0aChunks.Count; i++)
             {
@@ -436,10 +430,6 @@ namespace UoFiddler.Plugin.Granny3D
                     skinChunks = trimmedSkin;
             }
 
-            // Per-mesh bone-tie (binding) base offsets. The mesh skin chunk header stores
-            // h1 = (bindingCount - 1); the per-mesh binding arrays are laid out in mesh
-            // order, so mesh j's local weight index indexes c0aChunks[base_j + localB].
-            // Files with a single mesh keep base 0 (previous behaviour unchanged).
             int[] bindingBase = new int[meshCount + 1];
             for (int j = 0; j < meshCount; j++)
             {
@@ -454,19 +444,98 @@ namespace UoFiddler.Plugin.Granny3D
                 }
                 bindingBase[j + 1] = bindingBase[j] + cnt;
             }
-            // Only trust the per-mesh layout when the counts add up exactly.
             bool usePerMeshTies = bindingBase[meshCount] == c0aChunks.Count;
             if (!usePerMeshTies)
                 for (int j = 0; j <= meshCount; j++)
                     bindingBase[j] = 0;
+
+            // Pre-calculate polygon count for each uvPolChunk
+            var availableUvPol = new List<(GrannyChunk chunk, int polys)>();
+            foreach (var c in uvPolChunks)
+            {
+                if (c.DataSize != 0xFFFFFFFF)
+                {
+                    reader.BaseStream.Seek(c.DataOffset, SeekOrigin.Begin);
+                    availableUvPol.Add((c, (int)reader.ReadUInt32()));
+                }
+            }
+
+            var meshUvPolChunks = new List<List<GrannyChunk>>();
+            for (int j = 0; j < meshCount; j++)
+                meshUvPolChunks.Add(new List<GrannyChunk>());
+
+            if (meshCount == 1)
+            {
+                // All uvPol chunks belong to the single mesh (e.g. Adranath where 693 + 3 = 696)
+                foreach (var up in availableUvPol)
+                    meshUvPolChunks[0].Add(up.chunk);
+            }
+            else
+            {
+                // For each mesh, target polygon count is from its polChunk
+                var usedUvPol = new HashSet<GrannyChunk>();
+                for (int j = 0; j < meshCount; j++)
+                {
+                    int targetPolys = (j < polChunks.Count && polChunks[j].DataSize != 0xFFFFFFFF)
+                        ? (int)(polChunks[j].DataSize / 24)
+                        : 0;
+
+                    // 1. Try exact match by poly count
+                    var exact = availableUvPol.FirstOrDefault(up => !usedUvPol.Contains(up.chunk) && up.polys == targetPolys);
+                    if (exact.chunk != null)
+                    {
+                        meshUvPolChunks[j].Add(exact.chunk);
+                        usedUvPol.Add(exact.chunk);
+                        continue;
+                    }
+
+                    // 2. Try subset combination whose sum equals targetPolys
+                    int currentSum = 0;
+                    var candidateChunks = new List<GrannyChunk>();
+                    foreach (var up in availableUvPol.Where(up => !usedUvPol.Contains(up.chunk)))
+                    {
+                        if (currentSum + up.polys <= targetPolys)
+                        {
+                            currentSum += up.polys;
+                            candidateChunks.Add(up.chunk);
+                            if (currentSum == targetPolys) break;
+                        }
+                    }
+                    if (currentSum == targetPolys && candidateChunks.Count > 0)
+                    {
+                        foreach (var c in candidateChunks)
+                        {
+                            meshUvPolChunks[j].Add(c);
+                            usedUvPol.Add(c);
+                        }
+                        continue;
+                    }
+
+                    // 3. Fallback: closest unused chunk, or sequential index
+                    var fallback = availableUvPol.Where(up => !usedUvPol.Contains(up.chunk))
+                        .OrderBy(up => Math.Abs(up.polys - targetPolys))
+                        .FirstOrDefault();
+                    if (fallback.chunk != null)
+                    {
+                        meshUvPolChunks[j].Add(fallback.chunk);
+                        usedUvPol.Add(fallback.chunk);
+                    }
+                    else if (j < uvPolChunks.Count)
+                    {
+                        meshUvPolChunks[j].Add(uvPolChunks[j]);
+                    }
+                }
+            }
+
+            var usedUvPts = new HashSet<GrannyChunk>();
 
             for (int j = 0; j < meshCount; j++)
             {
                 GrannyMesh m = new GrannyMesh();
                 var ptsChunk = j < ptsChunks.Count ? ptsChunks[j] : null;
                 var polChunk = j < polChunks.Count ? polChunks[j] : null;
-                var uvPolChunk = j < uvPolChunks.Count ? uvPolChunks[j] : null;
                 var skinChunk = j < skinChunks.Count ? skinChunks[j] : null;
+                var targetUvPolList = meshUvPolChunks[j];
 
                 if (ptsChunk != null && ptsChunk.DataSize != 0xFFFFFFFF)
                 {
@@ -490,8 +559,9 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 int requiredUvs = 0;
-                if (uvPolChunk != null && uvPolChunk.DataSize != 0xFFFFFFFF)
+                foreach (var uvPolChunk in targetUvPolList)
                 {
+                    if (uvPolChunk == null || uvPolChunk.DataSize == 0xFFFFFFFF) continue;
                     reader.BaseStream.Seek(uvPolChunk.DataOffset, SeekOrigin.Begin);
                     uint numPolys = reader.ReadUInt32();
                     if (numPolys > 0)
@@ -522,21 +592,30 @@ namespace UoFiddler.Plugin.Granny3D
                             }
                         }
                     }
-                    requiredUvs += 1;
                 }
+                requiredUvs += 1;
 
                 GrannyChunk uvPtsChunk = null;
                 if (requiredUvs > 0 && uvPtsChunks.Count > 0)
                 {
                     uvPtsChunk = uvPtsChunks
-                        .Where(c => ((c.DataSize - 4) / 12) >= requiredUvs)
+                        .Where(c => !usedUvPts.Contains(c) && ((c.DataSize - 4) / 12) >= requiredUvs)
                         .OrderBy(c => ((c.DataSize - 4) / 12))
                         .FirstOrDefault();
+                    if (uvPtsChunk == null)
+                    {
+                        uvPtsChunk = uvPtsChunks
+                            .Where(c => !usedUvPts.Contains(c))
+                            .OrderByDescending(c => ((c.DataSize - 4) / 12))
+                            .FirstOrDefault();
+                    }
                 }
-                else if (j < uvPtsChunks.Count)
-                {
+                if (uvPtsChunk == null && j < uvPtsChunks.Count && !usedUvPts.Contains(uvPtsChunks[j]))
                     uvPtsChunk = uvPtsChunks[j];
-                }
+                if (uvPtsChunk == null && uvPtsChunks.Count > 0)
+                    uvPtsChunk = uvPtsChunks.FirstOrDefault(c => !usedUvPts.Contains(c)) ?? uvPtsChunks[0];
+
+                if (uvPtsChunk != null) usedUvPts.Add(uvPtsChunk);
 
                 if (uvPtsChunk != null && uvPtsChunk.DataSize != 0xFFFFFFFF)
                 {
