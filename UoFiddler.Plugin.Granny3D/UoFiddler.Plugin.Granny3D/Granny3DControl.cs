@@ -4004,6 +4004,19 @@ namespace UoFiddler.Plugin.Granny3D
             } catch { }
         }
 
+        private static bool TrackPositionVaries(GrannyTrack tr, float eps = 0.002f)
+        {
+            if (tr?.Pos == null || tr.Pos.Length < 2) return false;
+            float eps2 = eps * eps;
+            Vector3 first = tr.Pos[0];
+            for (int k = 1; k < tr.Pos.Length; k++)
+            {
+                if ((tr.Pos[k] - first).LengthSquared > eps2)
+                    return true;
+            }
+            return false;
+        }
+
         // Compute every mesh's local/world/skin matrices for animation time t, plus the
         // rigid attach matrices. Pure CPU: it only fills the matrix arrays (no vertex
         // deformation, no GL upload), so the cloth bake can reuse it frame by frame.
@@ -4040,6 +4053,8 @@ namespace UoFiddler.Plugin.Granny3D
                 GrannyAnimation anim = (lm.CutoutRole == MeshCutoutRole.Mount) ? lm.AnimOverride : (lm.AnimOverride ?? _currentAnimation);
                 int[] trackMap = (lm.CutoutRole == MeshCutoutRole.Mount) ? lm.AnimOverrideTrack : (lm.AnimOverride != null ? lm.AnimOverrideTrack : lm.BoneToAnimTrack);
 
+                bool isCustomModel = GrannyModelFile.IsModelFile(lm.SourcePath);
+
                 for (int i = 0; i < boneCount; i++)
                 {
                     int trackIdx = (trackMap != null && i < trackMap.Length) ? trackMap[i] : -1;
@@ -4048,18 +4063,25 @@ namespace UoFiddler.Plugin.Granny3D
                         var tr = anim.Tracks[trackIdx];
                         var b = lm.Bones[i];
                         int p = b.ParentId;
-                        bool isRoot = p < 0 || p >= boneCount || p == i;
+                        bool isRoot = p < 0 || p >= boneCount || p == i ||
+                                      b.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase) ||
+                                      (p >= 0 && p < boneCount && (lm.Bones[p].Name.Equals("__Root", StringComparison.OrdinalIgnoreCase) ||
+                                                                   lm.Bones[p].Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase)));
 
                         Vector3 pos;
-                        if (isRoot)
+                        if (!isCustomModel)
                         {
                             pos = tr.EvaluatePos(meshT);
                         }
                         else
                         {
-                            bool hasPosMotion = tr.Pos != null && tr.Pos.Length > 1 &&
-                                                (tr.Pos[0] - tr.Pos[tr.Pos.Length - 1]).LengthSquared > 1e-4f;
-                            pos = hasPosMotion ? tr.EvaluatePos(meshT) : b.LocalPosition;
+                            // Custom imported models (e.g. Mixamo characters with custom limb/finger lengths):
+                            // Root/pelvis (Bip01), attachment sockets (CP_*), and bones with actual position animation
+                            // evaluate their animated track, while static limb bones preserve the custom model's local bone lengths.
+                            bool useAnimPos = isRoot ||
+                                              b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
+                                              TrackPositionVaries(tr, 0.002f);
+                            pos = useAnimPos ? tr.EvaluatePos(meshT) : b.LocalPosition;
                         }
 
                         lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(meshT)) * Matrix4.CreateTranslation(pos);
