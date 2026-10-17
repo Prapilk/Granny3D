@@ -15,6 +15,7 @@ class TestActualImport {
         var animParser = new GrannyFormatParser();
         animParser.Load(animPath);
         var anim = animParser.Animation;
+        using var ctx = new Assimp.AssimpContext();
 
         foreach (var fbx in files) {
             if (!File.Exists(fbx)) continue;
@@ -30,6 +31,42 @@ class TestActualImport {
 
             Console.WriteLine($"Import OK: Parts={model.Parts.Count}, Bones={model.Bones.Count}");
             int nb = model.Bones.Count;
+
+            var scene = ctx.ImportFile(fbx);
+            var nodes = new List<Assimp.Node>();
+            void Collect(Assimp.Node n) { nodes.Add(n); foreach (var c in n.Children) Collect(c); }
+            Collect(scene.RootNode);
+            Matrix4 C = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(90f));
+            Matrix4 Cinv = Matrix4.Invert(C);
+            var nodeDict = new Dictionary<string, Assimp.Node>();
+            foreach (var n in nodes) if (!nodeDict.ContainsKey(n.Name)) nodeDict[n.Name] = n;
+
+            // Compute world matrices
+            var wMap = new Dictionary<string, Matrix4>();
+            Matrix4 GetWorld(Assimp.Node n) {
+                if (wMap.TryGetValue(n.Name, out var wm)) return wm;
+                n.Transform.Decompose(out var sc, out var qq, out var tt);
+                var lm = Matrix4.CreateScale(sc.X, sc.Y, sc.Z) *
+                         Matrix4.CreateFromQuaternion(new Quaternion(qq.X, qq.Y, qq.Z, qq.W)) *
+                         Matrix4.CreateTranslation(tt.X * 0.01f, tt.Y * 0.01f, tt.Z * 0.01f);
+                var parentMat = (n.Parent != null) ? GetWorld(n.Parent) : Matrix4.Identity;
+                var res = lm * parentMat;
+                wMap[n.Name] = res;
+                return res;
+            }
+
+            void PrintFingerPos(string prefix) {
+                string[] fNames = { "Thumb1", "Index1", "Middle1", "Ring1", "Pinky1" };
+                foreach (var fn in fNames) {
+                    var node = nodes.Find(n => n.Name.Contains(prefix + fn));
+                    if (node != null) {
+                        var w = Cinv * GetWorld(node) * C;
+                        Console.WriteLine($"  {node.Name}: {w.Row3.Xyz}");
+                    }
+                }
+            }
+            Console.WriteLine("Left Finger World Positions:");
+            PrintFingerPos("LeftHand");
 
             // 1. Verify Rest Pose (T-pose) skinning matrices are all Identity!
             var restLocal = new Matrix4[nb];
@@ -93,19 +130,28 @@ class TestActualImport {
             Console.WriteLine($"L Arm Length: {(animWorld[lHandIdx].Row3.Xyz - animWorld[lForearmIdx].Row3.Xyz).Length:F3} m");
             Console.WriteLine($"R Arm Length: {(animWorld[rHandIdx].Row3.Xyz - animWorld[rForearmIdx].Row3.Xyz).Length:F3} m");
 
-            // Evaluate gap at joints in skinned space
+            int lFinger1Idx = model.Bones.FindIndex(b => b.Name == "Bip01 L Finger1");
+            int lFinger11Idx = model.Bones.FindIndex(b => b.Name == "Bip01 L Finger11");
+            var trF1 = anim.Tracks.Find(t => t.Name == "Bip01 L Finger1");
+            var trF11 = anim.Tracks.Find(t => t.Name == "Bip01 L Finger11");
+            Console.WriteLine($"Finger1 Track Rot(0): {trF1?.EvaluateRot(0)}");
+            Console.WriteLine($"Finger11 Track Rot(0): {trF11?.EvaluateRot(0)}");
+
+            // Check gap at Middle1, Ring1, Pinky1 if skinned to Finger1 vs Hand
+            string[] otherFingers = { "LeftHandIndex1", "LeftHandMiddle1", "LeftHandRing1", "LeftHandPinky1" };
+            foreach (var fn in otherFingers) {
+                var node = nodes.Find(n => n.Name.Contains(fn));
+                if (node != null) {
+                    var w = Cinv * GetWorld(node) * C;
+                    Vector3 pt = w.Row3.Xyz;
+                    Vector3 vHand = Vector3.TransformPosition(pt, skinMats[lHandIdx]);
+                    Vector3 vFing = Vector3.TransformPosition(pt, skinMats[lFinger1Idx]);
+                    Console.WriteLine($"  {node.Name} knuckle diff (Hand vs Finger1): {(vHand - vFing).Length:F4} m");
+                }
+            }
+
             var fittedWorld = new Matrix4[nb];
             for (int i = 0; i < nb; i++) fittedWorld[i] = Matrix4.Invert(model.Bones[i].InverseBindMatrix);
-
-            Vector3 wristL = fittedWorld[lHandIdx].Row3.Xyz;
-            Vector3 vLForearm = Vector3.TransformPosition(wristL, skinMats[lForearmIdx]);
-            Vector3 vLHand    = Vector3.TransformPosition(wristL, skinMats[lHandIdx]);
-            Console.WriteLine($"GAP at Left Wrist:       {(vLForearm - vLHand).Length:F6}");
-
-            Vector3 wristR = fittedWorld[rHandIdx].Row3.Xyz;
-            Vector3 vRForearm = Vector3.TransformPosition(wristR, skinMats[rForearmIdx]);
-            Vector3 vRHand    = Vector3.TransformPosition(wristR, skinMats[rHandIdx]);
-            Console.WriteLine($"GAP at Right Wrist:      {(vRForearm - vRHand).Length:F6}");
 
             Vector3 thumb0L = fittedWorld[lThumb0Idx].Row3.Xyz;
             Vector3 vLH = Vector3.TransformPosition(thumb0L, skinMats[lHandIdx]);

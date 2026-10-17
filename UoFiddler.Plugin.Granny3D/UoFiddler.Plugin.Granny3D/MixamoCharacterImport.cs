@@ -199,6 +199,26 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int i = 0; i < nb; i++)
                     uoBindWorld[i] = Matrix4.Invert(refBones[i].InverseBindMatrix);
 
+                int FindMixNode(string baseName)
+                {
+                    if (string.IsNullOrEmpty(baseName)) return -1;
+                    if (nameToNode.TryGetValue(baseName, out int idx)) return idx;
+                    if (nameToNode.TryGetValue("mixamorig:" + baseName, out idx)) return idx;
+                    string clean = baseName;
+                    int col = clean.IndexOf(':');
+                    if (col >= 0) clean = clean.Substring(col + 1);
+                    if (nameToNode.TryGetValue(clean, out idx)) return idx;
+                    foreach (var kvp in nameToNode)
+                    {
+                        string k = kvp.Key;
+                        int c = k.IndexOf(':');
+                        if (c >= 0) k = k.Substring(c + 1);
+                        if (string.Equals(k, clean, StringComparison.OrdinalIgnoreCase))
+                            return kvp.Value;
+                    }
+                    return -1;
+                }
+
                 // Fitted world matrices:
                 var fittedWorld = new Matrix4[nb];
                 for (int i = 0; i < nb; i++)
@@ -206,30 +226,21 @@ namespace UoFiddler.Plugin.Granny3D
                     string uoName = refBones[i].Name;
                     fittedWorld[i] = uoBindWorld[i];
 
-                    // Find corresponding Mixamo node
+                    // Find corresponding Mixamo node.
+                    // For the 4-finger cluster (Finger1 / Finger11), prefer the central Middle finger pivot if present, otherwise Index
                     int ni = -1;
-                    if (MixamoRetarget.TryGetBoneAlias(uoName, out string mixAlias))
+                    if (string.Equals(uoName, "Bip01 L Finger1", StringComparison.OrdinalIgnoreCase))
+                        ni = FindMixNode("LeftHandMiddle1");
+                    else if (string.Equals(uoName, "Bip01 L Finger11", StringComparison.OrdinalIgnoreCase))
+                        ni = FindMixNode("LeftHandMiddle2");
+                    else if (string.Equals(uoName, "Bip01 R Finger1", StringComparison.OrdinalIgnoreCase))
+                        ni = FindMixNode("RightHandMiddle1");
+                    else if (string.Equals(uoName, "Bip01 R Finger11", StringComparison.OrdinalIgnoreCase))
+                        ni = FindMixNode("RightHandMiddle2");
+
+                    if (ni < 0 && MixamoRetarget.TryGetBoneAlias(uoName, out string mixAlias))
                     {
-                        if (!nameToNode.TryGetValue(mixAlias, out ni))
-                        {
-                            string cleanAlias = mixAlias;
-                            int col = cleanAlias.IndexOf(':');
-                            if (col >= 0) cleanAlias = cleanAlias.Substring(col + 1);
-                            if (!nameToNode.TryGetValue(cleanAlias, out ni))
-                            {
-                                foreach (var kvp in nameToNode)
-                                {
-                                    string k = kvp.Key;
-                                    int c = k.IndexOf(':');
-                                    if (c >= 0) k = k.Substring(c + 1);
-                                    if (string.Equals(k, cleanAlias, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        ni = kvp.Value;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        ni = FindMixNode(mixAlias);
                     }
 
                     if (ni >= 0)
@@ -430,10 +441,12 @@ namespace UoFiddler.Plugin.Granny3D
                     int targetBoneIdx = -1;
 
                     // Hand and Finger Bone Mapping:
-                    // - Thumb: Thumb1 -> Finger0 (base), Thumb2..4 -> Finger01 (knuckle/phalanges)
-                    // - Index: Index1 -> Finger1 (base), Index2..4 -> Finger11 (knuckle/phalanges)
-                    // - Middle (Majeur), Ring (Annulaire), Pinky (Auriculaire): mapped to Hand (Bip01 L/R Hand)
-                    //   so they act as one solid unit with the hand/palm without stretching.
+                    // - Thumb: Thumb1 -> Finger0 (base), Thumb2..4 -> Finger01 (phalanges)
+                    // - 4 Fingers (Index, Middle / Majeur, Ring / Annulaire, Pinky / Auriculaire):
+                    //   Base (Index1, Middle1, Ring1, Pinky1) -> Finger1 (knuckle base)
+                    //   Phalanges (Index2..4, Middle2..4, Ring2..4, Pinky2..4) -> Finger11 (phalanges / finger curl)
+                    //   This allows all fingers to bend naturally together with the UO animation ("ensemble").
+                    // - Wrist / Palm: Hand -> Bip01 L/R Hand
                     bool isLeft = cleanBName.IndexOf("Left", StringComparison.OrdinalIgnoreCase) >= 0 || cleanBName.StartsWith("L_", StringComparison.OrdinalIgnoreCase);
                     bool isRight = cleanBName.IndexOf("Right", StringComparison.OrdinalIgnoreCase) >= 0 || cleanBName.StartsWith("R_", StringComparison.OrdinalIgnoreCase);
 
@@ -450,9 +463,17 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
 
-                    if (cleanBName.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (cleanBName.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanBName.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanBName.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanBName.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        string targetUo = cleanBName.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0
+                        bool isBase = cleanBName.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                      cleanBName.IndexOf("Middle1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                      cleanBName.IndexOf("Ring1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                      cleanBName.IndexOf("Pinky1", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                        string targetUo = isBase
                             ? (isLeft ? "Bip01 L Finger1" : (isRight ? "Bip01 R Finger1" : null))
                             : (isLeft ? "Bip01 L Finger11" : (isRight ? "Bip01 R Finger11" : null));
 
@@ -463,10 +484,7 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
 
-                    if (cleanBName.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        cleanBName.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        cleanBName.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        cleanBName.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    if (cleanBName.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) >= 0 ||
                         cleanBName.IndexOf("Finger", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         string targetUo = isLeft ? "Bip01 L Hand" : (isRight ? "Bip01 R Hand" : null);
