@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using Assimp;
 using OpenTK.Mathematics;
+using System.Text.RegularExpressions;
 using Quaternion = OpenTK.Mathematics.Quaternion;
 
 namespace UoFiddler.Plugin.Granny3D
@@ -82,14 +83,15 @@ namespace UoFiddler.Plugin.Granny3D
             for (int i = 0; i < embedded.Count; i++)
             {
                 var (rawFn, data) = embedded[i];
-                string savedName = $"{name}_{rawFn}";
+                string cleanFn = Path.GetFileName(rawFn);
+                string savedName = $"{name}_{cleanFn}";
                 if (!string.IsNullOrEmpty(outFolder))
                 {
                     if (!Directory.Exists(outFolder)) Directory.CreateDirectory(outFolder);
                     File.WriteAllBytes(Path.Combine(outFolder, savedName), data);
                 }
                 extractedMap[rawFn] = savedName;
-                extractedMap[Path.GetFileName(rawFn)] = savedName;
+                extractedMap[cleanFn] = savedName;
                 extractedMap[$"*{i}"] = savedName;
             }
 
@@ -97,10 +99,12 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 for (int ti = 0; ti < scene.TextureCount; ti++)
                 {
+                    if (extractedMap.ContainsKey($"*{ti}")) continue;
                     var emb = scene.Textures[ti];
                     if (emb != null && emb.IsCompressed && emb.CompressedData != null)
                     {
-                        string embFn = $"tex_{ti}.png";
+                        string ext = (emb.CompressedData.Length >= 3 && emb.CompressedData[0] == 0xFF && emb.CompressedData[1] == 0xD8 && emb.CompressedData[2] == 0xFF) ? ".jpg" : ".png";
+                        string embFn = $"tex_{ti}{ext}";
                         string savedName = $"{name}_{embFn}";
                         if (!string.IsNullOrEmpty(outFolder))
                         {
@@ -113,16 +117,7 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
 
-            // Set skeleton: if reference bones are found, use the standard 43 UO bones!
-            var uoBoneByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            if (refBones != null && refBones.Count > 0)
-            {
-                model.Bones = new List<GrannyBone>(refBones);
-                for (int i = 0; i < refBones.Count; i++)
-                    uoBoneByName[refBones[i].Name] = i;
-            }
-
-            // 2) Index all scene nodes to allow hierarchy traversal (for fingers/helpers -> parent UO bone)
+            // 2) Index all scene nodes to allow hierarchy traversal
             var nodes = new List<Node>();
             var nodeParent = new List<int>();
             void Collect(Node n, int par)
@@ -142,26 +137,14 @@ namespace UoFiddler.Plugin.Granny3D
                     nameToNode[nodes[i].Name] = i;
             }
 
-            // Fallback skeleton if no UO reference was found: build from FBX
-            if (model.Bones.Count == 0)
-            {
-                BuildFallbackSkeleton(scene, nodes, nodeParent, nameToNode, model);
-                for (int i = 0; i < model.Bones.Count; i++)
-                    uoBoneByName[model.Bones[i].Name] = i;
-            }
-
-            // 2b) Compute world matrices of Mixamo FBX scene nodes and joint deltas for UO skeleton
-            // 2b) Compute world matrices of Mixamo FBX scene nodes in UO basis
-            Matrix4 C = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(90f));
-            Matrix4 Cinv = Matrix4.Invert(C);
-
+            // 2b) Compute unscaled world matrices of FBX scene nodes in FBX space
             var localMix = new Matrix4[nn];
             for (int i = 0; i < nn; i++)
             {
                 nodes[i].Transform.Decompose(out var sc, out var qq, out var tt);
                 localMix[i] = Matrix4.CreateScale(sc.X, sc.Y, sc.Z) *
                               Matrix4.CreateFromQuaternion(new Quaternion(qq.X, qq.Y, qq.Z, qq.W)) *
-                              Matrix4.CreateTranslation(tt.X * Scale, tt.Y * Scale, tt.Z * Scale);
+                              Matrix4.CreateTranslation(tt.X, tt.Y, tt.Z);
             }
 
             var wMix = new Matrix4[nn];
@@ -171,13 +154,64 @@ namespace UoFiddler.Plugin.Granny3D
                 wMix[i] = (p >= 0 && p < nn && p != i) ? localMix[i] * wMix[p] : localMix[i];
             }
 
+            // Determine unit scale automatically (Mixamo uses cm ~180, 3ds Max often uses mm ~1800-2500, or dm ~25)
+            float maxFbxWorldHeight = 0f;
+            for (int m = 0; m < scene.MeshCount; m++)
+            {
+                var mesh = scene.Meshes[m];
+                Matrix4 meshMat = Matrix4.Identity;
+                for (int ni = 0; ni < nn; ni++)
+                {
+                    if (nodes[ni].MeshIndices != null && nodes[ni].MeshIndices.Contains(m))
+                    {
+                        meshMat = wMix[ni];
+                        break;
+                    }
+                }
+                float minY = float.MaxValue, maxY = float.MinValue;
+                foreach (var v in mesh.Vertices)
+                {
+                    var wv = new Vector4(v.X, v.Y, v.Z, 1.0f) * meshMat;
+                    if (wv.Y < minY) minY = wv.Y;
+                    if (wv.Y > maxY) maxY = wv.Y;
+                }
+                float h = maxY - minY;
+                if (h > maxFbxWorldHeight) maxFbxWorldHeight = h;
+            }
+
+            if (maxFbxWorldHeight < 1e-3f)
+            {
+                float minY = float.MaxValue, maxY = float.MinValue;
+                for (int ni = 0; ni < nn; ni++)
+                {
+                    float y = wMix[ni].Row3.Y;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+                maxFbxWorldHeight = maxY - minY;
+            }
+
+            float currentScale = Scale; // default 0.01f
+            if (maxFbxWorldHeight > 500f) currentScale = 0.001f;      // mm -> meters
+            else if (maxFbxWorldHeight > 50f) currentScale = 0.01f;   // cm -> meters
+            else if (maxFbxWorldHeight > 5f) currentScale = 0.1f;     // dm -> meters
+            else if (maxFbxWorldHeight > 0.5f) currentScale = 1.0f;   // m -> meters
+
+            Matrix4 C = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(90f));
+            Matrix4 Cinv = Matrix4.Invert(C);
+
             var wU = new Matrix4[nn];
             for (int i = 0; i < nn; i++)
-                wU[i] = Cinv * wMix[i] * C;
+            {
+                var mat = Cinv * wMix[i] * C;
+                mat.Row3.X *= currentScale;
+                mat.Row3.Y *= currentScale;
+                mat.Row3.Z *= currentScale;
+                wU[i] = mat;
+            }
 
             // Adapt skeleton in model.Bones to match the character's exact proportions:
-            // For each bone, retain canonical UO Biped joint rotation (so animation tracks rotate along the exact intended axes)
-            // and relocate the joint pivot to the imported character's actual joint position from the FBX.
+            var uoBoneByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             if (refBones != null && refBones.Count > 0)
             {
                 int nb = refBones.Count;
@@ -208,12 +242,15 @@ namespace UoFiddler.Plugin.Granny3D
                     int col = clean.IndexOf(':');
                     if (col >= 0) clean = clean.Substring(col + 1);
                     if (nameToNode.TryGetValue(clean, out idx)) return idx;
+                    string normBase = NormalizeBipedBoneName(baseName);
                     foreach (var kvp in nameToNode)
                     {
                         string k = kvp.Key;
                         int c = k.IndexOf(':');
                         if (c >= 0) k = k.Substring(c + 1);
                         if (string.Equals(k, clean, StringComparison.OrdinalIgnoreCase))
+                            return kvp.Value;
+                        if (string.Equals(NormalizeBipedBoneName(k), normBase, StringComparison.OrdinalIgnoreCase))
                             return kvp.Value;
                     }
                     return -1;
@@ -226,8 +263,7 @@ namespace UoFiddler.Plugin.Granny3D
                     string uoName = refBones[i].Name;
                     fittedWorld[i] = uoBindWorld[i];
 
-                    // Find corresponding Mixamo node.
-                    // For the 4-finger cluster (Finger1 / Finger11), prefer the central Middle finger pivot if present, otherwise Index
+                    // Find corresponding Mixamo or Biped node.
                     int ni = -1;
                     if (string.Equals(uoName, "Bip01 L Finger1", StringComparison.OrdinalIgnoreCase))
                         ni = FindMixNode("LeftHandMiddle1");
@@ -241,6 +277,10 @@ namespace UoFiddler.Plugin.Granny3D
                     if (ni < 0 && MixamoRetarget.TryGetBoneAlias(uoName, out string mixAlias))
                     {
                         ni = FindMixNode(mixAlias);
+                    }
+                    if (ni < 0)
+                    {
+                        ni = FindMixNode(uoName);
                     }
 
                     if (ni >= 0)
@@ -279,7 +319,12 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 model.Bones = fittedBones;
-                uoBoneByName.Clear();
+                for (int i = 0; i < model.Bones.Count; i++)
+                    uoBoneByName[model.Bones[i].Name] = i;
+            }
+            else
+            {
+                BuildFallbackSkeleton(scene, nodes, nodeParent, nameToNode, model, wU);
                 for (int i = 0; i < model.Bones.Count; i++)
                     uoBoneByName[model.Bones[i].Name] = i;
             }
@@ -398,19 +443,32 @@ namespace UoFiddler.Plugin.Granny3D
                     part.TextureName = texName ?? string.Empty;
                 }
 
-                // Vertices & Normals (transformed to UO Z-up: X_uo=X, Y_uo=-Z, Z_uo=Y)
+                // Find node containing this mesh to get its world transform
+                Matrix4 meshNodeWorld = Matrix4.Identity;
+                for (int ni = 0; ni < nn; ni++)
+                {
+                    if (nodes[ni].MeshIndices != null && nodes[ni].MeshIndices.Contains(m))
+                    {
+                        meshNodeWorld = wMix[ni];
+                        break;
+                    }
+                }
+
+                // Vertices & Normals (transformed to UO Z-up: X_uo=X, Y_uo=-Z, Z_uo=Y with unit scaling)
                 int vcount = mesh.VertexCount;
                 part.Vertices = new Vector3[vcount];
                 part.Normals = new Vector3[vcount];
                 for (int v = 0; v < vcount; v++)
                 {
                     var pt = mesh.Vertices[v];
-                    part.Vertices[v] = new Vector3(pt.X * Scale, -pt.Z * Scale, pt.Y * Scale);
+                    var vWorld = new Vector4(pt.X, pt.Y, pt.Z, 1.0f) * meshNodeWorld;
+                    part.Vertices[v] = new Vector3(vWorld.X * currentScale, -vWorld.Z * currentScale, vWorld.Y * currentScale);
 
                     if (mesh.HasNormals)
                     {
                         var n = mesh.Normals[v];
-                        var uoNorm = new Vector3(n.X, -n.Z, n.Y);
+                        var nw = new Vector4(n.X, n.Y, n.Z, 0.0f) * meshNodeWorld;
+                        var uoNorm = new Vector3(nw.X, -nw.Z, nw.Y);
                         if (uoNorm.LengthSquared > 1e-12f) uoNorm = Vector3.Normalize(uoNorm);
                         part.Normals[v] = uoNorm;
                     }
@@ -447,92 +505,7 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int bi = 0; bi < mesh.BoneCount; bi++)
                 {
                     string bname = mesh.Bones[bi].Name;
-                    string cleanBName = bname;
-                    int colon = cleanBName.IndexOf(':');
-                    if (colon >= 0) cleanBName = cleanBName.Substring(colon + 1);
-
-                    int targetBoneIdx = -1;
-
-                    // Hand and Finger Bone Mapping:
-                    // - Thumb: Thumb1 -> Finger0 (base), Thumb2..4 -> Finger01 (phalanges)
-                    // - 4 Fingers (Index, Middle / Majeur, Ring / Annulaire, Pinky / Auriculaire):
-                    //   Base (Index1, Middle1, Ring1, Pinky1) -> Finger1 (knuckle base)
-                    //   Phalanges (Index2..4, Middle2..4, Ring2..4, Pinky2..4) -> Finger11 (phalanges / finger curl)
-                    //   This allows all fingers to bend naturally together with the UO animation ("ensemble").
-                    // - Wrist / Palm: Hand -> Bip01 L/R Hand
-                    bool isLeft = cleanBName.IndexOf("Left", StringComparison.OrdinalIgnoreCase) >= 0 || cleanBName.StartsWith("L_", StringComparison.OrdinalIgnoreCase);
-                    bool isRight = cleanBName.IndexOf("Right", StringComparison.OrdinalIgnoreCase) >= 0 || cleanBName.StartsWith("R_", StringComparison.OrdinalIgnoreCase);
-
-                    if (cleanBName.IndexOf("Thumb", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        string targetUo = cleanBName.IndexOf("Thumb1", StringComparison.OrdinalIgnoreCase) >= 0
-                            ? (isLeft ? "Bip01 L Finger0" : (isRight ? "Bip01 R Finger0" : null))
-                            : (isLeft ? "Bip01 L Finger01" : (isRight ? "Bip01 R Finger01" : null));
-
-                        if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out targetBoneIdx))
-                        {
-                            meshBoneToUo[bi] = targetBoneIdx;
-                            continue;
-                        }
-                    }
-
-                    if (cleanBName.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        cleanBName.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        cleanBName.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        cleanBName.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        bool isBase = cleanBName.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                      cleanBName.IndexOf("Middle1", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                      cleanBName.IndexOf("Ring1", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                      cleanBName.IndexOf("Pinky1", StringComparison.OrdinalIgnoreCase) >= 0;
-
-                        string targetUo = isBase
-                            ? (isLeft ? "Bip01 L Finger1" : (isRight ? "Bip01 R Finger1" : null))
-                            : (isLeft ? "Bip01 L Finger11" : (isRight ? "Bip01 R Finger11" : null));
-
-                        if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out targetBoneIdx))
-                        {
-                            meshBoneToUo[bi] = targetBoneIdx;
-                            continue;
-                        }
-                    }
-
-                    if (cleanBName.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        cleanBName.IndexOf("Finger", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        string targetUo = isLeft ? "Bip01 L Hand" : (isRight ? "Bip01 R Hand" : null);
-                        if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out targetBoneIdx))
-                        {
-                            meshBoneToUo[bi] = targetBoneIdx;
-                            continue;
-                        }
-                    }
-
-                    if (MixamoRetarget.TryGetBoneAlias(bname, out string uoName) && uoBoneByName.TryGetValue(uoName, out targetBoneIdx))
-                    {
-                        meshBoneToUo[bi] = targetBoneIdx;
-                    }
-                    else if (nameToNode.TryGetValue(bname, out int ni))
-                    {
-                        // Walk up parent hierarchy to find closest ancestor bone mapped to UO skeleton
-                        int cur = nodeParent[ni];
-                        int found = -1;
-                        while (cur >= 0)
-                        {
-                            string pName = nodes[cur].Name;
-                            if (MixamoRetarget.TryGetBoneAlias(pName, out string puo) && uoBoneByName.TryGetValue(puo, out int pUoIdx))
-                            {
-                                found = pUoIdx;
-                                break;
-                            }
-                            cur = nodeParent[cur];
-                        }
-                        meshBoneToUo[bi] = found;
-                    }
-                    else
-                    {
-                        meshBoneToUo[bi] = -1;
-                    }
+                    meshBoneToUo[bi] = ResolveBoneToUo(bname, uoBoneByName, nameToNode, nodes, nodeParent);
                 }
 
                 // Skin weights
@@ -647,31 +620,8 @@ namespace UoFiddler.Plugin.Granny3D
             return null;
         }
 
-        private static void BuildFallbackSkeleton(Scene scene, List<Node> nodes, List<int> nodeParent, Dictionary<string, int> nameToNode, GrannyModelFile model)
+        private static void BuildFallbackSkeleton(Scene scene, List<Node> nodes, List<int> nodeParent, Dictionary<string, int> nameToNode, GrannyModelFile model, Matrix4[] wU)
         {
-            Matrix4 C = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(90f));
-            Matrix4 Cinv = Matrix4.Invert(C);
-            int nn = nodes.Count;
-
-            var localMix = new Matrix4[nn];
-            for (int i = 0; i < nn; i++)
-            {
-                nodes[i].Transform.Decompose(out var sc, out var qq, out var tt);
-                localMix[i] = Matrix4.CreateScale(sc.X, sc.Y, sc.Z) *
-                              Matrix4.CreateFromQuaternion(new Quaternion(qq.X, qq.Y, qq.Z, qq.W)) *
-                              Matrix4.CreateTranslation(tt.X * Scale, tt.Y * Scale, tt.Z * Scale);
-            }
-
-            var wMix = new Matrix4[nn];
-            for (int i = 0; i < nn; i++)
-            {
-                int p = nodeParent[i];
-                wMix[i] = (p >= 0 && p < nn && p != i) ? localMix[i] * wMix[p] : localMix[i];
-            }
-
-            var wU = new Matrix4[nn];
-            for (int i = 0; i < nn; i++)
-                wU[i] = Cinv * wMix[i] * C;
 
             var boneNodes = new List<int>();
             var boneMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -827,9 +777,10 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         /// <summary>
-        /// Scanne le dossier du FBX et ses sous-dossiers (textures, Textures, tex...) pour trouver
+        /// Scanne le dossier du FBX et ses sous-dossiers dédiés (textures, Textures, tex, <fbxName>.fbm...) pour trouver
         /// la texture BaseColor / Diffuse la plus pertinente pour un mesh / matériau donné,
         /// en excluant rigoureusement les textures Normal, Specular, Roughness, Metallic, AO, etc.
+        /// Ne scanne JAMAIS aveuglément tous les sous-dossiers de dossiers généraux (Downloads, Bureau...).
         /// </summary>
         public static string? FindMatchingTextureOnDisk(
             string fbxPath,
@@ -851,26 +802,39 @@ namespace UoFiddler.Plugin.Granny3D
             var candidateFiles = new List<string>();
             try
             {
-                foreach (var f in Directory.GetFiles(fbxDir, "*.*", SearchOption.AllDirectories))
+                // 1) Fichiers situés directement dans le dossier du FBX (TopDirectoryOnly)
+                foreach (var f in Directory.GetFiles(fbxDir, "*.*", SearchOption.TopDirectoryOnly))
                 {
-                    string ext = Path.GetExtension(f);
-                    if (supportedExts.Contains(ext))
+                    if (supportedExts.Contains(Path.GetExtension(f)))
                     {
                         candidateFiles.Add(f);
                     }
                 }
-            }
-            catch
-            {
-                try
+
+                // 2) Sous-dossiers connus et dédiés aux textures
+                string fbxBase = Path.GetFileNameWithoutExtension(fbxPath);
+                string[] knownSubfolders = new[]
                 {
-                    foreach (var f in Directory.GetFiles(fbxDir, "*.*", SearchOption.TopDirectoryOnly))
+                    "textures", "Textures", "tex", "Tex", "texture", "Texture", "images", "Images",
+                    $"{fbxBase}.fbm", $"{fbxBase}_textures", $"{fbxBase}_Textures"
+                };
+
+                foreach (var sub in knownSubfolders)
+                {
+                    string subPath = Path.Combine(fbxDir, sub);
+                    if (Directory.Exists(subPath))
                     {
-                        if (supportedExts.Contains(Path.GetExtension(f))) candidateFiles.Add(f);
+                        foreach (var f in Directory.GetFiles(subPath, "*.*", SearchOption.TopDirectoryOnly))
+                        {
+                            if (supportedExts.Contains(Path.GetExtension(f)))
+                            {
+                                candidateFiles.Add(f);
+                            }
+                        }
                     }
                 }
-                catch { }
             }
+            catch { }
 
             if (candidateFiles.Count == 0) return null;
 
@@ -883,6 +847,8 @@ namespace UoFiddler.Plugin.Granny3D
 
             string mNameLower = (meshName ?? string.Empty).ToLowerInvariant();
             string matNameLower = (matName ?? string.Empty).ToLowerInvariant();
+            string cNameLower = (charName ?? string.Empty).ToLowerInvariant();
+            string fbxBaseLower = Path.GetFileNameWithoutExtension(fbxPath).ToLowerInvariant();
 
             foreach (var filePath in candidateFiles)
             {
@@ -911,70 +877,90 @@ namespace UoFiddler.Plugin.Granny3D
                 if (isExcluded) continue;
 
                 int score = 0;
+                bool hasContextMatch = false;
 
-                // 2) MOTS-CLÉS POSITIFS DIFFUSE / BASECOLOR
+                var genericTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "mat", "material", "body", "mesh", "object", "surface", "default", "model",
+                    "char", "part", "sub", "main", "base", "color", "tex", "texture", "lod", "alpha"
+                };
+
+                // Split target file name into tokens for exact word matching
+                var fnTokens = new HashSet<string>(fnLower.Split(new[] { '_', '-', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+
+                // 2) CORRESPONDANCE AVEC LA RÉFÉRENCE ASSIMP (mat.TextureDiffuse)
+                if (!string.IsNullOrEmpty(embFnWithoutExt))
+                {
+                    if (fnLower == embFnWithoutExt) { score += 600; hasContextMatch = true; }
+                    else if (fnTokens.Contains(embFnWithoutExt) || fnLower.Contains(embFnWithoutExt)) { score += 350; hasContextMatch = true; }
+                }
+
+                // 3) CORRESPONDANCE AVEC LE NOM DU MESH
+                if (!string.IsNullOrEmpty(mNameLower))
+                {
+                    if (fnLower == mNameLower || fnTokens.Contains(mNameLower)) { score += 300; hasContextMatch = true; }
+                    var tokens = mNameLower.Split(new[] { '_', '-', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var tok in tokens)
+                    {
+                        if (tok.Length >= 3 && !genericTokens.Contains(tok) && fnTokens.Contains(tok)) { score += 120; hasContextMatch = true; }
+                    }
+                }
+
+                // 4) CORRESPONDANCE AVEC LE NOM DU MATÉRIAU
+                if (!string.IsNullOrEmpty(matNameLower))
+                {
+                    if (fnLower == matNameLower || fnTokens.Contains(matNameLower)) { score += 300; hasContextMatch = true; }
+                    var tokens = matNameLower.Split(new[] { '_', '-', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var tok in tokens)
+                    {
+                        if (tok.Length >= 3 && !genericTokens.Contains(tok) && fnTokens.Contains(tok)) { score += 120; hasContextMatch = true; }
+                    }
+                }
+
+                // 5) CORRESPONDANCE AVEC LE NOM DU CHARACTER OU DU FBX
+                if (!string.IsNullOrEmpty(cNameLower) && !cNameLower.Equals("t-pose") && (fnTokens.Contains(cNameLower) || fnLower.Contains(cNameLower)))
+                {
+                    score += 150;
+                    hasContextMatch = true;
+                }
+                if (!string.IsNullOrEmpty(fbxBaseLower) && !fbxBaseLower.Equals("t-pose") && (fnTokens.Contains(fbxBaseLower) || fnLower.Contains(fbxBaseLower)))
+                {
+                    score += 150;
+                    hasContextMatch = true;
+                }
+
+                string relPath = Path.GetRelativePath(fbxDir, filePath).ToLowerInvariant();
+                bool isDedicatedSubfolder = relPath.Contains(Path.DirectorySeparatorChar) || relPath.Contains('/') || relPath.Contains('\\');
+
+                // Si le fichier est à la racine et n'a AUCUN rapport de nom avec le modèle/matériau, ON L'IGNORE COMPLÈTEMENT
+                // (évite d'associer des images inconnues téléchargées dans Downloads)
+                if (!hasContextMatch && !isDedicatedSubfolder)
+                {
+                    continue;
+                }
+
+                // 6) MOTS-CLÉS DIFFUSE / BASECOLOR (ajoute du score mais ne suffit pas à lui seul sans contexte)
                 if (fnLower.Contains("basecolor") || fnLower.Contains("base_color") ||
                     fnLower.Contains("basecolour") || fnLower.Contains("base_colour") ||
                     fnLower.EndsWith("_bc") || fnLower.Contains("_bc_"))
                 {
-                    score += 350;
+                    score += 100;
                 }
                 else if (fnLower.Contains("diffuse") || fnLower.Contains("_diff") ||
                          fnLower.EndsWith("_d") || fnLower.Contains("_d_") || fnLower.Contains("_dif"))
                 {
-                    score += 300;
+                    score += 80;
                 }
                 else if (fnLower.Contains("albedo") || fnLower.Contains("_alb"))
                 {
-                    score += 300;
+                    score += 80;
                 }
                 else if (fnLower.Contains("color") || fnLower.Contains("colour") || fnLower.Contains("_col"))
-                {
-                    score += 200;
-                }
-                else
                 {
                     score += 50;
                 }
 
-                // 3) CORRESPONDANCE AVEC LA RÉFÉRENCE ASSIMP (mat.TextureDiffuse)
-                if (!string.IsNullOrEmpty(embFnWithoutExt))
-                {
-                    if (fnLower == embFnWithoutExt) score += 600;
-                    else if (fnLower.Contains(embFnWithoutExt)) score += 350;
-                }
-
-                // 4) CORRESPONDANCE AVEC LE NOM DU MESH
-                if (!string.IsNullOrEmpty(mNameLower))
-                {
-                    if (fnLower.Contains(mNameLower)) score += 200;
-                    var tokens = mNameLower.Split(new[] { '_', '-', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var tok in tokens)
-                    {
-                        if (tok.Length >= 3 && fnLower.Contains(tok)) score += 60;
-                    }
-                }
-
-                // 5) CORRESPONDANCE AVEC LE NOM DU MATÉRIAU
-                if (!string.IsNullOrEmpty(matNameLower) &&
-                    !matNameLower.Contains("default") &&
-                    !matNameLower.Equals("material") &&
-                    !matNameLower.StartsWith("material_"))
-                {
-                    if (fnLower.Contains(matNameLower)) score += 200;
-                    var tokens = matNameLower.Split(new[] { '_', '-', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var tok in tokens)
-                    {
-                        if (tok.Length >= 3 && fnLower.Contains(tok)) score += 60;
-                    }
-                }
-
-                // 6) EMPLACEMENT FAVORABLE (dossier textures ou racine)
-                string relPath = Path.GetRelativePath(fbxDir, filePath).ToLowerInvariant();
-                if (relPath.StartsWith("texture") || !relPath.Contains(Path.DirectorySeparatorChar))
-                {
-                    score += 30;
-                }
+                if (isDedicatedSubfolder) score += 30;
 
                 if (score > bestScore)
                 {
@@ -983,7 +969,7 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
 
-            if (bestFile != null && bestScore >= 80)
+            if (bestFile != null && bestScore >= 100)
             {
                 string ext = Path.GetExtension(bestFile);
                 string cleanMesh = !string.IsNullOrEmpty(meshName) ? Granny3DControl.MakeSafeFilename(meshName) : "mesh";
@@ -1003,6 +989,147 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             return null;
+        }
+
+        public static string NormalizeBipedBoneName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
+            int col = name.IndexOf(':');
+            if (col >= 0) name = name.Substring(col + 1);
+            // Replace Bip001 or Bip01 or Bip2 etc. with Bip01
+            name = Regex.Replace(name, @"^Bip\d+[-_ ]", "Bip01 ", RegexOptions.IgnoreCase);
+            // Replace "Bip01 L-" or "Bip01-L-" or "Bip01_L_" or "Bip01 L " with "Bip01 L "
+            name = Regex.Replace(name, @"^Bip01\s+([LR])[-_ ]", "Bip01 $1 ", RegexOptions.IgnoreCase);
+            name = Regex.Replace(name, @"[-_]+", " ");
+            return name.Trim();
+        }
+
+        public static int ResolveBoneToUo(
+            string bname,
+            Dictionary<string, int> uoBoneByName,
+            Dictionary<string, int> nameToNode,
+            List<Node> nodes,
+            List<int> nodeParent)
+        {
+            if (string.IsNullOrEmpty(bname)) return -1;
+
+            // 1) Direct match in UO skeleton
+            if (uoBoneByName.TryGetValue(bname, out int uoIdx)) return uoIdx;
+
+            // 2) Clean prefix (mixamorig: or namespace)
+            string clean = bname;
+            int col = clean.IndexOf(':');
+            if (col >= 0) clean = clean.Substring(col + 1);
+            if (uoBoneByName.TryGetValue(clean, out uoIdx)) return uoIdx;
+
+            // 3) Normalized Biped name (e.g. Bip001-Pelvis -> Bip01 Pelvis)
+            string norm = NormalizeBipedBoneName(bname);
+            if (uoBoneByName.TryGetValue(norm, out uoIdx)) return uoIdx;
+
+            // 4) 3ds Max Biped finger mapping:
+            // e.g. Bip001-L-Finger0, Bip001-L-Finger01, Bip001-L-Finger2, Bip001-L-Finger21...
+            var fingerMatch = Regex.Match(bname, @"Bip\d*[-_ ]?([LR])[-_ ]?Finger(\d+)", RegexOptions.IgnoreCase);
+            if (fingerMatch.Success)
+            {
+                string side = fingerMatch.Groups[1].Value.ToUpperInvariant();
+                string numStr = fingerMatch.Groups[2].Value;
+                string target = null;
+                if (numStr == "0") target = $"Bip01 {side} Finger0";
+                else if (numStr.StartsWith("0")) target = $"Bip01 {side} Finger01";
+                else if (numStr.Length == 1) target = $"Bip01 {side} Finger1";
+                else target = $"Bip01 {side} Finger11";
+
+                if (target != null && uoBoneByName.TryGetValue(target, out uoIdx))
+                    return uoIdx;
+            }
+
+            // 5) Twist bones (e.g. Bip001-L-ForeTwist -> Bip01 L Forearm)
+            var twistMatch = Regex.Match(bname, @"Bip\d*[-_ ]?([LR])[-_ ]?(Fore|UpArm)Twist", RegexOptions.IgnoreCase);
+            if (twistMatch.Success)
+            {
+                string side = twistMatch.Groups[1].Value.ToUpperInvariant();
+                string part = twistMatch.Groups[2].Value.ToLowerInvariant();
+                string target = part.Contains("fore") ? $"Bip01 {side} Forearm" : $"Bip01 {side} UpperArm";
+                if (uoBoneByName.TryGetValue(target, out uoIdx))
+                    return uoIdx;
+            }
+
+            // 6) Weapon / Prop bones
+            if (bname.IndexOf("WPN_R", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                bname.IndexOf("Weapon_R", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (uoBoneByName.TryGetValue("Bip01 R Hand", out uoIdx)) return uoIdx;
+            }
+            if (bname.IndexOf("WPN_L", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                bname.IndexOf("Weapon_L", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                bname.IndexOf("Bow", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (uoBoneByName.TryGetValue("Bip01 L Hand", out uoIdx)) return uoIdx;
+            }
+
+            // 7) Mixamo naming heuristics (Thumb, Index, Middle, Ring, Pinky, Hand, Foot)
+            bool isLeft = clean.IndexOf("Left", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                          clean.StartsWith("L_", StringComparison.OrdinalIgnoreCase) ||
+                          clean.StartsWith("L-", StringComparison.OrdinalIgnoreCase) ||
+                          clean.StartsWith("L ", StringComparison.OrdinalIgnoreCase);
+            bool isRight = clean.IndexOf("Right", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                           clean.StartsWith("R_", StringComparison.OrdinalIgnoreCase) ||
+                           clean.StartsWith("R-", StringComparison.OrdinalIgnoreCase) ||
+                           clean.StartsWith("R ", StringComparison.OrdinalIgnoreCase);
+
+            if (clean.IndexOf("Thumb", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                string targetUo = clean.IndexOf("Thumb1", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? (isLeft ? "Bip01 L Finger0" : (isRight ? "Bip01 R Finger0" : null))
+                    : (isLeft ? "Bip01 L Finger01" : (isRight ? "Bip01 R Finger01" : null));
+                if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out uoIdx))
+                    return uoIdx;
+            }
+
+            if (clean.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                bool isBase = clean.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Middle1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Ring1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Pinky1", StringComparison.OrdinalIgnoreCase) >= 0;
+                string targetUo = isBase
+                    ? (isLeft ? "Bip01 L Finger1" : (isRight ? "Bip01 R Finger1" : null))
+                    : (isLeft ? "Bip01 L Finger11" : (isRight ? "Bip01 R Finger11" : null));
+                if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out uoIdx))
+                    return uoIdx;
+            }
+
+            if (clean.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Finger", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                string targetUo = isLeft ? "Bip01 L Hand" : (isRight ? "Bip01 R Hand" : null);
+                if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out uoIdx))
+                    return uoIdx;
+            }
+
+            // 8) Try MixamoRetarget alias table
+            if (MixamoRetarget.TryGetBoneAlias(bname, out string aliasName) && uoBoneByName.TryGetValue(aliasName, out uoIdx))
+                return uoIdx;
+            if (MixamoRetarget.TryGetBoneAlias(clean, out aliasName) && uoBoneByName.TryGetValue(aliasName, out uoIdx))
+                return uoIdx;
+
+            // 9) Fallback: Traverse ancestors up the node hierarchy until an ancestor maps to a UO bone
+            if (nameToNode != null && nodes != null && nodeParent != null && nameToNode.TryGetValue(bname, out int ni))
+            {
+                int cur = nodeParent[ni];
+                while (cur >= 0)
+                {
+                    string pName = nodes[cur].Name;
+                    int pRes = ResolveBoneToUo(pName, uoBoneByName, null, null, null);
+                    if (pRes >= 0) return pRes;
+                    cur = nodeParent[cur];
+                }
+            }
+
+            return -1;
         }
     }
 }

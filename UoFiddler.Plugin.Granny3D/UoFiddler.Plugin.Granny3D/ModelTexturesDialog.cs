@@ -53,8 +53,8 @@ namespace UoFiddler.Plugin.Granny3D
         {
             string charName = Path.GetFileNameWithoutExtension(_charPath);
             Text = $"Textures du Character : {charName}";
-            Size = new Size(820, 520);
-            MinimumSize = new Size(680, 400);
+            Size = new Size(880, 520);
+            MinimumSize = new Size(720, 400);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(30, 30, 30);
             ForeColor = Color.Gainsboro;
@@ -79,7 +79,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var lblSubtitle = new Label
             {
-                Text = "Assignez une texture BaseColor / Diffuse (PNG, TGA, JPG, BMP) à chaque mesh du modèle.",
+                Text = "Assignez une texture BaseColor / Diffuse (PNG, TGA, JPG, BMP) à chaque mesh du modèle, ou extrayez-les d'un FBX.",
                 Font = new Font("Segoe UI", 8.5f),
                 ForeColor = Color.Silver,
                 Dock = DockStyle.Top,
@@ -238,9 +238,21 @@ namespace UoFiddler.Plugin.Granny3D
                 FlatStyle = FlatStyle.Flat
             };
 
+            var btnExtractFbx = new Button
+            {
+                Text = "Extraire textures d'un FBX...",
+                Dock = DockStyle.Left,
+                Width = 200,
+                BackColor = Color.FromArgb(40, 75, 120),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+            };
+            btnExtractFbx.Click += BtnExtractFbx_Click;
+
             var btnOpenFolder = new Button
             {
-                Text = "Ouvrir dossier 'Others'...",
+                Text = "Ouvrir dossier modèle...",
                 Dock = DockStyle.Left,
                 Width = 160,
                 BackColor = Color.FromArgb(50, 50, 50),
@@ -264,6 +276,8 @@ namespace UoFiddler.Plugin.Granny3D
             };
 
             pnlBottom.Controls.Add(btnOpenFolder);
+            pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Left, Width = 8 });
+            pnlBottom.Controls.Add(btnExtractFbx);
             pnlBottom.Controls.Add(_btnCancel);
             pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 10 });
             pnlBottom.Controls.Add(_btnApply);
@@ -324,16 +338,165 @@ namespace UoFiddler.Plugin.Granny3D
             using var ofd = new OpenFileDialog
             {
                 Title = $"Choisir une texture BaseColor / Diffuse pour '{part.Name}'",
-                Filter = "Textures (*.png;*.tga;*.jpg;*.jpeg;*.bmp;*.dds)|*.png;*.tga;*.jpg;*.jpeg;*.bmp;*.dds|Tous les fichiers (*.*)|*.*",
+                Filter = "Textures & Modèles 3D (*.png;*.jpg;*.tga;*.bmp;*.dds;*.fbx)|*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds;*.fbx|Images (*.png;*.jpg;*.tga;*.bmp)|*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds|Fichiers FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*",
                 InitialDirectory = initDir
             };
 
             if (ofd.ShowDialog(this) != DialogResult.OK || !File.Exists(ofd.FileName)) return;
 
-            _pendingTexturePaths[partIdx] = ofd.FileName;
-            _dgv.Rows[rowIndex].Cells["colTex"].Value = Path.GetFileName(ofd.FileName) + " (En attente d'enregistrement)";
+            string selectedFile = ofd.FileName;
+            if (string.Equals(Path.GetExtension(selectedFile), ".fbx", StringComparison.OrdinalIgnoreCase))
+            {
+                var extracted = MixamoCharacterImport.ExtractFbxEmbeddedTextures(selectedFile);
+                if (extracted.Count == 0)
+                {
+                    long sz = new FileInfo(selectedFile).Length;
+                    MessageBox.Show(
+                        $"Ce fichier FBX '{Path.GetFileName(selectedFile)}' ne contient aucune texture intégrée (taille : {sz / 1024.0:F1} Ko).\n\n" +
+                        "Sur Mixamo, téléchargez le modèle avec l'option 'Skin: With Skin' pour inclure les textures dans le FBX.",
+                        "Aucune texture trouvée",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
+                string charName = Path.GetFileNameWithoutExtension(_charPath);
+                if (!Directory.Exists(_othersFolder)) Directory.CreateDirectory(_othersFolder);
+
+                string? bestDiffuse = null;
+                foreach (var (rawFn, data) in extracted)
+                {
+                    string cleanFn = Path.GetFileName(rawFn);
+                    string destPath = Path.Combine(_othersFolder, $"{charName}_{cleanFn}");
+                    File.WriteAllBytes(destPath, data);
+                    string fnLower = cleanFn.ToLowerInvariant();
+                    if (!fnLower.Contains("normal") && !fnLower.Contains("spec") && !fnLower.Contains("rough") && !fnLower.Contains("metal") && !fnLower.Contains("ao") && !fnLower.Contains("glow"))
+                    {
+                        if (bestDiffuse == null || fnLower.Contains("diffuse") || fnLower.Contains("basecolor") || fnLower.Contains("albedo") || fnLower.Contains("color"))
+                            bestDiffuse = destPath;
+                    }
+                }
+
+                selectedFile = bestDiffuse ?? Path.Combine(_othersFolder, $"{charName}_{Path.GetFileName(extracted[0].Filename)}");
+            }
+
+            _pendingTexturePaths[partIdx] = selectedFile;
+            _dgv.Rows[rowIndex].Cells["colTex"].Value = Path.GetFileName(selectedFile) + " (En attente d'enregistrement)";
             _dgv.Rows[rowIndex].DefaultCellStyle.ForeColor = Color.LightGreen;
-            UpdatePreviewForPath(ofd.FileName);
+            UpdatePreviewForPath(selectedFile);
+        }
+
+        private void BtnExtractFbx_Click(object? sender, EventArgs e)
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Sélectionner un fichier FBX pour extraire ses textures",
+                Filter = "Fichiers FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*",
+                InitialDirectory = !string.IsNullOrEmpty(_initialFbxDir) && Directory.Exists(_initialFbxDir) ? _initialFbxDir : string.Empty
+            };
+
+            if (ofd.ShowDialog(this) != DialogResult.OK || !File.Exists(ofd.FileName)) return;
+
+            string fbxPath = ofd.FileName;
+            var textures = MixamoCharacterImport.ExtractFbxEmbeddedTextures(fbxPath);
+
+            if (textures.Count == 0)
+            {
+                long sz = new FileInfo(fbxPath).Length;
+                MessageBox.Show(
+                    $"Aucune texture intégrée n'a été trouvée dans '{Path.GetFileName(fbxPath)}' (taille : {sz / 1024.0:F1} Ko).\n\n" +
+                    "Explication :\n" +
+                    "Certains modèles FBX sont exportés sans textures intégrées (sans skin ou textures externes).\n" +
+                    "• Sur Mixamo : lors du téléchargement, choisissez le format FBX avec l'option 'Skin: With Skin' pour inclure les textures dans le fichier.\n" +
+                    "• Si vos textures sont dans un dossier séparé ou un fichier .zip, décompressez-les puis utilisez le bouton 'Parcourir...' pour chaque mesh.",
+                    "Aucune texture dans ce FBX",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            string charName = Path.GetFileNameWithoutExtension(_charPath);
+            int savedCount = 0;
+            var savedFiles = new List<string>();
+
+            if (!Directory.Exists(_othersFolder)) Directory.CreateDirectory(_othersFolder);
+
+            foreach (var (rawFn, data) in textures)
+            {
+                string cleanFn = Path.GetFileName(rawFn);
+                string destName = $"{charName}_{cleanFn}";
+                string destPath = Path.Combine(_othersFolder, destName);
+                File.WriteAllBytes(destPath, data);
+                savedCount++;
+                savedFiles.Add(destPath);
+            }
+
+            // Auto-assign diffuse/basecolor textures to meshes:
+            int assignedCount = 0;
+            for (int i = 0; i < _model.Parts.Count; i++)
+            {
+                var part = _model.Parts[i];
+                string mNameLower = (part.Name ?? string.Empty).ToLowerInvariant();
+                string matLower = (part.MaterialName ?? string.Empty).ToLowerInvariant();
+
+                string? bestMatch = null;
+                int bestScore = 0;
+
+                foreach (var sPath in savedFiles)
+                {
+                    string fn = Path.GetFileNameWithoutExtension(sPath).ToLowerInvariant();
+                    if (fn.Contains("normal") || fn.Contains("spec") || fn.Contains("rough") || fn.Contains("metal") || fn.Contains("ao") || fn.Contains("glow"))
+                        continue;
+
+                    int score = 0;
+                    if (fn.Contains("diffuse") || fn.Contains("basecolor") || fn.Contains("albedo") || fn.Contains("color")) score += 100;
+                    if (!string.IsNullOrEmpty(mNameLower) && fn.Contains(mNameLower)) score += 200;
+                    if (!string.IsNullOrEmpty(matLower) && fn.Contains(matLower)) score += 200;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestMatch = sPath;
+                    }
+                }
+
+                if (bestMatch == null && _model.Parts.Count == 1)
+                {
+                    foreach (var sPath in savedFiles)
+                    {
+                        string fn = Path.GetFileNameWithoutExtension(sPath).ToLowerInvariant();
+                        if (fn.Contains("normal") || fn.Contains("spec") || fn.Contains("rough") || fn.Contains("metal") || fn.Contains("ao")) continue;
+                        bestMatch = sPath;
+                        break;
+                    }
+                }
+
+                if (bestMatch != null)
+                {
+                    _pendingTexturePaths[i] = bestMatch;
+                    for (int r = 0; r < _dgv.Rows.Count; r++)
+                    {
+                        if ((int)(_dgv.Rows[r].Tag ?? r) == i)
+                        {
+                            _dgv.Rows[r].Cells["colTex"].Value = Path.GetFileName(bestMatch) + " (Extrait du FBX)";
+                            _dgv.Rows[r].DefaultCellStyle.ForeColor = Color.LightGreen;
+                            break;
+                        }
+                    }
+                    assignedCount++;
+                }
+            }
+
+            UpdatePreview(_dgv.SelectedRows.Count > 0 ? (int)(_dgv.SelectedRows[0].Tag ?? _dgv.SelectedRows[0].Index) : 0);
+
+            MessageBox.Show(
+                $"{savedCount} texture(s) extraite(s) avec succès depuis le FBX !\n" +
+                $"Elles ont été enregistrées dans le dossier du modèle.\n" +
+                (assignedCount > 0 ? $"\n{assignedCount} mesh(es) ont été automatiquement associés à leur texture." : "") +
+                "\nCliquez sur 'Appliquer et Enregistrer' pour valider.",
+                "Extraction réussie",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
         }
 
         private void ClearTextureForPart(int rowIndex, int partIdx)
