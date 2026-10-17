@@ -18,6 +18,7 @@ namespace UoFiddler.Plugin.Granny3D
             public string BoneName { get; set; } = string.Empty;
             public string DisplayName { get; set; } = string.Empty;
             public Vector3 Position { get; set; }
+            public Vector3 RotationDegrees { get; set; } = Vector3.Zero; // X = Roll (Torsion), Y = Pitch, Z = Yaw
             public Color Color { get; set; } = Color.Cyan;
             public string? ParentName { get; set; }
             public string? SymmetricBoneName { get; set; }
@@ -42,6 +43,12 @@ namespace UoFiddler.Plugin.Granny3D
         private NumericUpDown nudX = null!;
         private NumericUpDown nudY = null!;
         private NumericUpDown nudZ = null!;
+        private NumericUpDown nudRoll = null!;
+        private NumericUpDown nudPitch = null!;
+        private NumericUpDown nudYaw = null!;
+        private Panel pnlRotControls = null!;
+        private Panel pnlRotBtns = null!;
+        private Label lblRotTip = null!;
         private NumericUpDown nudScale = null!;
         private Label lblModelInfo = null!;
         private Label lblBoundsInfo = null!;
@@ -171,28 +178,28 @@ namespace UoFiddler.Plugin.Granny3D
             _markers.Add(new JointMarker { BoneName = "Bip01 Spine", DisplayName = "Ventre (Abdomen)", Position = new Vector3(0.0f, 0.015f, 1.15f), Color = Color.FromArgb(50, 205, 50), ParentName = "Bip01 Pelvis" });
             _markers.Add(new JointMarker { BoneName = "Bip01 Pelvis", DisplayName = "Bassin / Hanches (Pelvis)", Position = new Vector3(0.0f, 0.018f, 0.95f), Color = Color.FromArgb(0, 206, 209), ParentName = null });
 
-            // Arms (Left / Right)
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Clavicle", DisplayName = "Clavicule G", Position = new Vector3(0.12f, 0.01f, 1.40f), Color = Color.FromArgb(30, 144, 255), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 R Clavicle" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Clavicle", DisplayName = "Clavicule D", Position = new Vector3(-0.12f, 0.01f, 1.40f), Color = Color.FromArgb(255, 69, 0), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 L Clavicle" });
+            // Arms (Left / Right) - G = Gauche (X < 0, gauche), D = Droite (X > 0, droite)
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Clavicle", DisplayName = "Clavicule G", Position = new Vector3(-0.12f, 0.01f, 1.40f), Color = Color.FromArgb(30, 144, 255), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 R Clavicle" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Clavicle", DisplayName = "Clavicule D", Position = new Vector3(0.12f, 0.01f, 1.40f), Color = Color.FromArgb(255, 69, 0), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 L Clavicle" });
 
-            _markers.Add(new JointMarker { BoneName = "Bip01 L UpperArm", DisplayName = "Épaule G (Shoulder)", Position = new Vector3(0.24f, 0.02f, 1.38f), Color = Color.FromArgb(65, 105, 225), ParentName = "Bip01 L Clavicle", SymmetricBoneName = "Bip01 R UpperArm" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R UpperArm", DisplayName = "Épaule D (Shoulder)", Position = new Vector3(-0.24f, 0.02f, 1.38f), Color = Color.FromArgb(220, 20, 60), ParentName = "Bip01 R Clavicle", SymmetricBoneName = "Bip01 L UpperArm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L UpperArm", DisplayName = "Épaule G (Shoulder)", Position = new Vector3(-0.24f, 0.02f, 1.38f), Color = Color.FromArgb(65, 105, 225), ParentName = "Bip01 L Clavicle", SymmetricBoneName = "Bip01 R UpperArm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R UpperArm", DisplayName = "Épaule D (Shoulder)", Position = new Vector3(0.24f, 0.02f, 1.38f), Color = Color.FromArgb(220, 20, 60), ParentName = "Bip01 R Clavicle", SymmetricBoneName = "Bip01 L UpperArm" });
 
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Forearm", DisplayName = "Coude G (Elbow)", Position = new Vector3(0.44f, 0.03f, 1.35f), Color = Color.FromArgb(100, 149, 237), ParentName = "Bip01 L UpperArm", SymmetricBoneName = "Bip01 R Forearm" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Forearm", DisplayName = "Coude D (Elbow)", Position = new Vector3(-0.44f, 0.03f, 1.35f), Color = Color.FromArgb(205, 92, 92), ParentName = "Bip01 R UpperArm", SymmetricBoneName = "Bip01 L Forearm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Forearm", DisplayName = "Coude G (Elbow)", Position = new Vector3(-0.44f, 0.03f, 1.35f), Color = Color.FromArgb(100, 149, 237), ParentName = "Bip01 L UpperArm", SymmetricBoneName = "Bip01 R Forearm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Forearm", DisplayName = "Coude D (Elbow)", Position = new Vector3(0.44f, 0.03f, 1.35f), Color = Color.FromArgb(205, 92, 92), ParentName = "Bip01 R UpperArm", SymmetricBoneName = "Bip01 L Forearm" });
 
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Hand", DisplayName = "Poignet G (Wrist)", Position = new Vector3(0.63f, 0.045f, 1.33f), Color = Color.FromArgb(0, 191, 255), ParentName = "Bip01 L Forearm", SymmetricBoneName = "Bip01 R Hand" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Hand", DisplayName = "Poignet D (Wrist)", Position = new Vector3(-0.63f, 0.045f, 1.33f), Color = Color.FromArgb(255, 99, 71), ParentName = "Bip01 R Forearm", SymmetricBoneName = "Bip01 L Hand" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Hand", DisplayName = "Poignet G (Wrist)", Position = new Vector3(-0.63f, 0.045f, 1.33f), Color = Color.FromArgb(0, 191, 255), ParentName = "Bip01 L Forearm", SymmetricBoneName = "Bip01 R Hand" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Hand", DisplayName = "Poignet D (Wrist)", Position = new Vector3(0.63f, 0.045f, 1.33f), Color = Color.FromArgb(255, 99, 71), ParentName = "Bip01 R Forearm", SymmetricBoneName = "Bip01 L Hand" });
 
-            // Legs (Left / Right)
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Thigh", DisplayName = "Hanche G (Hip)", Position = new Vector3(0.12f, 0.015f, 0.90f), Color = Color.FromArgb(72, 209, 204), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 R Thigh" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Thigh", DisplayName = "Hanche D (Hip)", Position = new Vector3(-0.12f, 0.015f, 0.90f), Color = Color.FromArgb(218, 112, 214), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 L Thigh" });
+            // Legs (Left / Right) - G = Gauche (X < 0), D = Droite (X > 0)
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Thigh", DisplayName = "Hanche G (Hip)", Position = new Vector3(-0.12f, 0.015f, 0.90f), Color = Color.FromArgb(72, 209, 204), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 R Thigh" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Thigh", DisplayName = "Hanche D (Hip)", Position = new Vector3(0.12f, 0.015f, 0.90f), Color = Color.FromArgb(218, 112, 214), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 L Thigh" });
 
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Calf", DisplayName = "Genou G (Knee)", Position = new Vector3(0.12f, 0.02f, 0.50f), Color = Color.FromArgb(32, 178, 170), ParentName = "Bip01 L Thigh", SymmetricBoneName = "Bip01 R Calf" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Calf", DisplayName = "Genou D (Knee)", Position = new Vector3(-0.12f, 0.02f, 0.50f), Color = Color.FromArgb(186, 85, 211), ParentName = "Bip01 R Thigh", SymmetricBoneName = "Bip01 L Calf" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Calf", DisplayName = "Genou G (Knee)", Position = new Vector3(-0.12f, 0.02f, 0.50f), Color = Color.FromArgb(32, 178, 170), ParentName = "Bip01 L Thigh", SymmetricBoneName = "Bip01 R Calf" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Calf", DisplayName = "Genou D (Knee)", Position = new Vector3(0.12f, 0.02f, 0.50f), Color = Color.FromArgb(186, 85, 211), ParentName = "Bip01 R Thigh", SymmetricBoneName = "Bip01 L Calf" });
 
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Foot", DisplayName = "Cheville G (Ankle)", Position = new Vector3(0.10f, 0.05f, 0.10f), Color = Color.FromArgb(0, 139, 139), ParentName = "Bip01 L Calf", SymmetricBoneName = "Bip01 R Foot" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Foot", DisplayName = "Cheville D (Ankle)", Position = new Vector3(-0.10f, 0.05f, 0.10f), Color = Color.FromArgb(255, 105, 180), ParentName = "Bip01 R Calf", SymmetricBoneName = "Bip01 L Foot" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Foot", DisplayName = "Cheville G (Ankle)", Position = new Vector3(-0.10f, 0.05f, 0.10f), Color = Color.FromArgb(0, 139, 139), ParentName = "Bip01 L Calf", SymmetricBoneName = "Bip01 R Foot" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Foot", DisplayName = "Cheville D (Ankle)", Position = new Vector3(0.10f, 0.05f, 0.10f), Color = Color.FromArgb(255, 105, 180), ParentName = "Bip01 R Calf", SymmetricBoneName = "Bip01 L Foot" });
         }
 
         private void InitializeComponentCustom()
@@ -512,7 +519,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = "4. Positionnement des Articulations (Croix 3D)",
                 Dock = DockStyle.Top,
-                Height = 265,
+                Height = 330,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -623,6 +630,57 @@ namespace UoFiddler.Plugin.Granny3D
             pnlCoords.Controls.Add(CreateLbl("Z:", 235));
             pnlCoords.Controls.Add(nudZ);
 
+            // Rotation Controls Panel
+            pnlRotControls = new Panel { Location = new Point(12, 185), Size = new Size(480, 32), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            nudRoll = new NumericUpDown { DecimalPlaces = 1, Minimum = -180, Maximum = 180, Increment = 5m, Location = new Point(115, 4), Width = 75, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gold };
+            nudPitch = new NumericUpDown { DecimalPlaces = 1, Minimum = -90, Maximum = 90, Increment = 5m, Location = new Point(245, 4), Width = 70, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
+            nudYaw = new NumericUpDown { DecimalPlaces = 1, Minimum = -90, Maximum = 90, Increment = 5m, Location = new Point(365, 4), Width = 70, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
+
+            nudRoll.ValueChanged += (s, e) => OnNudRotChanged();
+            nudPitch.ValueChanged += (s, e) => OnNudRotChanged();
+            nudYaw.ValueChanged += (s, e) => OnNudRotChanged();
+
+            pnlRotControls.Controls.Add(CreateLbl("Torsion (Roll) :", 5));
+            pnlRotControls.Controls.Add(nudRoll);
+            pnlRotControls.Controls.Add(CreateLbl("Pitch :", 195));
+            pnlRotControls.Controls.Add(nudPitch);
+            pnlRotControls.Controls.Add(CreateLbl("Yaw :", 325));
+            pnlRotControls.Controls.Add(nudYaw);
+
+            // Quick Rotation Presets Panel
+            pnlRotBtns = new Panel { Location = new Point(12, 218), Size = new Size(480, 28) };
+            Button CreateRotBtn(string text, int x, int width, Action act)
+            {
+                var b = new Button
+                {
+                    Text = text,
+                    Location = new Point(x, 1),
+                    Size = new Size(width, 25),
+                    BackColor = Color.FromArgb(45, 45, 48),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI", 8F, FontStyle.Regular)
+                };
+                b.FlatAppearance.BorderColor = Color.FromArgb(65, 65, 70);
+                b.Click += (s, e) => { act(); };
+                return b;
+            }
+
+            pnlRotBtns.Controls.Add(CreateRotBtn("⟲ -15°", 5, 55, () => ApplyRollOffset(-15f)));
+            pnlRotBtns.Controls.Add(CreateRotBtn("⟳ +15°", 65, 55, () => ApplyRollOffset(15f)));
+            pnlRotBtns.Controls.Add(CreateRotBtn("Paume Bas (90°)", 125, 115, () => SetRollExact(90f)));
+            pnlRotBtns.Controls.Add(CreateRotBtn("Paume Arr. (180°)", 245, 125, () => SetRollExact(180f)));
+            pnlRotBtns.Controls.Add(CreateRotBtn("0° (Défaut)", 375, 80, () => SetRollExact(0f)));
+
+            lblRotTip = new Label
+            {
+                Text = "💡 Astuce : Maintenez Shift + Glisser Souris sur le poignet pour tourner la paume !",
+                Location = new Point(12, 250),
+                AutoSize = true,
+                ForeColor = Color.DarkKhaki,
+                Font = new Font("Segoe UI", 8F, FontStyle.Italic)
+            };
+
             var btnResetPose = new Button
             {
                 Text = "🔄 Réinitialiser les repères Biped UO par défaut",
@@ -636,6 +694,9 @@ namespace UoFiddler.Plugin.Granny3D
             btnResetPose.Click += (s, e) => { InitializeDefaultMarkers(); UpdateNudValues(); EnsurePreviewModel(); glControl.Invalidate(); };
 
             grpMarkers.Controls.Add(btnResetPose);
+            grpMarkers.Controls.Add(lblRotTip);
+            grpMarkers.Controls.Add(pnlRotBtns);
+            grpMarkers.Controls.Add(pnlRotControls);
             grpMarkers.Controls.Add(pnlCoords);
             grpMarkers.Controls.Add(cbJoints);
             grpMarkers.Controls.Add(lblJoint);
@@ -1310,15 +1371,64 @@ namespace UoFiddler.Plugin.Granny3D
                 }
                 else if (marker != null)
                 {
-                    var rot = uoBindWorld[idx].ExtractRotation();
-                    fittedWorld[idx] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(marker.Position);
+                    int rotSourceIdx = idx;
+                    // If marker is on opposite side of X compared to original UO bone:
+                    // e.g. Bip01 L placed at X < -0.01f (screen left), use rotation of symmetric bone (Bip01 R) so arm points outward!
+                    if (marker.Position.X < -0.01f && uoBindWorld[idx].Row3.X > 0.01f)
+                    {
+                        int symIdx = FindMatchingBoneIndex(_refBones, marker.SymmetricBoneName ?? "");
+                        if (symIdx >= 0 && symIdx < nb) rotSourceIdx = symIdx;
+                    }
+                    else if (marker.Position.X > 0.01f && uoBindWorld[idx].Row3.X < -0.01f)
+                    {
+                        int symIdx = FindMatchingBoneIndex(_refBones, marker.SymmetricBoneName ?? "");
+                        if (symIdx >= 0 && symIdx < nb) rotSourceIdx = symIdx;
+                    }
+
+                    var rot = uoBindWorld[rotSourceIdx].ExtractRotation();
+                    Matrix4 baseRot = Matrix4.CreateFromQuaternion(rot);
+                    if (marker.RotationDegrees != Vector3.Zero)
+                    {
+                        Matrix4 localRot = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(marker.RotationDegrees.X)) *
+                                           Matrix4.CreateRotationY(MathHelper.DegreesToRadians(marker.RotationDegrees.Y)) *
+                                           Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(marker.RotationDegrees.Z));
+                        baseRot = baseRot * localRot;
+                    }
+                    fittedWorld[idx] = baseRot * Matrix4.CreateTranslation(marker.Position);
                 }
                 else
                 {
                     int p = GetParentIndex(_previewModel.Bones, idx);
                     if (p >= 0 && p < nb && p != idx)
                     {
-                        var uoLocal = uoBindWorld[idx] * Matrix4.Invert(uoBindWorld[p]);
+                        int refSourceIdx = idx;
+                        int refParentIdx = p;
+                        if (fittedWorld[p].Row3.X < -0.01f && uoBindWorld[p].Row3.X > 0.01f)
+                        {
+                            string symName = name.Contains(" L ") ? name.Replace(" L ", " R ") : (name.Contains(" R ") ? name.Replace(" R ", " L ") : name);
+                            string symPName = _previewModel.Bones[p].Name.Contains(" L ") ? _previewModel.Bones[p].Name.Replace(" L ", " R ") : (_previewModel.Bones[p].Name.Contains(" R ") ? _previewModel.Bones[p].Name.Replace(" R ", " L ") : _previewModel.Bones[p].Name);
+                            int sIdx = FindMatchingBoneIndex(_refBones, symName);
+                            int spIdx = FindMatchingBoneIndex(_refBones, symPName);
+                            if (sIdx >= 0 && spIdx >= 0)
+                            {
+                                refSourceIdx = sIdx;
+                                refParentIdx = spIdx;
+                            }
+                        }
+                        else if (fittedWorld[p].Row3.X > 0.01f && uoBindWorld[p].Row3.X < -0.01f)
+                        {
+                            string symName = name.Contains(" L ") ? name.Replace(" L ", " R ") : (name.Contains(" R ") ? name.Replace(" R ", " L ") : name);
+                            string symPName = _previewModel.Bones[p].Name.Contains(" L ") ? _previewModel.Bones[p].Name.Replace(" L ", " R ") : (_previewModel.Bones[p].Name.Contains(" R ") ? _previewModel.Bones[p].Name.Replace(" R ", " L ") : _previewModel.Bones[p].Name);
+                            int sIdx = FindMatchingBoneIndex(_refBones, symName);
+                            int spIdx = FindMatchingBoneIndex(_refBones, symPName);
+                            if (sIdx >= 0 && spIdx >= 0)
+                            {
+                                refSourceIdx = sIdx;
+                                refParentIdx = spIdx;
+                            }
+                        }
+
+                        var uoLocal = uoBindWorld[refSourceIdx] * Matrix4.Invert(uoBindWorld[refParentIdx]);
                         fittedWorld[idx] = uoLocal * fittedWorld[p];
                     }
                     else
@@ -1524,33 +1634,33 @@ namespace UoFiddler.Plugin.Granny3D
             SetPos("Bip01 Spine", new Vector3(0f, midY, minZ + height * 0.62f));
             SetPos("Bip01 Pelvis", new Vector3(0f, midY, minZ + height * 0.52f));
 
-            // 3. Bras (Clavicules, Épaules, Coudes, Poignets)
+            // 3. Bras (Clavicules, Épaules, Coudes, Poignets) - G = -X, D = +X
             float armY = midY;
-            SetPos("Bip01 L Clavicle", new Vector3(halfWidth * 0.25f, armY, minZ + height * 0.76f));
-            SetPos("Bip01 R Clavicle", new Vector3(-halfWidth * 0.25f, armY, minZ + height * 0.76f));
+            SetPos("Bip01 L Clavicle", new Vector3(-halfWidth * 0.25f, armY, minZ + height * 0.76f));
+            SetPos("Bip01 R Clavicle", new Vector3(halfWidth * 0.25f, armY, minZ + height * 0.76f));
 
-            SetPos("Bip01 L UpperArm", new Vector3(halfWidth * 0.45f, armY, minZ + height * 0.74f));
-            SetPos("Bip01 R UpperArm", new Vector3(-halfWidth * 0.45f, armY, minZ + height * 0.74f));
+            SetPos("Bip01 L UpperArm", new Vector3(-halfWidth * 0.45f, armY, minZ + height * 0.74f));
+            SetPos("Bip01 R UpperArm", new Vector3(halfWidth * 0.45f, armY, minZ + height * 0.74f));
 
             // Coudes (Elbows)
-            SetPos("Bip01 L Forearm", new Vector3(halfWidth * 0.72f, armY, minZ + height * 0.72f));
-            SetPos("Bip01 R Forearm", new Vector3(-halfWidth * 0.72f, armY, minZ + height * 0.72f));
+            SetPos("Bip01 L Forearm", new Vector3(-halfWidth * 0.72f, armY, minZ + height * 0.72f));
+            SetPos("Bip01 R Forearm", new Vector3(halfWidth * 0.72f, armY, minZ + height * 0.72f));
 
             // Poignets (Wrists)
-            SetPos("Bip01 L Hand", new Vector3(halfWidth * 0.95f, armY, minZ + height * 0.70f));
-            SetPos("Bip01 R Hand", new Vector3(-halfWidth * 0.95f, armY, minZ + height * 0.70f));
+            SetPos("Bip01 L Hand", new Vector3(-halfWidth * 0.95f, armY, minZ + height * 0.70f));
+            SetPos("Bip01 R Hand", new Vector3(halfWidth * 0.95f, armY, minZ + height * 0.70f));
 
             // 4. Jambes (Hanches, Genoux, Chevilles)
-            SetPos("Bip01 L Thigh", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.48f));
-            SetPos("Bip01 R Thigh", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.48f));
+            SetPos("Bip01 L Thigh", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.48f));
+            SetPos("Bip01 R Thigh", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.48f));
 
             // Genoux (Knees)
-            SetPos("Bip01 L Calf", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.26f));
-            SetPos("Bip01 R Calf", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.26f));
+            SetPos("Bip01 L Calf", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.26f));
+            SetPos("Bip01 R Calf", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.26f));
 
             // Chevilles (Ankles)
-            SetPos("Bip01 L Foot", new Vector3(halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
-            SetPos("Bip01 R Foot", new Vector3(-halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
+            SetPos("Bip01 L Foot", new Vector3(-halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
+            SetPos("Bip01 R Foot", new Vector3(halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
 
             UpdateNudValues();
             EnsurePreviewModel();
@@ -1592,11 +1702,17 @@ namespace UoFiddler.Plugin.Granny3D
             AddSeg("Bip01 L UpperArm", "Bip01 L Forearm");
             AddSeg("Bip01 L Forearm", "Bip01 L Hand");
             AddSeg("Bip01 L Hand", "Bip01 L Finger1");
+            AddSeg("Bip01 L Hand", "Bip01 L Finger0");
+            AddSeg("Bip01 L Finger0", "Bip01 L Finger01");
+            AddSeg("Bip01 L Finger1", "Bip01 L Finger11");
 
             AddSeg("Bip01 R Clavicle", "Bip01 R UpperArm");
             AddSeg("Bip01 R UpperArm", "Bip01 R Forearm");
             AddSeg("Bip01 R Forearm", "Bip01 R Hand");
             AddSeg("Bip01 R Hand", "Bip01 R Finger1");
+            AddSeg("Bip01 R Hand", "Bip01 R Finger0");
+            AddSeg("Bip01 R Finger0", "Bip01 R Finger01");
+            AddSeg("Bip01 R Finger1", "Bip01 R Finger11");
 
             var armBoneIndices = new HashSet<int>();
             foreach (var seg in armSegments) armBoneIndices.Add(seg.BoneId);
@@ -1626,8 +1742,8 @@ namespace UoFiddler.Plugin.Granny3D
                     string bName = _previewModel.Bones[seg.BoneId].Name;
                     bool isLeft = bName.Contains(" L ");
                     bool isRight = bName.Contains(" R ");
-                    if (isLeft && p.X < -0.02f) continue;
-                    if (isRight && p.X > 0.02f) continue;
+                    if (isLeft && p.X > 0.02f) continue;
+                    if (isRight && p.X < -0.02f) continue;
 
                     Vector3 ab = seg.P1 - seg.P0;
                     float l2 = ab.LengthSquared;
@@ -2238,30 +2354,30 @@ namespace UoFiddler.Plugin.Granny3D
             SetPos("Bip01 Pelvis", new Vector3(0.0f, midY, minZ + height * 0.52f));
 
             float clavX = halfWidth * 0.25f;
-            SetPos("Bip01 L Clavicle", new Vector3(clavX, midY, minZ + height * 0.77f));
-            SetPos("Bip01 R Clavicle", new Vector3(-clavX, midY, minZ + height * 0.77f));
+            SetPos("Bip01 L Clavicle", new Vector3(-clavX, midY, minZ + height * 0.77f));
+            SetPos("Bip01 R Clavicle", new Vector3(clavX, midY, minZ + height * 0.77f));
 
             float shoulderX = halfWidth * 0.45f;
-            SetPos("Bip01 L UpperArm", new Vector3(shoulderX, midY, minZ + height * 0.76f));
-            SetPos("Bip01 R UpperArm", new Vector3(-shoulderX, midY, minZ + height * 0.76f));
+            SetPos("Bip01 L UpperArm", new Vector3(-shoulderX, midY, minZ + height * 0.76f));
+            SetPos("Bip01 R UpperArm", new Vector3(shoulderX, midY, minZ + height * 0.76f));
 
             float elbowX = halfWidth * 0.72f;
-            SetPos("Bip01 L Forearm", new Vector3(elbowX, midY, minZ + height * 0.74f));
-            SetPos("Bip01 R Forearm", new Vector3(-elbowX, midY, minZ + height * 0.74f));
+            SetPos("Bip01 L Forearm", new Vector3(-elbowX, midY, minZ + height * 0.74f));
+            SetPos("Bip01 R Forearm", new Vector3(elbowX, midY, minZ + height * 0.74f));
 
             float handX = halfWidth * 0.95f;
-            SetPos("Bip01 L Hand", new Vector3(handX, midY, minZ + height * 0.73f));
-            SetPos("Bip01 R Hand", new Vector3(-handX, midY, minZ + height * 0.73f));
+            SetPos("Bip01 L Hand", new Vector3(-handX, midY, minZ + height * 0.73f));
+            SetPos("Bip01 R Hand", new Vector3(handX, midY, minZ + height * 0.73f));
 
             float hipX = halfWidth * 0.22f;
-            SetPos("Bip01 L Thigh", new Vector3(hipX, midY, minZ + height * 0.48f));
-            SetPos("Bip01 R Thigh", new Vector3(-hipX, midY, minZ + height * 0.48f));
+            SetPos("Bip01 L Thigh", new Vector3(-hipX, midY, minZ + height * 0.48f));
+            SetPos("Bip01 R Thigh", new Vector3(hipX, midY, minZ + height * 0.48f));
 
-            SetPos("Bip01 L Calf", new Vector3(hipX, midY + 0.01f, minZ + height * 0.27f));
-            SetPos("Bip01 R Calf", new Vector3(-hipX, midY + 0.01f, minZ + height * 0.27f));
+            SetPos("Bip01 L Calf", new Vector3(-hipX, midY + 0.01f, minZ + height * 0.27f));
+            SetPos("Bip01 R Calf", new Vector3(hipX, midY + 0.01f, minZ + height * 0.27f));
 
-            SetPos("Bip01 L Foot", new Vector3(hipX * 0.9f, midY + 0.04f, minZ + height * 0.05f));
-            SetPos("Bip01 R Foot", new Vector3(-hipX * 0.9f, midY + 0.04f, minZ + height * 0.05f));
+            SetPos("Bip01 L Foot", new Vector3(-hipX * 0.9f, midY + 0.04f, minZ + height * 0.05f));
+            SetPos("Bip01 R Foot", new Vector3(hipX * 0.9f, midY + 0.04f, minZ + height * 0.05f));
 
             _cameraTarget = new Vector3(0, midY, minZ + height * 0.5f);
             UpdateNudValues();
@@ -2319,6 +2435,13 @@ namespace UoFiddler.Plugin.Granny3D
                 nudX.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.Position.X, 3), (float)nudX.Minimum, (float)nudX.Maximum);
                 nudY.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.Position.Y, 3), (float)nudY.Minimum, (float)nudY.Maximum);
                 nudZ.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.Position.Z, 3), (float)nudZ.Minimum, (float)nudZ.Maximum);
+
+                if (nudRoll != null)
+                    nudRoll.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.RotationDegrees.X, 1), (float)nudRoll.Minimum, (float)nudRoll.Maximum);
+                if (nudPitch != null)
+                    nudPitch.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.RotationDegrees.Y, 1), (float)nudPitch.Minimum, (float)nudPitch.Maximum);
+                if (nudYaw != null)
+                    nudYaw.Value = (decimal)MathHelper.Clamp((float)Math.Round(m.RotationDegrees.Z, 1), (float)nudYaw.Minimum, (float)nudYaw.Maximum);
             }
             finally
             {
@@ -2342,6 +2465,69 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
 
+            EnsurePreviewModel();
+            glControl.Invalidate();
+        }
+
+        private void OnNudRotChanged()
+        {
+            if (_isUpdatingNud) return;
+            if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
+            var m = _markers[_selectedMarkerIndex];
+            m.RotationDegrees = new Vector3((float)nudRoll.Value, (float)nudPitch.Value, (float)nudYaw.Value);
+
+            if (chkSymmetry.Checked && !string.IsNullOrEmpty(m.SymmetricBoneName))
+            {
+                var sym = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
+                if (sym != null)
+                {
+                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, m.RotationDegrees.Y, -m.RotationDegrees.Z);
+                }
+            }
+
+            EnsurePreviewModel();
+            glControl.Invalidate();
+        }
+
+        private void ApplyRollOffset(float deltaRoll)
+        {
+            if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
+            var m = _markers[_selectedMarkerIndex];
+            float newRoll = (m.RotationDegrees.X + deltaRoll) % 360f;
+            if (newRoll > 180f) newRoll -= 360f;
+            if (newRoll < -180f) newRoll += 360f;
+            m.RotationDegrees = new Vector3(newRoll, m.RotationDegrees.Y, m.RotationDegrees.Z);
+
+            if (chkSymmetry.Checked && !string.IsNullOrEmpty(m.SymmetricBoneName))
+            {
+                var sym = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
+                if (sym != null)
+                {
+                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, m.RotationDegrees.Y, -m.RotationDegrees.Z);
+                }
+            }
+
+            UpdateNudValues();
+            EnsurePreviewModel();
+            glControl.Invalidate();
+        }
+
+        private void SetRollExact(float targetRoll)
+        {
+            if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
+            var m = _markers[_selectedMarkerIndex];
+            m.RotationDegrees = new Vector3(targetRoll, m.RotationDegrees.Y, m.RotationDegrees.Z);
+
+            if (chkSymmetry.Checked && !string.IsNullOrEmpty(m.SymmetricBoneName))
+            {
+                var sym = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
+                if (sym != null)
+                {
+                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, m.RotationDegrees.Y, -m.RotationDegrees.Z);
+                }
+            }
+
+            UpdateNudValues();
             EnsurePreviewModel();
             glControl.Invalidate();
         }
@@ -2713,6 +2899,56 @@ void main() {
                 DrawCrossMarker(mvp, pos, isSelected ? 0.12f : 0.08f, col);
             }
 
+            // Visual alignment aids for selected wrist: Gold line to thumb, Cyan line to fingers, orientation disc
+            if (_selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
+            {
+                var selM = _markers[_selectedMarkerIndex];
+                if (selM.BoneName.Contains("Hand") && _previewModel != null)
+                {
+                    string f0Name = selM.BoneName.Contains(" L ") ? "Bip01 L Finger0" : "Bip01 R Finger0";
+                    string f1Name = selM.BoneName.Contains(" L ") ? "Bip01 L Finger1" : "Bip01 R Finger1";
+                    int idx0 = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, f0Name, StringComparison.OrdinalIgnoreCase));
+                    int idx1 = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, f1Name, StringComparison.OrdinalIgnoreCase));
+
+                    if (idx0 >= 0 && idx0 < _previewModel.Bones.Count)
+                    {
+                        Vector3 pThumb = Matrix4.Invert(_previewModel.Bones[idx0].InverseBindMatrix).Row3.Xyz;
+                        float[] thumbLine = new float[] { selM.Position.X, selM.Position.Y, selM.Position.Z, pThumb.X, pThumb.Y, pThumb.Z };
+                        DrawLinesImmediate(mvp, thumbLine, new Vector4(1f, 0.84f, 0f, 1f), 3.5f); // Gold line to thumb
+                        DrawCrossMarker(mvp, pThumb, 0.035f, new Vector4(1f, 0.84f, 0f, 1f));
+                    }
+
+                    if (idx1 >= 0 && idx1 < _previewModel.Bones.Count)
+                    {
+                        Vector3 pFingers = Matrix4.Invert(_previewModel.Bones[idx1].InverseBindMatrix).Row3.Xyz;
+                        float[] fingerLine = new float[] { selM.Position.X, selM.Position.Y, selM.Position.Z, pFingers.X, pFingers.Y, pFingers.Z };
+                        DrawLinesImmediate(mvp, fingerLine, new Vector4(0f, 1f, 1f, 1f), 3.5f); // Cyan line to fingers
+                        DrawCrossMarker(mvp, pFingers, 0.035f, new Vector4(0f, 1f, 1f, 1f));
+                    }
+
+                    int handIdx = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, selM.BoneName, StringComparison.OrdinalIgnoreCase));
+                    if (handIdx >= 0)
+                    {
+                        Matrix4 hWorld = Matrix4.Invert(_previewModel.Bones[handIdx].InverseBindMatrix);
+                        Vector3 localY = hWorld.Row1.Xyz.Normalized();
+                        Vector3 localZ = hWorld.Row2.Xyz.Normalized();
+                        const int segments = 24;
+                        float radius = 0.06f;
+                        var circleVerts = new List<float>();
+                        for (int s = 0; s < segments; s++)
+                        {
+                            float a0 = (s / (float)segments) * MathF.PI * 2f;
+                            float a1 = ((s + 1) / (float)segments) * MathF.PI * 2f;
+                            Vector3 pt0 = selM.Position + (localY * MathF.Cos(a0) + localZ * MathF.Sin(a0)) * radius;
+                            Vector3 pt1 = selM.Position + (localY * MathF.Cos(a1) + localZ * MathF.Sin(a1)) * radius;
+                            circleVerts.Add(pt0.X); circleVerts.Add(pt0.Y); circleVerts.Add(pt0.Z);
+                            circleVerts.Add(pt1.X); circleVerts.Add(pt1.Y); circleVerts.Add(pt1.Z);
+                        }
+                        DrawLinesImmediate(mvp, circleVerts.ToArray(), new Vector4(1f, 0.6f, 0.1f, 0.9f), 2.0f);
+                    }
+                }
+            }
+
             GL.Enable(EnableCap.DepthTest);
         }
 
@@ -2867,10 +3103,16 @@ void main() {
             // 1:1 Ray-Plane unprojection dragging with strict orthographic axis locking
             if (_isDraggingMarker && _selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
             {
+                var m = _markers[_selectedMarkerIndex];
+                if (ModifierKeys.HasFlag(Keys.Shift) && m.BoneName.Contains("Hand"))
+                {
+                    ApplyRollOffset(dx * 0.8f);
+                    return;
+                }
+
                 if (UnprojectMouseToPlane(e.X, e.Y, _dragPlanePoint, _dragPlaneNormal, out Vector3 rawHit))
                 {
                     Vector3 targetHit = rawHit + _dragGrabOffset;
-                    var m = _markers[_selectedMarkerIndex];
 
                     if (_currentViewMode == RigViewMode.Front || _currentViewMode == RigViewMode.Back ||
                         ((Math.Abs(_cameraYaw) < 15f || Math.Abs(_cameraYaw - 180f) < 15f) && Math.Abs(_cameraPitch) < 15f))
@@ -2934,6 +3176,16 @@ void main() {
 
         private void GlControl_MouseWheel(object? sender, MouseEventArgs e)
         {
+            if (ModifierKeys.HasFlag(Keys.Shift) && _selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
+            {
+                var m = _markers[_selectedMarkerIndex];
+                if (m.BoneName.Contains("Hand"))
+                {
+                    ApplyRollOffset(e.Delta > 0 ? 5f : -5f);
+                    return;
+                }
+            }
+
             float zoomFactor = e.Delta > 0 ? 0.9f : 1.1f;
             _cameraDist = MathHelper.Clamp(_cameraDist * zoomFactor, 0.3f, 30.0f);
             glControl.Invalidate();
