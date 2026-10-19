@@ -39,6 +39,7 @@ namespace UoFiddler.Plugin.Granny3D
         public int[] CornerVertex;
         public float[] Interleaved;      // per corner: pos(3) + normal(3) + uv(2)
         public Vector3[] BaseCornerNormals;
+        public Vector2[] CornerUVs;
 
         public int Vbo;
         public int Vao;
@@ -160,6 +161,16 @@ namespace UoFiddler.Plugin.Granny3D
         // path-named/mis-bound) skeleton. WrapSkin[v] = WrapSource.Skin[nearest].
         public LoadedMesh WrapSource;
         public VertexInfluence[][] WrapSkin;
+
+        // Backup of original skeleton, skin weights and attachment state before Skin Wrap,
+        // restored when the mesh is detached so it doesn't distort or explode.
+        public List<GrannyBone> OriginalBones;
+        public VertexInfluence[][] OriginalSkin;
+        public string OriginalAttachBoneName;
+        public bool OriginalHasAttachMatrix;
+        public Matrix4 OriginalAttachMatrix = Matrix4.Identity;
+        public MeshCutoutRole OriginalCutoutRole = MeshCutoutRole.Accessory;
+        public bool HasOriginalWrapBackup;
     }
 
     // Camera controller for orbit / pan / zoom.
@@ -4012,31 +4023,47 @@ namespace UoFiddler.Plugin.Granny3D
             lm.CornerVertex = new int[cornerCount];
             lm.Interleaved = new float[cornerCount * 8];
 
-            var uvs = lm.SourceMesh.UVs;
-            var uvIdx = lm.SourceMesh.UVIndices;
+            if (explicitCornerUVs != null && explicitCornerUVs.Length == cornerCount)
+            {
+                lm.CornerUVs = (Vector2[])explicitCornerUVs.Clone();
+            }
+
+            var uvs = lm.SourceMesh?.UVs;
+            var uvIdx = lm.SourceMesh?.UVIndices;
+
+            if (lm.CornerUVs == null || lm.CornerUVs.Length != cornerCount)
+            {
+                var cachedUVs = new Vector2[cornerCount];
+                for (int c = 0; c < cornerCount; c++)
+                {
+                    int vi = lm.Indices[c];
+                    float u = 0f, v = 0f;
+                    if (explicitCornerUVs != null && c < explicitCornerUVs.Length)
+                    {
+                        u = explicitCornerUVs[c].X; v = explicitCornerUVs[c].Y;
+                    }
+                    else if (uvIdx != null && uvIdx.Count > 0 && uvs != null && uvs.Count > 0)
+                    {
+                        int ui = (c < uvIdx.Count) ? uvIdx[c] : -1;
+                        if (ui >= 0 && ui < uvs.Count) { u = uvs[ui].X; v = uvs[ui].Y; }
+                    }
+                    else if (uvs != null && uvs.Count == lm.BaseVertices.Length && vi >= 0 && vi < uvs.Count)
+                    {
+                        u = uvs[vi].X; v = uvs[vi].Y;
+                    }
+                    cachedUVs[c] = new Vector2(u, v);
+                }
+                lm.CornerUVs = cachedUVs;
+            }
 
             for (int c = 0; c < cornerCount; c++)
             {
                 int vi = lm.Indices[c];
                 lm.CornerVertex[c] = vi;
 
-                float u = 0f, v = 0f;
-                if (explicitCornerUVs != null && c < explicitCornerUVs.Length)
-                {
-                    u = explicitCornerUVs[c].X; v = explicitCornerUVs[c].Y;
-                }
-                else if (uvIdx != null && uvIdx.Count > 0 && uvs.Count > 0)
-                {
-                    int ui = (c < uvIdx.Count) ? uvIdx[c] : -1;
-                    if (ui >= 0 && ui < uvs.Count) { u = uvs[ui].X; v = uvs[ui].Y; }
-                }
-                else if (uvs.Count == lm.BaseVertices.Length && vi >= 0 && vi < uvs.Count)
-                {
-                    u = uvs[vi].X; v = uvs[vi].Y;
-                }
-
-                lm.Interleaved[c * 8 + 6] = u;
-                lm.Interleaved[c * 8 + 7] = v;
+                Vector2 uv = lm.CornerUVs[c];
+                lm.Interleaved[c * 8 + 6] = uv.X;
+                lm.Interleaved[c * 8 + 7] = uv.Y;
             }
 
             // Rest normals (per corner) from triangle faces.
@@ -4141,16 +4168,28 @@ namespace UoFiddler.Plugin.Granny3D
             int cc = lm.CornerVertex.Length;
             var oldV = lm.BaseVertices;
             var oldSkin = lm.Skin;
+            var oldWrapSkin = lm.WrapSkin;
+            var oldOrigSkin = lm.OriginalSkin;
 
             int oldCorners = lm.Indices.Length;
             var cornerUV = new Vector2[oldCorners];
             for (int c = 0; c < oldCorners; c++)
-                cornerUV[c] = new Vector2(lm.Interleaved[c * 8 + 6], lm.Interleaved[c * 8 + 7]);
+                cornerUV[c] = (lm.CornerUVs != null && c < lm.CornerUVs.Length)
+                    ? lm.CornerUVs[c]
+                    : new Vector2(lm.Interleaved[c * 8 + 6], lm.Interleaved[c * 8 + 7]);
 
             var newV = new List<Vector3>(V * 4);
             for (int v = 0; v < V; v++) newV.Add(oldV[v]);
             var newSkin = new List<VertexInfluence[]>(V * 4);
             for (int v = 0; v < V; v++) newSkin.Add(oldSkin != null && v < oldSkin.Length ? oldSkin[v] : null);
+
+            var newWrapSkin = (oldWrapSkin != null) ? new List<VertexInfluence[]>(V * 4) : null;
+            if (newWrapSkin != null)
+                for (int v = 0; v < V; v++) newWrapSkin.Add(v < oldWrapSkin.Length ? oldWrapSkin[v] : null);
+
+            var newOrigSkin = (oldOrigSkin != null) ? new List<VertexInfluence[]>(V * 4) : null;
+            if (newOrigSkin != null)
+                for (int v = 0; v < V; v++) newOrigSkin.Add(v < oldOrigSkin.Length ? oldOrigSkin[v] : null);
 
             var midMap = new Dictionary<long, int>();
             var outIdx = new List<int>(cc * 4);
@@ -4161,9 +4200,9 @@ namespace UoFiddler.Plugin.Granny3D
                 int v0 = lm.CornerVertex[t], v1 = lm.CornerVertex[t + 1], v2 = lm.CornerVertex[t + 2];
                 Vector2 u0 = cornerUV[t], u1 = cornerUV[t + 1], u2 = cornerUV[t + 2];
 
-                int e01 = GetMidVertex(midMap, newV, newSkin, oldV, oldSkin, v0, v1);
-                int e12 = GetMidVertex(midMap, newV, newSkin, oldV, oldSkin, v1, v2);
-                int e20 = GetMidVertex(midMap, newV, newSkin, oldV, oldSkin, v2, v0);
+                int e01 = GetMidVertex(midMap, newV, newSkin, newWrapSkin, newOrigSkin, oldV, oldSkin, oldWrapSkin, oldOrigSkin, v0, v1);
+                int e12 = GetMidVertex(midMap, newV, newSkin, newWrapSkin, newOrigSkin, oldV, oldSkin, oldWrapSkin, oldOrigSkin, v1, v2);
+                int e20 = GetMidVertex(midMap, newV, newSkin, newWrapSkin, newOrigSkin, oldV, oldSkin, oldWrapSkin, oldOrigSkin, v2, v0);
                 Vector2 u01 = (u0 + u1) * 0.5f;
                 Vector2 u12 = (u1 + u2) * 0.5f;
                 Vector2 u20 = (u2 + u0) * 0.5f;
@@ -4191,9 +4230,32 @@ namespace UoFiddler.Plugin.Granny3D
 
             lm.BaseVertices = newV.ToArray();
             lm.Skin = newSkin.ToArray();
+            if (newWrapSkin != null) lm.WrapSkin = newWrapSkin.ToArray();
+            if (newOrigSkin != null) lm.OriginalSkin = newOrigSkin.ToArray();
             lm.Indices = outIdx.ToArray();
-            BuildCornerData(lm, outUV.ToArray());
+            lm.CornerUVs = outUV.ToArray();
+
+            if (lm.SourceMesh != null)
+            {
+                lm.SourceMesh.Vertices.Clear();
+                lm.SourceMesh.Vertices.AddRange(lm.BaseVertices);
+                lm.SourceMesh.Indices.Clear();
+                lm.SourceMesh.Indices.AddRange(lm.Indices);
+                if (lm.Skin != null)
+                {
+                    lm.SourceMesh.Skin.Clear();
+                    lm.SourceMesh.Skin.AddRange(lm.Skin);
+                }
+                lm.SourceMesh.UVs.Clear();
+                lm.SourceMesh.UVs.AddRange(lm.CornerUVs);
+                lm.SourceMesh.UVIndices.Clear();
+                for (int i = 0; i < lm.CornerUVs.Length; i++)
+                    lm.SourceMesh.UVIndices.Add(i);
+            }
+
+            BuildCornerData(lm, lm.CornerUVs);
             SetupMeshVBO(lm);
+            lm.DeformedCache = new Vector3[lm.BaseVertices.Length];
             ClearClothBake(lm);              // particle count changed -> must re-bake
             if (lm.IsCloth) BuildClothFromMesh(lm);
 
@@ -4206,7 +4268,9 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         private static int GetMidVertex(Dictionary<long, int> map, List<Vector3> newV, List<VertexInfluence[]> newSkin,
-                                        Vector3[] oldV, VertexInfluence[][] oldSkin, int ia, int ib)
+                                        List<VertexInfluence[]> newWrapSkin, List<VertexInfluence[]> newOrigSkin,
+                                        Vector3[] oldV, VertexInfluence[][] oldSkin, VertexInfluence[][] oldWrapSkin, VertexInfluence[][] oldOrigSkin,
+                                        int ia, int ib)
         {
             if (ia < 0 || ib < 0 || ia >= oldV.Length || ib >= oldV.Length) return ia >= 0 ? ia : ib;
             long key = ia < ib ? ((long)ia << 32) | (uint)ib : ((long)ib << 32) | (uint)ia;
@@ -4214,6 +4278,8 @@ namespace UoFiddler.Plugin.Granny3D
             int nid = newV.Count;
             newV.Add((oldV[ia] + oldV[ib]) * 0.5f);
             newSkin.Add(AverageSkin(oldSkin, ia, ib));
+            if (newWrapSkin != null) newWrapSkin.Add(AverageSkin(oldWrapSkin, ia, ib));
+            if (newOrigSkin != null) newOrigSkin.Add(AverageSkin(oldOrigSkin, ia, ib));
             map[key] = nid;
             return nid;
         }
@@ -4243,6 +4309,9 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void SetupMeshVBO(LoadedMesh lm)
         {
+            if (lm.Vao > 0) { GL.DeleteVertexArray(lm.Vao); lm.Vao = 0; }
+            if (lm.Vbo > 0) { GL.DeleteBuffer(lm.Vbo); lm.Vbo = 0; }
+
             lm.Vao = GL.GenVertexArray();
             lm.Vbo = GL.GenBuffer();
 
@@ -4571,11 +4640,17 @@ namespace UoFiddler.Plugin.Granny3D
                 nudScaleY != null ? (float)nudScaleY.Value : 1f,
                 nudScaleZ != null ? (float)nudScaleZ.Value : 1f);
             lm.Thickness = nudThickness != null ? (float)nudThickness.Value : 0f;
-            if (lm.IsCloth && nudClothGrav != null)
+            if (lm.IsCloth)
             {
-                float g = (float)nudClothGrav.Value;
-                if (lm.ClothBake != null && Math.Abs(g - lm.ClothBakeGravity) > 1e-4f) ClearClothBake(lm);
-                lm.ClothGravity = g;
+                if (nudClothGrav != null)
+                {
+                    float g = (float)nudClothGrav.Value;
+                    if (lm.ClothBake != null && Math.Abs(g - lm.ClothBakeGravity) > 1e-4f) ClearClothBake(lm);
+                    lm.ClothGravity = g;
+                }
+                ClearClothBake(lm);
+                BuildClothFromMesh(lm);
+                ResetAllCloth();
             }
         }
 
@@ -4703,7 +4778,37 @@ namespace UoFiddler.Plugin.Granny3D
                     Log($"Skin wrap : '{target.Name}' détaché.");
                     target.WrapSource = null;
                     target.WrapSkin = null;
+
+                    // Restore original skeleton, skin weights and attachment state
+                    if (target.HasOriginalWrapBackup)
+                    {
+                        if (target.OriginalBones != null)
+                            target.Bones = new List<GrannyBone>(target.OriginalBones);
+                        if (target.OriginalSkin != null)
+                            target.Skin = target.OriginalSkin;
+                        target.AttachBoneName = target.OriginalAttachBoneName;
+                        target.HasAttachMatrix = target.OriginalHasAttachMatrix;
+                        target.AttachMatrix = target.OriginalAttachMatrix;
+                        target.CutoutRole = target.OriginalCutoutRole;
+
+                        target.OriginalBones = null;
+                        target.OriginalSkin = null;
+                        target.OriginalAttachBoneName = null;
+                        target.OriginalHasAttachMatrix = false;
+                        target.OriginalAttachMatrix = Matrix4.Identity;
+                        target.HasOriginalWrapBackup = false;
+                    }
+
+                    target.BoneToAnimTrack = null;
+                    target.LocalMatrices = null;
+                    target.WorldMatrices = null;
+                    target.SkinMatrices = null;
+
+                    if (target.Skin == null || target.Skin.Length == 0)
+                        TryAutoAttachUnskinned(target);
                 }
+                if (_currentAnimation != null)
+                    EnsureAnimationBindings(_currentAnimation);
                 ApplyAnimationPose(_currentTime);
                 RefreshVertexBuffers(true);
                 if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
@@ -5144,6 +5249,17 @@ namespace UoFiddler.Plugin.Granny3D
                     wrappedVerts++;
                 }
 
+                if (!target.HasOriginalWrapBackup)
+                {
+                    target.OriginalBones = target.Bones != null ? new List<GrannyBone>(target.Bones) : null;
+                    target.OriginalSkin = target.Skin;
+                    target.OriginalAttachBoneName = target.AttachBoneName;
+                    target.OriginalHasAttachMatrix = target.HasAttachMatrix;
+                    target.OriginalAttachMatrix = target.AttachMatrix;
+                    target.OriginalCutoutRole = target.CutoutRole;
+                    target.HasOriginalWrapBackup = true;
+                }
+
                 target.WrapSource = masterHost;
                 target.WrapSkin = wrap;
                 target.Bones = new List<GrannyBone>(masterHost.Bones);
@@ -5384,6 +5500,14 @@ namespace UoFiddler.Plugin.Granny3D
                 lm.SourceMesh.Vertices.AddRange(lm.BaseVertices);
                 lm.SourceMesh.Indices.Clear();
                 if (lm.Indices != null) lm.SourceMesh.Indices.AddRange(lm.Indices);
+                if (lm.CornerUVs != null)
+                {
+                    lm.SourceMesh.UVs.Clear();
+                    lm.SourceMesh.UVs.AddRange(lm.CornerUVs);
+                    lm.SourceMesh.UVIndices.Clear();
+                    for (int i = 0; i < lm.CornerUVs.Length; i++)
+                        lm.SourceMesh.UVIndices.Add(i);
+                }
                 lm.SourceMesh.MinX = lm.SourceMesh.MinY = lm.SourceMesh.MinZ = float.MaxValue;
                 lm.SourceMesh.MaxX = lm.SourceMesh.MaxY = lm.SourceMesh.MaxZ = float.MinValue;
                 foreach (var v in lm.BaseVertices)
@@ -5424,6 +5548,12 @@ namespace UoFiddler.Plugin.Granny3D
                 }
                 lm.WrapSkin = null;
                 lm.WrapSource = null;
+                lm.HasOriginalWrapBackup = false;
+                lm.OriginalBones = null;
+                lm.OriginalSkin = null;
+                lm.OriginalAttachBoneName = null;
+                lm.OriginalHasAttachMatrix = false;
+                lm.OriginalAttachMatrix = Matrix4.Identity;
                 Log($"Bake: skin wrap fixé définitivement sur '{lm.Name}' ({lm.Skin.Length} sommets, {lm.Bones.Count} os).");
             }
 
@@ -5566,6 +5696,11 @@ namespace UoFiddler.Plugin.Granny3D
                     part.Normals = (lm.BaseVertexNormals != null && lm.BaseVertexNormals.Length == lm.BaseVertices.Length)
                         ? (Vector3[])lm.BaseVertexNormals.Clone()
                         : Array.Empty<Vector3>();
+
+                    if (lm.CornerUVs != null && lm.CornerUVs.Length > 0)
+                        part.UVs = (Vector2[])lm.CornerUVs.Clone();
+                    else if (lm.SourceMesh?.UVs != null && lm.SourceMesh.UVs.Count > 0)
+                        part.UVs = lm.SourceMesh.UVs.ToArray();
 
                     if (lm.WrapSkin != null && lm.WrapSkin.Length == lm.BaseVertices.Length)
                     {
@@ -6818,9 +6953,76 @@ namespace UoFiddler.Plugin.Granny3D
 
         private struct ClothCapsule { public Vector3 A, B; public float R; }
 
-        // Reset every cloth mesh to its rest (bind) shape. Note: ClothPos/Prev are
-        // indexed by PARTICLE, while BaseVertices is indexed by vertex, so copy from
-        // the per-particle rest array (ClothPos0).
+        private Vector3 ApplyMeshTweak(LoadedMesh lm, Vector3 pos, bool hasThickness = false, Vector3 normal = default)
+        {
+            if (lm == null) return pos;
+
+            Vector3 pscale = new Vector3(
+                lm.PartScale * lm.PartScaleVec.X,
+                lm.PartScale * lm.PartScaleVec.Y,
+                lm.PartScale * lm.PartScaleVec.Z);
+            bool scaleTweaked = pscale.X != 1f || pscale.Y != 1f || pscale.Z != 1f;
+
+            bool hasRot = lm.AttachRotation != Vector3.Zero;
+            bool hasMirror = lm.MirrorX || lm.MirrorY || lm.MirrorZ;
+            bool hasOffset = lm.AttachOffset != Vector3.Zero;
+            bool thick = hasThickness && lm.Thickness != 0f && normal != default;
+
+            if (!scaleTweaked && !hasRot && !hasMirror && !hasOffset && !thick)
+                return pos;
+
+            bool isMultiPart = !string.IsNullOrEmpty(lm.SourcePath) &&
+                _loadedMeshes.Exists(m => !ReferenceEquals(m, lm) && string.Equals(m.SourcePath, lm.SourcePath, StringComparison.OrdinalIgnoreCase));
+            bool isClothingOrBody = lm.CutoutRole != MeshCutoutRole.Accessory || lm.Skin != null || lm.WrapSource != null || IsClothingOrSkinned(lm);
+            Vector3 scalePivot = (isMultiPart || !lm.HasBindCentroid) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : lm.BindCentroid);
+            Vector3 rotPivot = (isMultiPart || lm.CutoutRole != MeshCutoutRole.Accessory) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : scalePivot);
+
+            if (scaleTweaked)
+            {
+                Vector3 r = pos - scalePivot;
+                r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
+                pos = scalePivot + r;
+            }
+
+            if (hasMirror || hasRot || hasOffset)
+            {
+                Vector3 rRot = pos - rotPivot;
+                if (hasMirror)
+                    rRot = new Vector3(
+                        rRot.X * (lm.MirrorX ? -1f : 1f),
+                        rRot.Y * (lm.MirrorY ? -1f : 1f),
+                        rRot.Z * (lm.MirrorZ ? -1f : 1f));
+                if (hasRot)
+                {
+                    Matrix4 rotMat = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
+                        MathHelper.DegreesToRadians(lm.AttachRotation.X),
+                        MathHelper.DegreesToRadians(lm.AttachRotation.Y),
+                        MathHelper.DegreesToRadians(lm.AttachRotation.Z)));
+                    rRot = Vector3.TransformNormal(rRot, rotMat);
+                }
+                pos = rotPivot + rRot + lm.AttachOffset;
+            }
+
+            if (thick)
+            {
+                Vector3 dnorm = normal;
+                if (hasMirror)
+                    dnorm = new Vector3(dnorm.X * (lm.MirrorX ? -1f : 1f), dnorm.Y * (lm.MirrorY ? -1f : 1f), dnorm.Z * (lm.MirrorZ ? -1f : 1f));
+                if (hasRot)
+                {
+                    Matrix4 rotMat = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
+                        MathHelper.DegreesToRadians(lm.AttachRotation.X),
+                        MathHelper.DegreesToRadians(lm.AttachRotation.Y),
+                        MathHelper.DegreesToRadians(lm.AttachRotation.Z)));
+                    dnorm = Vector3.TransformNormal(dnorm, rotMat);
+                }
+                if (dnorm.LengthSquared > 1e-12f)
+                    pos += Vector3.Normalize(dnorm) * lm.Thickness;
+            }
+
+            return pos;
+        }
+
         // Reset every cloth mesh to its rest (bind) shape and snap pinned vertices to current pose.
         private void ResetAllCloth()
         {
@@ -6828,18 +7030,18 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (lm.IsCloth && lm.ClothPos != null && lm.ClothPos0 != null)
                 {
-                    Array.Copy(lm.ClothPos0, lm.ClothPos, lm.ClothPos.Length);
-                    Array.Copy(lm.ClothPos0, lm.ClothPrev, lm.ClothPrev.Length);
-                    if (lm.ClothPin != null)
+                    for (int p = 0; p < lm.ClothPos.Length; p++)
                     {
-                        for (int p = 0; p < lm.ClothPos.Length && p < lm.ClothPin.Length; p++)
+                        Vector3 target = ClothPinTarget(lm, p);
+                        if (target != Vector3.Zero)
                         {
-                            if (lm.ClothPin[p])
-                            {
-                                Vector3 target = ClothPinTarget(lm, p);
-                                lm.ClothPos[p] = target;
-                                lm.ClothPrev[p] = target;
-                            }
+                            lm.ClothPos[p] = target;
+                            lm.ClothPrev[p] = target;
+                        }
+                        else if (p < lm.ClothPos0.Length)
+                        {
+                            lm.ClothPos[p] = lm.ClothPos0[p];
+                            lm.ClothPrev[p] = lm.ClothPos0[p];
                         }
                     }
                 }
@@ -6853,6 +7055,7 @@ namespace UoFiddler.Plugin.Granny3D
         private void BuildClothFromMesh(LoadedMesh lm)
         {
             if (lm.BaseVertices == null || lm.BaseVertices.Length == 0) return;
+            if (lm.BaseVertexNormals == null || lm.BaseVertexNormals.Length != lm.BaseVertices.Length) BuildCornerData(lm);
             if (lm.Weld == null) BuildWeld(lm);
             int P = Math.Max(1, lm.WeldCount);
 
@@ -6863,7 +7066,13 @@ namespace UoFiddler.Plugin.Granny3D
             for (int v = 0; v < lm.Weld.Length; v++)
             {
                 int p = lm.Weld[v];
-                if (rep[p] < 0) { rep[p] = v; rest[p] = lm.BaseVertices[v]; }
+                if (rep[p] < 0)
+                {
+                    rep[p] = v;
+                    Vector3 orig = lm.BaseVertices[v];
+                    Vector3 norm = (lm.BaseVertexNormals != null && v < lm.BaseVertexNormals.Length) ? lm.BaseVertexNormals[v] : Vector3.Zero;
+                    rest[p] = ApplyMeshTweak(lm, orig, true, norm);
+                }
             }
             lm.ClothRep = rep;
             lm.ClothPos0 = rest;
@@ -6915,13 +7124,13 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
 
-                // If not pinned by bone, or no skin info: pin by Z height
+                // If not pinned by bone, or no skin info: pin by relative height (scale-invariant)
                 if (!pin)
                 {
-                    if (maxZ > 1.4f && minZ < 0.5f)
+                    if (height > 0.8f)
                     {
-                        // Full-body robe/dress: pin everything at or above waist/pelvis (Z >= 0.85)
-                        pin = rest[p].Z >= 0.85f;
+                        // Full-body robe/dress: pin upper body / waist (top 55%)
+                        pin = rest[p].Z >= (minZ + 0.45f * height);
                     }
                     else
                     {
@@ -6986,12 +7195,17 @@ namespace UoFiddler.Plugin.Granny3D
 
         // Skinned position of a pinned particle: dynamically calculates animated
         // position using WrapSkin + master skeleton matrices, native Skin matrices,
-        // or rigid attach matrix.
+        // or rigid attach matrix, and applies scale/rotation/offset/thickness tweaks.
         private Vector3 ClothPinTarget(LoadedMesh lm, int p)
         {
             int v = (lm.ClothRep != null && p >= 0 && p < lm.ClothRep.Length) ? lm.ClothRep[p] : -1;
             if (v < 0 || lm.BaseVertices == null || v >= lm.BaseVertices.Length) return Vector3.Zero;
             Vector3 orig = lm.BaseVertices[v];
+
+            bool thick = lm.Thickness != 0f && lm.BaseVertexNormals != null && v < lm.BaseVertexNormals.Length;
+            Vector3 baseN = thick ? lm.BaseVertexNormals[v] : Vector3.Zero;
+            Vector3 skinnedPos = orig;
+            Vector3 dnorm = baseN;
 
             // 1. WrapSkin (mesh skin-wrapped to host skeleton)
             if (lm.WrapSource != null && lm.WrapSkin != null && lm.WrapSource.SkinMatrices != null)
@@ -7001,49 +7215,61 @@ namespace UoFiddler.Plugin.Granny3D
                     var inf = lm.WrapSkin[v];
                     var mats = lm.WrapSource.SkinMatrices;
                     int bc = lm.WrapSource.Bones.Count;
-                    Vector3 def = Vector3.Zero; float tw = 0f;
+                    Vector3 def = Vector3.Zero;
+                    Vector3 dn = Vector3.Zero;
+                    float tw = 0f;
                     for (int k = 0; k < inf.Length; k++)
                     {
                         int bid = inf[k].BoneId;
                         if (bid >= 0 && bid < bc && bid < mats.Length)
                         {
                             def += Vector3.TransformPosition(orig, mats[bid]) * inf[k].Weight;
+                            if (thick) dn += Vector3.TransformNormal(baseN, mats[bid]) * inf[k].Weight;
                             tw += inf[k].Weight;
                         }
                     }
-                    if (tw > 1e-4f) return def / tw;
+                    if (tw > 1e-4f)
+                    {
+                        skinnedPos = def / tw;
+                        dnorm = dn;
+                    }
                 }
             }
-
             // 2. Native Skin
-            if (lm.Skin != null && v < lm.Skin.Length && lm.SkinMatrices != null && lm.Bones != null)
+            else if (lm.Skin != null && v < lm.Skin.Length && lm.SkinMatrices != null && lm.Bones != null)
             {
                 var inf = lm.Skin[v];
                 if (inf != null && inf.Length > 0)
                 {
                     var mats = lm.SkinMatrices;
                     int bc = lm.Bones.Count;
-                    Vector3 def = Vector3.Zero; float tw = 0f;
+                    Vector3 def = Vector3.Zero;
+                    Vector3 dn = Vector3.Zero;
+                    float tw = 0f;
                     for (int k = 0; k < inf.Length; k++)
                     {
                         int bid = inf[k].BoneId;
                         if (bid >= 0 && bid < bc && bid < mats.Length)
                         {
                             def += Vector3.TransformPosition(orig, mats[bid]) * inf[k].Weight;
+                            if (thick) dn += Vector3.TransformNormal(baseN, mats[bid]) * inf[k].Weight;
                             tw += inf[k].Weight;
                         }
                     }
-                    if (tw > 1e-4f) return def / tw;
+                    if (tw > 1e-4f)
+                    {
+                        skinnedPos = def / tw;
+                        dnorm = dn;
+                    }
                 }
             }
-
             // 3. Rigid attach
-            if (lm.HasAttachMatrix)
+            else if (lm.HasAttachMatrix)
             {
                 return Vector3.TransformPosition(orig, lm.AttachMatrix);
             }
 
-            return orig;
+            return ApplyMeshTweak(lm, skinnedPos, thick, dnorm);
         }
 
         private void SetClothSelected(bool on)
@@ -7061,6 +7287,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 ClearClothBake(lm);                            // rebuild -> (re)bake needed
                 BuildClothFromMesh(lm);
+                ResetAllCloth();
                 Log($"Tissu : '{lm.Name}' activé (verts={lm.BaseVertices.Length} particules={lm.ClothPos?.Length ?? 0}, liens={lm.ClothEdgeA?.Length ?? 0}).");
             }
             else
@@ -7440,7 +7667,10 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         int p = v < lm.Weld.Length ? lm.Weld[v] : 0;
                         if (p < 0 || p >= lm.ClothPos.Length) p = 0;
-                        lm.DeformedCache[v] = lm.ClothPos[p];
+                        Vector3 cp = lm.ClothPos[p];
+                        if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
+                            cp += riderOffset;
+                        lm.DeformedCache[v] = cp;
                     }
                 }
                 else
