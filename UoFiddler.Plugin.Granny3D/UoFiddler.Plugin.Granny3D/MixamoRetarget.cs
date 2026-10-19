@@ -161,6 +161,7 @@ namespace UoFiddler.Plugin.Granny3D
         {
             alias = null;
             if (string.IsNullOrEmpty(name)) return false;
+            if (name.IndexOf("_$AssimpFbx$_", StringComparison.OrdinalIgnoreCase) >= 0) return false;
 
             string cleanName = name;
             int colon = cleanName.IndexOf(':');
@@ -328,13 +329,47 @@ namespace UoFiddler.Plugin.Granny3D
             // Which UO bone each mix node maps to.
             var uo2mix = new int[nb];
             for (int i = 0; i < nb; i++) uo2mix[i] = -1;
-            foreach (var m in BoneMap)
-                if (nameToUo.TryGetValue(m.Uo, out int uo) && nameToNode.TryGetValue(m.Mix, out int mi))
-                    if (uo2mix[uo] < 0) uo2mix[uo] = mi;
 
+            // Pass 1: Try exact or prefix-normalized BoneMap matches (e.g. mixamorig1:LeftArm or LeftArm)
+            foreach (var m in BoneMap)
+            {
+                if (!nameToUo.TryGetValue(m.Uo, out int uo)) continue;
+                if (uo2mix[uo] >= 0) continue;
+
+                if (nameToNode.TryGetValue(m.Mix, out int mi))
+                {
+                    if (nodes[mi].Name.IndexOf("_$AssimpFbx$_", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        uo2mix[uo] = mi;
+                        continue;
+                    }
+                }
+
+                string cleanMix = m.Mix;
+                int cMix = cleanMix.IndexOf(':');
+                if (cMix >= 0) cleanMix = cleanMix.Substring(cMix + 1);
+
+                for (int ni = 0; ni < nn; ni++)
+                {
+                    string nName = nodes[ni].Name;
+                    if (nName.IndexOf("_$AssimpFbx$_", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    string cNode = nName;
+                    int cCol = cNode.IndexOf(':');
+                    if (cCol >= 0) cNode = cNode.Substring(cCol + 1);
+                    if (string.Equals(cNode, cleanMix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        uo2mix[uo] = ni;
+                        break;
+                    }
+                }
+            }
+
+            // Pass 2: Humanoid and finger alias resolvers
             for (int ni = 0; ni < nn; ni++)
             {
-                if (TryGetBoneAlias(nodes[ni].Name, out string uoName) && nameToUo.TryGetValue(uoName, out int uo))
+                string nName = nodes[ni].Name;
+                if (nName.IndexOf("_$AssimpFbx$_", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                if (TryGetBoneAlias(nName, out string uoName) && nameToUo.TryGetValue(uoName, out int uo))
                     if (uo2mix[uo] < 0) uo2mix[uo] = ni;
             }
 

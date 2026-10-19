@@ -3164,53 +3164,80 @@ namespace UoFiddler.Plugin.Granny3D
         // standalone ".anim" clip into the "Others" folder, then play it.
         private void BtnImportAnim_Click(object sender, EventArgs e)
         {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Importer une animation Mixamo (FBX)",
+                Filter = "FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*"
+            };
+            if (ofd.ShowDialog() != DialogResult.OK) return;
+            ImportMixamoAnimDirect(ofd.FileName);
+        }
+
+        public void ImportMixamoAnimDirect(string fbxPath)
+        {
             try
             {
-                using var ofd = new OpenFileDialog
-                {
-                    Title = "Importer une animation Mixamo (FBX)",
-                    Filter = "FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*"
-                };
-                if (ofd.ShowDialog() != DialogResult.OK) return;
+                if (string.IsNullOrEmpty(fbxPath) || !File.Exists(fbxPath)) return;
 
-                string refPath = Path.Combine(BasePath, "Humans", "H_Female_Lod2.grn");
-                if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
-                if (!File.Exists(refPath))
+                IReadOnlyList<GrannyBone> bones = null;
+                if (_modelParser != null && _modelParser.Bones != null && _modelParser.Bones.Count > 0)
                 {
-                    MessageBox.Show("Modèle de référence Biped introuvable (H_Female_Lod2.grn).");
+                    bones = _modelParser.Bones;
+                }
+                else
+                {
+                    string refPath = Path.Combine(BasePath, "Humans", "H_Female_Lod2.grn");
+                    if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
+                    if (!File.Exists(refPath))
+                    {
+                        MessageBox.Show("Modèle de référence Biped introuvable (H_Female_Lod2.grn ou H_Male_Lod2.grn).", "Erreur Référence", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    var refParser = new GrannyFormatParser();
+                    if (!refParser.Load(refPath) || refParser.Bones == null || refParser.Bones.Count == 0)
+                    {
+                        MessageBox.Show("Impossible de charger le squelette de référence.", "Erreur Référence", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    bones = refParser.Bones;
+                }
+
+                string clip = Path.GetFileNameWithoutExtension(fbxPath);
+                if (!MixamoRetarget.TryImport(fbxPath, bones, clip, out var anim, out string err) || anim == null)
+                {
+                    MessageBox.Show("Import Mixamo échoué : " + (err ?? "raison inconnue"), "Erreur Import Mixamo", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
-                var refParser = new GrannyFormatParser();
-                if (!refParser.Load(refPath) || refParser.Bones == null || refParser.Bones.Count == 0)
-                {
-                    MessageBox.Show("Impossible de charger le squelette de référence.");
-                    return;
-                }
-
-                string clip = Path.GetFileNameWithoutExtension(ofd.FileName);
-                if (!MixamoRetarget.TryImport(ofd.FileName, refParser.Bones, clip, out var anim, out string err) || anim == null)
-                {
-                    MessageBox.Show("Import Mixamo échoué : " + (err ?? "raison inconnue"));
-                    return;
-                }
-
-                string outPath = Path.Combine(BasePath, "Others", clip + GrannyAnimFile.Extension);
+                string outFolder = Path.Combine(BasePath, "Others");
+                if (!Directory.Exists(outFolder)) Directory.CreateDirectory(outFolder);
+                string outPath = Path.Combine(outFolder, clip + GrannyAnimFile.Extension);
                 if (!GrannyAnimFile.Save(anim, outPath))
                 {
-                    MessageBox.Show("Écriture impossible : " + outPath);
+                    MessageBox.Show("Écriture impossible : " + outPath, "Erreur Sauvegarde", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
-                Log($"Import Mixamo OK: {Path.GetFileName(outPath)} tracks={anim.Tracks.Count} dur={anim.Duration:F2}s mapped={MixamoRetarget.MappedBoneCount(refParser.Bones)}");
+                Log($"Import Mixamo OK: {Path.GetFileName(outPath)} tracks={anim.Tracks.Count} dur={anim.Duration:F2}s mapped={MixamoRetarget.MappedBoneCount(bones)}");
 
                 BuildAnimCategories();
                 RevealAnimFile(outPath);
+
+                MessageBox.Show(
+                    $"Animation Mixamo '{clip}' importée avec succès !\n\n" +
+                    $"• Fichier généré : {Path.GetFileName(outPath)}\n" +
+                    $"• Durée : {anim.Duration:F2}s ({anim.Tracks.Count} pistes d'os)\n" +
+                    $"• Dossier : {outFolder}\n\n" +
+                    "L'animation est disponible dans la catégorie 'Importés (Mixamo)' et a été lancée.",
+                    "Import Mixamo Réussi",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
                 Log($"Import Mixamo error: {ex.Message}\n{ex}");
-                MessageBox.Show("Erreur d'import : " + ex.Message);
+                MessageBox.Show("Erreur d'import : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -3225,6 +3252,30 @@ namespace UoFiddler.Plugin.Granny3D
                     Filter = "Fichiers 3D (*.fbx;*.obj;*.dae;*.3ds;*.ply)|*.fbx;*.obj;*.dae;*.3ds;*.ply|FBX (*.fbx)|*.fbx|Wavefront OBJ (*.obj)|*.obj|Tous les fichiers (*.*)|*.*"
                 };
                 if (ofd.ShowDialog() != DialogResult.OK) return;
+
+                if (string.Equals(Path.GetExtension(ofd.FileName), ".fbx", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        using var chkCtx = new Assimp.AssimpContext();
+                        var chkScene = chkCtx.ImportFile(ofd.FileName, Assimp.PostProcessSteps.None);
+                        if (chkScene != null && chkScene.MeshCount == 0 && chkScene.AnimationCount > 0)
+                        {
+                            var ask = MessageBox.Show(
+                                $"Le fichier '{Path.GetFileName(ofd.FileName)}' ne contient aucun mesh 3D, mais contient {chkScene.AnimationCount} animation(s) Mixamo (téléchargé 'Without Skin').\n\n" +
+                                "Souhaitez-vous l'importer directement en tant qu'animation Mixamo (.anim) pour vos personnages ?",
+                                "Animation Mixamo Détectée",
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Question);
+                            if (ask == DialogResult.Yes)
+                            {
+                                ImportMixamoAnimDirect(ofd.FileName);
+                                return;
+                            }
+                        }
+                    }
+                    catch { }
+                }
 
                 string meshName = Path.GetFileNameWithoutExtension(ofd.FileName);
                 string outFolder = Path.Combine(BasePath, "Meshs custom");
@@ -3363,6 +3414,30 @@ namespace UoFiddler.Plugin.Granny3D
                     Filter = "FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*"
                 };
                 if (ofd.ShowDialog() != DialogResult.OK) return;
+
+                if (string.Equals(Path.GetExtension(ofd.FileName), ".fbx", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        using var chkCtx = new Assimp.AssimpContext();
+                        var chkScene = chkCtx.ImportFile(ofd.FileName, Assimp.PostProcessSteps.None);
+                        if (chkScene != null && chkScene.MeshCount == 0 && chkScene.AnimationCount > 0)
+                        {
+                            var ask = MessageBox.Show(
+                                $"Le fichier '{Path.GetFileName(ofd.FileName)}' ne contient aucun mesh 3D, mais contient {chkScene.AnimationCount} animation(s) Mixamo (téléchargé 'Without Skin').\n\n" +
+                                "Souhaitez-vous l'importer en tant qu'animation Mixamo (.anim) pour vos personnages ?",
+                                "Animation Mixamo Détectée",
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Question);
+                            if (ask == DialogResult.Yes)
+                            {
+                                ImportMixamoAnimDirect(ofd.FileName);
+                                return;
+                            }
+                        }
+                    }
+                    catch { }
+                }
 
                 string charName = Path.GetFileNameWithoutExtension(ofd.FileName);
                 string outFolder = Path.Combine(BasePath, "Others");

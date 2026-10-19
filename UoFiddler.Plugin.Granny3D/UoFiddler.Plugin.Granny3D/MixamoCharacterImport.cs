@@ -279,6 +279,7 @@ namespace UoFiddler.Plugin.Granny3D
 
                     for (int nidx = 0; nidx < nn; nidx++)
                     {
+                        if (nodes[nidx].Name.IndexOf("_$AssimpFbx$_", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                         int res = ResolveBoneToUo(nodes[nidx].Name, uoBoneByName, null, null, null);
                         if (res >= 0 && refBones != null && res < refBones.Count &&
                             string.Equals(refBones[res].Name, baseName, StringComparison.OrdinalIgnoreCase))
@@ -1254,6 +1255,7 @@ namespace UoFiddler.Plugin.Granny3D
             List<int> nodeParent)
         {
             if (string.IsNullOrEmpty(bname)) return -1;
+            if (bname.IndexOf("_$AssimpFbx$_", StringComparison.OrdinalIgnoreCase) >= 0) return -1;
 
             // 1) Direct match in UO skeleton
             if (uoBoneByName.TryGetValue(bname, out int uoIdx)) return uoIdx;

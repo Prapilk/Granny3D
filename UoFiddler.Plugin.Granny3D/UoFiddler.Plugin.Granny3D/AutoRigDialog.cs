@@ -205,12 +205,12 @@ namespace UoFiddler.Plugin.Granny3D
         {
             _markers.Clear();
 
-            // Anatomical markers corresponding to UO Biped key joints
-            _markers.Add(new JointMarker { BoneName = "Bip01 Head", DisplayName = "Tête (Head)", Position = new Vector3(0.0f, 0.015f, 1.60f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 Neck" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Neck", DisplayName = "Cou (Neck)", Position = new Vector3(0.0f, 0.01f, 1.48f), Color = Color.FromArgb(255, 215, 0), ParentName = "Bip01 Spine2" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Spine2", DisplayName = "Poitrine (Chest)", Position = new Vector3(0.0f, 0.015f, 1.35f), Color = Color.FromArgb(124, 252, 0), ParentName = "Bip01 Spine1" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Spine", DisplayName = "Ventre (Abdomen)", Position = new Vector3(0.0f, 0.015f, 1.15f), Color = Color.FromArgb(50, 205, 50), ParentName = "Bip01 Pelvis" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Pelvis", DisplayName = "Bassin / Hanches (Pelvis)", Position = new Vector3(0.0f, 0.018f, 0.95f), Color = Color.FromArgb(0, 206, 209), ParentName = null });
+            // Anatomical markers corresponding to UO Biped key joints (pivots d'articulation)
+            _markers.Add(new JointMarker { BoneName = "Bip01 Head", DisplayName = "Tête (Pivot nuque / base crâne)", Position = new Vector3(0.0f, 0.028f, 1.443f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 Neck" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Neck", DisplayName = "Cou (Pivot base cou / haut sternum)", Position = new Vector3(0.0f, 0.041f, 1.367f), Color = Color.FromArgb(255, 215, 0), ParentName = "Bip01 Spine2" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Spine2", DisplayName = "Poitrine (Pivot plexus / sous sternum)", Position = new Vector3(0.0f, 0.014f, 1.214f), Color = Color.FromArgb(124, 252, 0), ParentName = "Bip01 Spine1" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Spine", DisplayName = "Ventre (Pivot taille / nombril)", Position = new Vector3(0.0f, 0.018f, 1.021f), Color = Color.FromArgb(50, 205, 50), ParentName = "Bip01 Pelvis" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Pelvis", DisplayName = "Bassin / Hanches (Pelvis)", Position = new Vector3(0.0f, 0.018f, 0.937f), Color = Color.FromArgb(0, 206, 209), ParentName = null });
 
             // Arms (Left / Right) - G = Gauche (X < 0, gauche), D = Droite (X > 0, droite)
             _markers.Add(new JointMarker { BoneName = "Bip01 L Clavicle", DisplayName = "Clavicule G", Position = new Vector3(-0.12f, 0.01f, 1.40f), Color = Color.FromArgb(30, 144, 255), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 R Clavicle" });
@@ -573,10 +573,19 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = "4. Positionnement des Articulations (Croix 3D)",
                 Dock = DockStyle.Top,
-                Height = 330,
+                Height = 350,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
+            };
+
+            var lblJointTip = new Label
+            {
+                Text = "💡 Les croix 3D marquent les PIVOTS d'articulation (rotation), pas le milieu des volumes.",
+                Dock = DockStyle.Top,
+                Height = 20,
+                ForeColor = Color.Khaki,
+                Font = new Font("Segoe UI", 8F, FontStyle.Italic)
             };
 
             var pnlTopRigBtns = new Panel { Dock = DockStyle.Top, Height = 32 };
@@ -756,6 +765,7 @@ namespace UoFiddler.Plugin.Granny3D
             grpMarkers.Controls.Add(lblJoint);
             grpMarkers.Controls.Add(pnlSkinBtns);
             grpMarkers.Controls.Add(pnlTopRigBtns);
+            grpMarkers.Controls.Add(lblJointTip);
 
             // 5. Animation Preview Group
             var grpAnim = new GroupBox
@@ -2473,26 +2483,31 @@ namespace UoFiddler.Plugin.Granny3D
                     bool isRight = bName.Contains(" R ");
                     if (isLeft || isRight)
                     {
-                        float sign = isLeft ? 1f : -1f;
+                        // In UO Biped / 3ds Max Character Studio, both Left and Right fingers curl inward around local +Z!
                         if (bName.Contains("Finger11"))
                         {
-                            float curlAngle = _fingerFlexAmount * MathHelper.DegreesToRadians(80f) * sign;
-                            localTransform = Matrix4.CreateRotationZ(curlAngle) * localTransform;
+                            float angle11 = _fingerFlexAmount * MathHelper.DegreesToRadians(80f);
+                            localTransform = Matrix4.CreateRotationZ(angle11) * localTransform;
                         }
                         else if (bName.Contains("Finger1"))
                         {
-                            float curlAngle = _fingerFlexAmount * MathHelper.DegreesToRadians(70f) * sign;
-                            localTransform = Matrix4.CreateRotationZ(curlAngle) * localTransform;
+                            float angle1 = _fingerFlexAmount * MathHelper.DegreesToRadians(70f);
+                            localTransform = Matrix4.CreateRotationZ(angle1) * localTransform;
                         }
                         else if (bName.Contains("Finger01"))
                         {
-                            float curlAngle = _fingerFlexAmount * MathHelper.DegreesToRadians(55f) * sign;
-                            localTransform = Matrix4.CreateRotationY(-curlAngle * 0.8f) * Matrix4.CreateRotationZ(curlAngle * 0.5f) * localTransform;
+                            float angle01 = _fingerFlexAmount * MathHelper.DegreesToRadians(55f);
+                            float signY = isLeft ? -1f : 1f;
+                            localTransform = Matrix4.CreateRotationY(angle01 * 0.3f * signY) * Matrix4.CreateRotationZ(angle01) * localTransform;
                         }
                         else if (bName.Contains("Finger0"))
                         {
-                            float curlAngle = _fingerFlexAmount * MathHelper.DegreesToRadians(50f) * sign;
-                            localTransform = Matrix4.CreateRotationY(-curlAngle * 0.9f) * Matrix4.CreateRotationZ(curlAngle * 0.4f) * localTransform;
+                            float angle0 = _fingerFlexAmount * MathHelper.DegreesToRadians(45f);
+                            float signX = isLeft ? 1f : -1f;
+                            float signY = isLeft ? -1f : 1f;
+                            localTransform = Matrix4.CreateRotationX(angle0 * 0.6f * signX) *
+                                             Matrix4.CreateRotationY(angle0 * 0.6f * signY) *
+                                             Matrix4.CreateRotationZ(angle0 * 0.7f) * localTransform;
                         }
                     }
                 }
@@ -2917,9 +2932,52 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
 
-                // 3) Standard 3D File (FBX, OBJ, DAE, 3DS) via Assimp
                 var ctx = new AssimpContext();
                 var scene = ctx.ImportFile(filePath, PostProcessSteps.Triangulate | PostProcessSteps.GenerateSmoothNormals);
+                if (scene == null)
+                {
+                    MessageBox.Show("Impossible de charger le fichier 3D.", "Erreur 3D", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (scene.MeshCount == 0)
+                {
+                    if (scene.AnimationCount > 0)
+                    {
+                        var ask = MessageBox.Show(
+                            $"Le fichier '{fn}' ne contient aucun mesh 3D, mais contient {scene.AnimationCount} animation(s) Mixamo (téléchargé 'Without Skin').\n\n" +
+                            "Souhaitez-vous charger cette animation dans les actions de test pour voir bouger votre modèle actuel ?",
+                            "Animation Mixamo Détectée",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Question);
+                        if (ask == DialogResult.Yes)
+                        {
+                            var bonesForRetarget = (_previewModel != null && _previewModel.Bones.Count > 0) ? _previewModel.Bones : _refBones;
+                            string aErr = null;
+                            if (bonesForRetarget != null && MixamoRetarget.TryImport(filePath, bonesForRetarget, Path.GetFileNameWithoutExtension(filePath), out var anim, out aErr) && anim != null)
+                            {
+                                var item = new AnimTestItem
+                                {
+                                    DisplayName = $"🎬 [Action FBX] {Path.GetFileNameWithoutExtension(filePath)}",
+                                    FilePath = filePath,
+                                    PreloadedAnim = anim
+                                };
+                                cbAnimTest.Items.Insert(0, item);
+                                cbAnimTest.SelectedIndex = 0;
+                                if (!_isPlayingAnim) TogglePlayAnimation();
+                            }
+                            else
+                            {
+                                MessageBox.Show("Impossible de retargeter l'animation : " + (aErr ?? "erreur inconnue"), "Erreur Animation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Le fichier '{fn}' ne contient aucun mesh 3D ni animation.", "Modèle vide", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    return;
+                }
 
                 bool hasBones = scene.Meshes.Any(m => m.HasBones && m.BoneCount > 0);
                 if (ext == ".fbx" && hasBones)
