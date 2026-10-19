@@ -206,41 +206,37 @@ namespace UoFiddler.Plugin.Granny3D
             _markers.Clear();
 
             // Anatomical markers corresponding to UO Biped key joints (pivots d'articulation)
-            _markers.Add(new JointMarker { BoneName = "Bip01 Head", DisplayName = "Tête (Pivot nuque / base crâne)", Position = new Vector3(0.0f, 0.028f, 1.443f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 Neck" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Neck", DisplayName = "Cou (Pivot base cou / haut sternum)", Position = new Vector3(0.0f, 0.041f, 1.367f), Color = Color.FromArgb(255, 215, 0), ParentName = "Bip01 Spine2" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Spine2", DisplayName = "Poitrine (Pivot plexus / sous sternum)", Position = new Vector3(0.0f, 0.014f, 1.214f), Color = Color.FromArgb(124, 252, 0), ParentName = "Bip01 Spine1" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Spine", DisplayName = "Ventre (Pivot taille / nombril)", Position = new Vector3(0.0f, 0.018f, 1.021f), Color = Color.FromArgb(50, 205, 50), ParentName = "Bip01 Pelvis" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Pelvis", DisplayName = "Bassin / Hanches (Pelvis)", Position = new Vector3(0.0f, 0.018f, 0.937f), Color = Color.FromArgb(0, 206, 209), ParentName = null });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Head", DisplayName = "Tête (Pivot nuque / base crâne)", Position = new Vector3(0.0f, 0.029f, 1.441f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 Neck" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Neck", DisplayName = "Cou (Pivot base cou / haut sternum)", Position = new Vector3(0.0f, 0.032f, 1.369f), Color = Color.FromArgb(255, 215, 0), ParentName = "Bip01 Spine2" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Spine2", DisplayName = "Poitrine / Cage Thoracique", Position = new Vector3(0.0f, 0.041f, 1.214f), Color = Color.FromArgb(124, 252, 0), ParentName = "Bip01 Spine1" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Spine", DisplayName = "Abdomen (Taille / nombril)", Position = new Vector3(0.0f, 0.037f, 1.021f), Color = Color.FromArgb(50, 205, 50), ParentName = "Bip01 Pelvis" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Pelvis", DisplayName = "Bassin / Hanches (Pelvis)", Position = new Vector3(0.0f, 0.037f, 0.937f), Color = Color.FromArgb(0, 206, 209), ParentName = null });
 
-            // Arms (Left / Right) - G = Gauche (X < 0, gauche), D = Droite (X > 0, droite)
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Clavicle", DisplayName = "Clavicule G", Position = new Vector3(-0.12f, 0.01f, 1.40f), Color = Color.FromArgb(30, 144, 255), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 R Clavicle" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Clavicle", DisplayName = "Clavicule D", Position = new Vector3(0.12f, 0.01f, 1.40f), Color = Color.FromArgb(255, 69, 0), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 L Clavicle" });
+            // Right Arm (Vue de face = Écran Gauche, X < 0)
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Clavicle", DisplayName = "Clavicule D (Écran Gauche)", Position = new Vector3(-0.042f, 0.031f, 1.339f), Color = Color.FromArgb(255, 69, 0), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 L Clavicle" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R UpperArm", DisplayName = "Épaule D (Écran Gauche)", Position = new Vector3(-0.160f, 0.038f, 1.336f), Color = Color.FromArgb(220, 20, 60), ParentName = "Bip01 R Clavicle", SymmetricBoneName = "Bip01 L UpperArm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Forearm", DisplayName = "Coude D (Écran Gauche)", Position = new Vector3(-0.380f, 0.031f, 1.335f), Color = Color.FromArgb(205, 92, 92), ParentName = "Bip01 R UpperArm", SymmetricBoneName = "Bip01 L Forearm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Hand", DisplayName = "Poignet D (Écran Gauche)", Position = new Vector3(-0.580f, 0.003f, 1.332f), Color = Color.FromArgb(255, 99, 71), ParentName = "Bip01 R Forearm", SymmetricBoneName = "Bip01 L Hand" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger0", DisplayName = "Pouce D (Écran Gauche)", Position = new Vector3(-0.621f, -0.032f, 1.324f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger0" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger1", DisplayName = "Doigts D (Écran Gauche)", Position = new Vector3(-0.655f, -0.013f, 1.327f), Color = Color.FromArgb(0, 206, 209), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger1" });
 
-            _markers.Add(new JointMarker { BoneName = "Bip01 L UpperArm", DisplayName = "Épaule G (Shoulder)", Position = new Vector3(-0.24f, 0.02f, 1.38f), Color = Color.FromArgb(65, 105, 225), ParentName = "Bip01 L Clavicle", SymmetricBoneName = "Bip01 R UpperArm" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R UpperArm", DisplayName = "Épaule D (Shoulder)", Position = new Vector3(0.24f, 0.02f, 1.38f), Color = Color.FromArgb(220, 20, 60), ParentName = "Bip01 R Clavicle", SymmetricBoneName = "Bip01 L UpperArm" });
+            // Left Arm (Vue de face = Écran Droite, X > 0)
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Clavicle", DisplayName = "Clavicule G (Écran Droite)", Position = new Vector3(0.042f, 0.031f, 1.339f), Color = Color.FromArgb(30, 144, 255), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 R Clavicle" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L UpperArm", DisplayName = "Épaule G (Écran Droite)", Position = new Vector3(0.160f, 0.038f, 1.336f), Color = Color.FromArgb(65, 105, 225), ParentName = "Bip01 L Clavicle", SymmetricBoneName = "Bip01 R UpperArm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Forearm", DisplayName = "Coude G (Écran Droite)", Position = new Vector3(0.380f, 0.031f, 1.335f), Color = Color.FromArgb(100, 149, 237), ParentName = "Bip01 L UpperArm", SymmetricBoneName = "Bip01 R Forearm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Hand", DisplayName = "Poignet G (Écran Droite)", Position = new Vector3(0.580f, 0.003f, 1.332f), Color = Color.FromArgb(0, 191, 255), ParentName = "Bip01 L Forearm", SymmetricBoneName = "Bip01 R Hand" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger0", DisplayName = "Pouce G (Écran Droite)", Position = new Vector3(0.621f, -0.032f, 1.324f), Color = Color.FromArgb(255, 191, 0), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger0" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger1", DisplayName = "Doigts G (Écran Droite)", Position = new Vector3(0.655f, -0.013f, 1.327f), Color = Color.FromArgb(0, 255, 255), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger1" });
 
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Forearm", DisplayName = "Coude G (Elbow)", Position = new Vector3(-0.44f, 0.03f, 1.35f), Color = Color.FromArgb(100, 149, 237), ParentName = "Bip01 L UpperArm", SymmetricBoneName = "Bip01 R Forearm" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Forearm", DisplayName = "Coude D (Elbow)", Position = new Vector3(0.44f, 0.03f, 1.35f), Color = Color.FromArgb(205, 92, 92), ParentName = "Bip01 R UpperArm", SymmetricBoneName = "Bip01 L Forearm" });
+            // Right Leg (Vue de face = Écran Gauche, X < 0)
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Thigh", DisplayName = "Hanche D (Écran Gauche)", Position = new Vector3(-0.086f, 0.037f, 0.900f), Color = Color.FromArgb(218, 112, 214), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 L Thigh" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Calf", DisplayName = "Genou D (Écran Gauche)", Position = new Vector3(-0.092f, 0.041f, 0.500f), Color = Color.FromArgb(186, 85, 211), ParentName = "Bip01 R Thigh", SymmetricBoneName = "Bip01 L Calf" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Foot", DisplayName = "Cheville D (Écran Gauche)", Position = new Vector3(-0.097f, 0.070f, 0.100f), Color = Color.FromArgb(255, 105, 180), ParentName = "Bip01 R Calf", SymmetricBoneName = "Bip01 L Foot" });
 
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Hand", DisplayName = "Poignet G (Wrist)", Position = new Vector3(-0.63f, 0.045f, 1.33f), Color = Color.FromArgb(0, 191, 255), ParentName = "Bip01 L Forearm", SymmetricBoneName = "Bip01 R Hand" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Hand", DisplayName = "Poignet D (Wrist)", Position = new Vector3(0.63f, 0.045f, 1.33f), Color = Color.FromArgb(255, 99, 71), ParentName = "Bip01 R Forearm", SymmetricBoneName = "Bip01 L Hand" });
-
-            // Fingers & Thumbs (Direct interactive markers on hands!)
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger0", DisplayName = "Pouce G (Thumb)", Position = new Vector3(-0.68f, 0.07f, 1.31f), Color = Color.FromArgb(255, 191, 0), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger0" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger1", DisplayName = "Doigts G (Fingers)", Position = new Vector3(-0.73f, 0.04f, 1.31f), Color = Color.FromArgb(0, 255, 255), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger1" });
-
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger0", DisplayName = "Pouce D (Thumb)", Position = new Vector3(0.68f, 0.07f, 1.31f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger0" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger1", DisplayName = "Doigts D (Fingers)", Position = new Vector3(0.73f, 0.04f, 1.31f), Color = Color.FromArgb(0, 206, 209), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger1" });
-
-            // Legs (Left / Right) - G = Gauche (X < 0), D = Droite (X > 0)
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Thigh", DisplayName = "Hanche G (Hip)", Position = new Vector3(-0.12f, 0.015f, 0.90f), Color = Color.FromArgb(72, 209, 204), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 R Thigh" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Thigh", DisplayName = "Hanche D (Hip)", Position = new Vector3(0.12f, 0.015f, 0.90f), Color = Color.FromArgb(218, 112, 214), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 L Thigh" });
-
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Calf", DisplayName = "Genou G (Knee)", Position = new Vector3(-0.12f, 0.02f, 0.50f), Color = Color.FromArgb(32, 178, 170), ParentName = "Bip01 L Thigh", SymmetricBoneName = "Bip01 R Calf" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Calf", DisplayName = "Genou D (Knee)", Position = new Vector3(0.12f, 0.02f, 0.50f), Color = Color.FromArgb(186, 85, 211), ParentName = "Bip01 R Thigh", SymmetricBoneName = "Bip01 L Calf" });
-
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Foot", DisplayName = "Cheville G (Ankle)", Position = new Vector3(-0.10f, 0.05f, 0.10f), Color = Color.FromArgb(0, 139, 139), ParentName = "Bip01 L Calf", SymmetricBoneName = "Bip01 R Foot" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Foot", DisplayName = "Cheville D (Ankle)", Position = new Vector3(0.10f, 0.05f, 0.10f), Color = Color.FromArgb(255, 105, 180), ParentName = "Bip01 R Calf", SymmetricBoneName = "Bip01 L Foot" });
+            // Left Leg (Vue de face = Écran Droite, X > 0)
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Thigh", DisplayName = "Hanche G (Écran Droite)", Position = new Vector3(0.086f, 0.037f, 0.900f), Color = Color.FromArgb(72, 209, 204), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 R Thigh" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Calf", DisplayName = "Genou G (Écran Droite)", Position = new Vector3(0.092f, 0.041f, 0.500f), Color = Color.FromArgb(32, 178, 170), ParentName = "Bip01 L Thigh", SymmetricBoneName = "Bip01 R Calf" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Foot", DisplayName = "Cheville G (Écran Droite)", Position = new Vector3(0.097f, 0.070f, 0.100f), Color = Color.FromArgb(0, 139, 139), ParentName = "Bip01 L Calf", SymmetricBoneName = "Bip01 R Foot" });
 
             RefreshJointsCombo();
         }
@@ -2207,48 +2203,48 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             // 1. Menton / Tête (Chin)
-            SetPos("Bip01 Head", new Vector3(0f, midY, minZ + height * 0.90f));
-            SetPos("Bip01 Neck", new Vector3(0f, midY, minZ + height * 0.83f));
+            SetPos("Bip01 Head", new Vector3(0f, midY, minZ + height * 0.88f));
+            SetPos("Bip01 Neck", new Vector3(0f, midY, minZ + height * 0.82f));
 
             // 2. Bassin / Entrejambe (Groin / Pelvis)
-            SetPos("Bip01 Spine2", new Vector3(0f, midY, minZ + height * 0.74f));
-            SetPos("Bip01 Spine", new Vector3(0f, midY, minZ + height * 0.62f));
-            SetPos("Bip01 Pelvis", new Vector3(0f, midY, minZ + height * 0.52f));
+            SetPos("Bip01 Spine2", new Vector3(0f, midY, minZ + height * 0.72f)); // Poitrine / Cage Thoracique
+            SetPos("Bip01 Spine", new Vector3(0f, midY, minZ + height * 0.60f));  // Abdomen / Nombril
+            SetPos("Bip01 Pelvis", new Vector3(0f, midY, minZ + height * 0.52f)); // Bassin / Hanches
 
-            // 3. Bras (Clavicules, Épaules, Coudes, Poignets) - G = -X, D = +X
+            // 3. Bras (Clavicules, Épaules, Coudes, Poignets) - D = -X (Écran Gauche), G = +X (Écran Droite)
             float armY = midY;
-            SetPos("Bip01 L Clavicle", new Vector3(-halfWidth * 0.25f, armY, minZ + height * 0.76f));
-            SetPos("Bip01 R Clavicle", new Vector3(halfWidth * 0.25f, armY, minZ + height * 0.76f));
+            SetPos("Bip01 R Clavicle", new Vector3(-halfWidth * 0.25f, armY, minZ + height * 0.77f));
+            SetPos("Bip01 L Clavicle", new Vector3(halfWidth * 0.25f, armY, minZ + height * 0.77f));
 
-            SetPos("Bip01 L UpperArm", new Vector3(-halfWidth * 0.45f, armY, minZ + height * 0.74f));
-            SetPos("Bip01 R UpperArm", new Vector3(halfWidth * 0.45f, armY, minZ + height * 0.74f));
+            SetPos("Bip01 R UpperArm", new Vector3(-halfWidth * 0.45f, armY, minZ + height * 0.76f));
+            SetPos("Bip01 L UpperArm", new Vector3(halfWidth * 0.45f, armY, minZ + height * 0.76f));
 
             // Coudes (Elbows)
-            SetPos("Bip01 L Forearm", new Vector3(-halfWidth * 0.72f, armY, minZ + height * 0.72f));
-            SetPos("Bip01 R Forearm", new Vector3(halfWidth * 0.72f, armY, minZ + height * 0.72f));
+            SetPos("Bip01 R Forearm", new Vector3(-halfWidth * 0.72f, armY, minZ + height * 0.74f));
+            SetPos("Bip01 L Forearm", new Vector3(halfWidth * 0.72f, armY, minZ + height * 0.74f));
 
             // Poignets (Wrists)
-            SetPos("Bip01 L Hand", new Vector3(-halfWidth * 0.90f, armY, minZ + height * 0.70f));
-            SetPos("Bip01 R Hand", new Vector3(halfWidth * 0.90f, armY, minZ + height * 0.70f));
+            SetPos("Bip01 R Hand", new Vector3(-halfWidth * 0.90f, armY, minZ + height * 0.72f));
+            SetPos("Bip01 L Hand", new Vector3(halfWidth * 0.90f, armY, minZ + height * 0.72f));
 
             // Pouces et Doigts (Thumbs & Fingers)
-            SetPos("Bip01 L Finger0", new Vector3(-halfWidth * 0.95f, armY + 0.035f, minZ + height * 0.69f));
-            SetPos("Bip01 L Finger1", new Vector3(-halfWidth * 1.00f, armY - 0.015f, minZ + height * 0.69f));
+            SetPos("Bip01 R Finger0", new Vector3(-halfWidth * 0.95f, armY + 0.035f, minZ + height * 0.71f));
+            SetPos("Bip01 R Finger1", new Vector3(-halfWidth * 1.00f, armY - 0.015f, minZ + height * 0.71f));
 
-            SetPos("Bip01 R Finger0", new Vector3(halfWidth * 0.95f, armY + 0.035f, minZ + height * 0.69f));
-            SetPos("Bip01 R Finger1", new Vector3(halfWidth * 1.00f, armY - 0.015f, minZ + height * 0.69f));
+            SetPos("Bip01 L Finger0", new Vector3(halfWidth * 0.95f, armY + 0.035f, minZ + height * 0.71f));
+            SetPos("Bip01 L Finger1", new Vector3(halfWidth * 1.00f, armY - 0.015f, minZ + height * 0.71f));
 
             // 4. Jambes (Hanches, Genoux, Chevilles)
-            SetPos("Bip01 L Thigh", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.48f));
-            SetPos("Bip01 R Thigh", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.48f));
+            SetPos("Bip01 R Thigh", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.48f));
+            SetPos("Bip01 L Thigh", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.48f));
 
             // Genoux (Knees)
-            SetPos("Bip01 L Calf", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.26f));
-            SetPos("Bip01 R Calf", new Vector3(halfWidth * 0.22f, midY, minZ + height * 0.26f));
+            SetPos("Bip01 R Calf", new Vector3(-halfWidth * 0.22f, midY + 0.01f, minZ + height * 0.26f));
+            SetPos("Bip01 L Calf", new Vector3(halfWidth * 0.22f, midY + 0.01f, minZ + height * 0.26f));
 
             // Chevilles (Ankles)
-            SetPos("Bip01 L Foot", new Vector3(-halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
-            SetPos("Bip01 R Foot", new Vector3(halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
+            SetPos("Bip01 R Foot", new Vector3(-halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
+            SetPos("Bip01 L Foot", new Vector3(halfWidth * 0.22f, midY + 0.03f, minZ + height * 0.04f));
 
             UpdateNudValues();
             EnsurePreviewModel();
@@ -2259,110 +2255,22 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (_previewModel == null || _previewModel.Parts.Count == 0 || _baseVertices == null) return;
             EnsurePreviewModel();
-            var part = _previewModel.Parts[0];
-            if (part.Skin == null || part.Skin.Length != _baseVertices.Length)
+            int totalVerts = 0;
+            foreach (var part in _previewModel.Parts)
             {
                 MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
-                _rawSkin = part.Skin;
-                return;
+                totalVerts += part.Vertices.Length;
             }
 
-            int nb = _previewModel.Bones.Count;
-            var boneByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < nb; i++) boneByName[_previewModel.Bones[i].Name] = i;
-
-            var boneWorldPos = new Vector3[nb];
-            for (int i = 0; i < nb; i++)
-                boneWorldPos[i] = Matrix4.Invert(_previewModel.Bones[i].InverseBindMatrix).Row3.Xyz;
-
-            var armSegments = new List<(int BoneId, Vector3 P0, Vector3 P1)>();
-            void AddSeg(string name, string endName)
+            var allSkin = new List<VertexInfluence[]>();
+            foreach (var part in _previewModel.Parts)
             {
-                int b0 = FindMatchingBoneIndex(_previewModel.Bones, name);
-                int b1 = FindMatchingBoneIndex(_previewModel.Bones, endName);
-                if (b0 >= 0 && b1 >= 0)
-                    armSegments.Add((b0, boneWorldPos[b0], boneWorldPos[b1]));
-                else if (b0 >= 0)
-                    armSegments.Add((b0, boneWorldPos[b0], boneWorldPos[b0]));
+                if (part.Skin != null) allSkin.AddRange(part.Skin);
+                else allSkin.AddRange(Enumerable.Repeat(Array.Empty<VertexInfluence>(), part.Vertices.Length));
             }
+            _rawSkin = allSkin.ToArray();
 
-            AddSeg("Bip01 L Clavicle", "Bip01 L UpperArm");
-            AddSeg("Bip01 L UpperArm", "Bip01 L Forearm");
-            AddSeg("Bip01 L Forearm", "Bip01 L Hand");
-            AddSeg("Bip01 L Hand", "Bip01 L Finger1");
-            AddSeg("Bip01 L Hand", "Bip01 L Finger0");
-            AddSeg("Bip01 L Finger0", "Bip01 L Finger01");
-            AddSeg("Bip01 L Finger1", "Bip01 L Finger11");
-
-            AddSeg("Bip01 R Clavicle", "Bip01 R UpperArm");
-            AddSeg("Bip01 R UpperArm", "Bip01 R Forearm");
-            AddSeg("Bip01 R Forearm", "Bip01 R Hand");
-            AddSeg("Bip01 R Hand", "Bip01 R Finger1");
-            AddSeg("Bip01 R Hand", "Bip01 R Finger0");
-            AddSeg("Bip01 R Finger0", "Bip01 R Finger01");
-            AddSeg("Bip01 R Finger1", "Bip01 R Finger11");
-
-            var armBoneIndices = new HashSet<int>();
-            foreach (var seg in armSegments) armBoneIndices.Add(seg.BoneId);
-
-            int updatedVerts = 0;
-            for (int v = 0; v < _baseVertices.Length; v++)
-            {
-                var p = _baseVertices[v];
-                bool isArmVert = (MathF.Abs(p.X) > 0.16f && p.Z > 0.85f);
-                if (!isArmVert && part.Skin[v] != null)
-                {
-                    foreach (var inf in part.Skin[v])
-                    {
-                        if (armBoneIndices.Contains(inf.BoneId) && inf.Weight > 0.15f)
-                        {
-                            isArmVert = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!isArmVert) continue;
-
-                var candidates = new List<(int BoneId, float Weight)>();
-                foreach (var seg in armSegments)
-                {
-                    string bName = _previewModel.Bones[seg.BoneId].Name;
-                    bool isLeft = bName.Contains(" L ");
-                    bool isRight = bName.Contains(" R ");
-                    if (isLeft && p.X > 0.02f) continue;
-                    if (isRight && p.X < -0.02f) continue;
-
-                    Vector3 ab = seg.P1 - seg.P0;
-                    float l2 = ab.LengthSquared;
-                    float dist = l2 < 1e-6f ? (p - seg.P0).Length : (p - (seg.P0 + MathHelper.Clamp(Vector3.Dot(p - seg.P0, ab) / l2, 0f, 1f) * ab)).Length;
-
-                    float w = 1.0f / (MathF.Pow(dist, 4f) + 1e-4f);
-                    candidates.Add((seg.BoneId, w));
-                }
-
-                candidates.Sort((a, b) => b.Weight.CompareTo(a.Weight));
-                int count = Math.Min(4, candidates.Count);
-                if (count > 0)
-                {
-                    float sum = 0f;
-                    for (int i = 0; i < count; i++) sum += candidates[i].Weight;
-                    var infs = new VertexInfluence[count];
-                    for (int i = 0; i < count; i++)
-                    {
-                        infs[i] = new VertexInfluence
-                        {
-                            BoneId = candidates[i].BoneId,
-                            Weight = sum > 1e-6f ? (candidates[i].Weight / sum) : (i == 0 ? 1f : 0f)
-                        };
-                    }
-                    part.Skin[v] = infs;
-                    updatedVerts++;
-                }
-            }
-
-            _rawSkin = part.Skin;
-            MessageBox.Show($"Skinning des bras recalculé avec succès ({updatedVerts:N0} sommets mis à jour).\nLe squelette et le reste du corps sont préservés.", "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show($"Skinning recalculé avec succès ({totalVerts:N0} sommets mis à jour).\nLa cage thoracique et le torse sont préservés rigides sans écrasement latéral.", "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
             glControl.Invalidate();
         }
 
@@ -3199,37 +3107,37 @@ namespace UoFiddler.Plugin.Granny3D
                 if (m != null) m.Position = pos;
             }
 
-            SetPos("Bip01 Head", new Vector3(0.0f, midY, minZ + height * 0.90f));
-            SetPos("Bip01 Neck", new Vector3(0.0f, midY, minZ + height * 0.83f));
-            SetPos("Bip01 Spine2", new Vector3(0.0f, midY, minZ + height * 0.74f));
-            SetPos("Bip01 Spine", new Vector3(0.0f, midY, minZ + height * 0.62f));
+            SetPos("Bip01 Head", new Vector3(0.0f, midY, minZ + height * 0.88f));
+            SetPos("Bip01 Neck", new Vector3(0.0f, midY, minZ + height * 0.82f));
+            SetPos("Bip01 Spine2", new Vector3(0.0f, midY, minZ + height * 0.72f));
+            SetPos("Bip01 Spine", new Vector3(0.0f, midY, minZ + height * 0.60f));
             SetPos("Bip01 Pelvis", new Vector3(0.0f, midY, minZ + height * 0.52f));
 
             float clavX = halfWidth * 0.25f;
-            SetPos("Bip01 L Clavicle", new Vector3(-clavX, midY, minZ + height * 0.77f));
-            SetPos("Bip01 R Clavicle", new Vector3(clavX, midY, minZ + height * 0.77f));
+            SetPos("Bip01 R Clavicle", new Vector3(-clavX, midY, minZ + height * 0.77f));
+            SetPos("Bip01 L Clavicle", new Vector3(clavX, midY, minZ + height * 0.77f));
 
             float shoulderX = halfWidth * 0.45f;
-            SetPos("Bip01 L UpperArm", new Vector3(-shoulderX, midY, minZ + height * 0.76f));
-            SetPos("Bip01 R UpperArm", new Vector3(shoulderX, midY, minZ + height * 0.76f));
+            SetPos("Bip01 R UpperArm", new Vector3(-shoulderX, midY, minZ + height * 0.76f));
+            SetPos("Bip01 L UpperArm", new Vector3(shoulderX, midY, minZ + height * 0.76f));
 
             float elbowX = halfWidth * 0.72f;
-            SetPos("Bip01 L Forearm", new Vector3(-elbowX, midY, minZ + height * 0.74f));
-            SetPos("Bip01 R Forearm", new Vector3(elbowX, midY, minZ + height * 0.74f));
+            SetPos("Bip01 R Forearm", new Vector3(-elbowX, midY, minZ + height * 0.74f));
+            SetPos("Bip01 L Forearm", new Vector3(elbowX, midY, minZ + height * 0.74f));
 
             float handX = halfWidth * 0.95f;
-            SetPos("Bip01 L Hand", new Vector3(-handX, midY, minZ + height * 0.73f));
-            SetPos("Bip01 R Hand", new Vector3(handX, midY, minZ + height * 0.73f));
+            SetPos("Bip01 R Hand", new Vector3(-handX, midY, minZ + height * 0.73f));
+            SetPos("Bip01 L Hand", new Vector3(handX, midY, minZ + height * 0.73f));
 
             float hipX = halfWidth * 0.22f;
-            SetPos("Bip01 L Thigh", new Vector3(-hipX, midY, minZ + height * 0.48f));
-            SetPos("Bip01 R Thigh", new Vector3(hipX, midY, minZ + height * 0.48f));
+            SetPos("Bip01 R Thigh", new Vector3(-hipX, midY, minZ + height * 0.48f));
+            SetPos("Bip01 L Thigh", new Vector3(hipX, midY, minZ + height * 0.48f));
 
-            SetPos("Bip01 L Calf", new Vector3(-hipX, midY + 0.01f, minZ + height * 0.27f));
-            SetPos("Bip01 R Calf", new Vector3(hipX, midY + 0.01f, minZ + height * 0.27f));
+            SetPos("Bip01 R Calf", new Vector3(-hipX, midY + 0.01f, minZ + height * 0.27f));
+            SetPos("Bip01 L Calf", new Vector3(hipX, midY + 0.01f, minZ + height * 0.27f));
 
-            SetPos("Bip01 L Foot", new Vector3(-hipX * 0.9f, midY + 0.04f, minZ + height * 0.05f));
-            SetPos("Bip01 R Foot", new Vector3(hipX * 0.9f, midY + 0.04f, minZ + height * 0.05f));
+            SetPos("Bip01 R Foot", new Vector3(-hipX * 0.9f, midY + 0.04f, minZ + height * 0.05f));
+            SetPos("Bip01 L Foot", new Vector3(hipX * 0.9f, midY + 0.04f, minZ + height * 0.05f));
 
             _cameraTarget = new Vector3(0, midY, minZ + height * 0.5f);
             UpdateNudValues();

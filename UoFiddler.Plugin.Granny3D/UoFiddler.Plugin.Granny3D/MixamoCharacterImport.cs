@@ -1534,23 +1534,97 @@ namespace UoFiddler.Plugin.Granny3D
             AddSeg("Bip01 R Calf", "Bip01 R Foot");
             AddSeg("Bip01 R Foot", "Bip01 R Toe0");
 
+            // Anatomical reference points for Torso vs Limb boundaries
+            Vector3 pelvisPos = boneByName.TryGetValue("Bip01 Pelvis", out int bPelvis) ? boneWorldPos[bPelvis] : new Vector3(0, 0.037f, 0.937f);
+            Vector3 spine2Pos = boneByName.TryGetValue("Bip01 Spine2", out int bSpine2) ? boneWorldPos[bSpine2] : new Vector3(0, 0.041f, 1.214f);
+            Vector3 neckPos   = boneByName.TryGetValue("Bip01 Neck", out int bNeck) ? boneWorldPos[bNeck] : new Vector3(0, 0.032f, 1.369f);
+            Vector3 lArmPos   = boneByName.TryGetValue("Bip01 L UpperArm", out int bLArm) ? boneWorldPos[bLArm] : new Vector3(0.16f, 0.038f, 1.336f);
+            Vector3 rArmPos   = boneByName.TryGetValue("Bip01 R UpperArm", out int bRArm) ? boneWorldPos[bRArm] : new Vector3(-0.16f, 0.038f, 1.336f);
+
+            float shoulderWidth = MathF.Max(0.12f, (MathF.Abs(lArmPos.X) + MathF.Abs(rArmPos.X)) * 0.5f);
+            float shoulderZ = (lArmPos.Z + rArmPos.Z) * 0.5f;
+            float pelvisZ = pelvisPos.Z;
+            // Lateral radius of the ribcage / thoracic cage volume
+            float ribcageRadiusX = shoulderWidth * 0.75f;
+
             if (part.Skin == null || part.Skin.Length != part.Vertices.Length)
                 part.Skin = new VertexInfluence[part.Vertices.Length][];
 
             for (int v = 0; v < part.Vertices.Length; v++)
             {
                 var p = part.Vertices[v];
+                float absX = MathF.Abs(p.X);
                 var candidates = new List<(int BoneId, float Weight)>();
+
                 foreach (var seg in segments)
                 {
                     string bName = bones[seg.BoneId].Name;
                     bool isLeft = bName.Contains(" L ");
                     bool isRight = bName.Contains(" R ");
 
-                    if (isLeft && p.X < -0.02f) continue;
-                    if (isRight && p.X > 0.02f) continue;
+                    // Hemisphere separation based on bone's actual X position
+                    float segMidX = (seg.P0.X + seg.P1.X) * 0.5f;
+                    if (isLeft)
+                    {
+                        if (segMidX > 0.01f && p.X < -0.015f) continue;
+                        if (segMidX < -0.01f && p.X > 0.015f) continue;
+                    }
+                    else if (isRight)
+                    {
+                        if (segMidX < -0.01f && p.X > 0.015f) continue;
+                        if (segMidX > 0.01f && p.X < -0.015f) continue;
+                    }
 
-                    float dist = DistanceToSegment(p, seg.P0, seg.P1);
+                    bool isArm = bName.Contains("UpperArm") || bName.Contains("Forearm") || bName.Contains("Hand") || bName.Contains("Finger");
+                    bool isClavicle = bName.Contains("Clavicle");
+                    bool isTorsoSpine = bName.Contains("Spine") || bName.Contains("Neck") || bName.Contains("Pelvis");
+
+                    // 1. Torso Protection: Prevent Arm bones from stealing vertices on the ribcage / torso wall
+                    if (isArm)
+                    {
+                        // Any vertex below the shoulder joint that is medial to the armpit (inside the torso envelope)
+                        // belongs exclusively to the ribcage/torso and must NEVER be moved by UpperArm!
+                        if (p.Z < shoulderZ - 0.01f && absX < shoulderWidth * 0.82f)
+                        {
+                            continue; // 100% shielded: arm bone cannot influence this ribcage vertex
+                        }
+
+                        // For vertices strictly below the chest (abdomen / hips), arm bones cannot reach
+                        if (p.Z < spine2Pos.Z - 0.12f && absX < shoulderWidth * 1.1f)
+                        {
+                            continue;
+                        }
+                    }
+
+                    // 2. Clavicle Protection: Clavicle only affects top shoulder / collarbone, never the lower ribs
+                    if (isClavicle && p.Z < shoulderZ - 0.05f)
+                    {
+                        continue;
+                    }
+
+                    // 3. Ribcage Volumetric Distance:
+                    // Spine1 and Spine2 represent the full lateral ribcage cylinder, not a 1D line at X=0!
+                    float dist;
+                    if (isTorsoSpine && p.Z >= pelvisZ - 0.05f && p.Z <= neckPos.Z + 0.05f)
+                    {
+                        // The effective lateral offset is measured from the ribcage surface
+                        float lateralOffset = MathF.Max(0f, absX - ribcageRadiusX);
+                        var pTorso = new Vector3(MathF.Sign(p.X) * MathF.Min(absX, ribcageRadiusX), p.Y, p.Z);
+                        dist = DistanceToSegment(pTorso, seg.P0, seg.P1) + lateralOffset;
+                    }
+                    else
+                    {
+                        dist = DistanceToSegment(p, seg.P0, seg.P1);
+
+                        // If near the armpit fold on the torso side, add a distance penalty to the arm bone
+                        // to ensure the ribcage stays firmly anchored and doesn't get pulled inward
+                        if (isArm && p.Z < shoulderZ && absX < shoulderWidth)
+                        {
+                            float pinchPen = (shoulderWidth - absX) * 3.0f;
+                            dist += pinchPen;
+                        }
+                    }
+
                     float w = 1.0f / (MathF.Pow(dist, 4f) + 1e-4f);
                     candidates.Add((seg.BoneId, w));
                 }
