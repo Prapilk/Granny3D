@@ -128,6 +128,35 @@ namespace UoFiddler.Plugin.Granny3D
         private float _cameraDist = 2.8f;
         private Vector3 _cameraPan = Vector3.Zero;
 
+        // Multi-mesh preservation structures
+        public class RawPartData
+        {
+            public string Name { get; set; } = string.Empty;
+            public string MaterialName { get; set; } = string.Empty;
+            public Vector3 Color { get; set; } = new Vector3(0.72f, 0.66f, 0.55f);
+            public string TextureName { get; set; } = string.Empty;
+            public Vector3[] RawVertices { get; set; } = Array.Empty<Vector3>();
+            public Vector3[] RawNormals { get; set; } = Array.Empty<Vector3>();
+            public Vector2[] UVs { get; set; } = Array.Empty<Vector2>();
+            public int[] Indices { get; set; } = Array.Empty<int>();
+            public VertexInfluence[][]? Skin { get; set; }
+        }
+
+        private class AnimTestItem
+        {
+            public string DisplayName { get; set; } = string.Empty;
+            public string? FilePath { get; set; }
+            public GrannyAnimation? PreloadedAnim { get; set; }
+            public int FbxAnimIndex { get; set; } = 0;
+
+            public override string ToString() => DisplayName;
+        }
+
+        private readonly List<RawPartData> _rawParts = new();
+        private readonly List<GrannyModelPart> _modelParts = new();
+        private GrannyAnimation? _activeSceneAnim;
+        private string? _activeSceneAnimPath;
+
         // Animation preview
         private GrannyAnimation? _testAnim;
         private System.Windows.Forms.Timer? _animTimer;
@@ -138,12 +167,14 @@ namespace UoFiddler.Plugin.Granny3D
 
         public string? GeneratedCharPath { get; private set; }
 
-        public AutoRigDialog(string? initialModelPath, string basePath, string? initialOutFolder = null, List<LoadedMesh>? liveMeshes = null)
+        public AutoRigDialog(string? initialModelPath, string basePath, string? initialOutFolder = null, List<LoadedMesh>? liveMeshes = null, GrannyAnimation? activeAnim = null, string? activeAnimPath = null)
         {
             _currentModelPath = initialModelPath;
             _basePath = basePath ?? string.Empty;
             _outFolder = !string.IsNullOrEmpty(initialOutFolder) ? initialOutFolder : Path.Combine(_basePath, "Others");
             _liveMeshes = liveMeshes;
+            _activeSceneAnim = activeAnim;
+            _activeSceneAnimPath = activeAnimPath;
 
             string maleRef = Path.Combine(_basePath, "Humans", "H_Male_Lod2.grn");
             string femaleRef = Path.Combine(_basePath, "Humans", "H_Female_Lod2.grn");
@@ -800,9 +831,23 @@ namespace UoFiddler.Plugin.Granny3D
                 if (!_isPlayingAnim) TogglePlayAnimation();
             };
 
+            var btnImportAnim = new Button
+            {
+                Text = "📂 Importer Action...",
+                Location = new Point(480, 4),
+                Width = 160,
+                Height = 28,
+                BackColor = Color.FromArgb(40, 80, 130),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold)
+            };
+            btnImportAnim.Click += (s, e) => PromptImportTestAnimation();
+
             pnlAnimBtns.Controls.Add(btnPlayAnim);
             pnlAnimBtns.Controls.Add(btnStopAnim);
             pnlAnimBtns.Controls.Add(btnVictoryAnim);
+            pnlAnimBtns.Controls.Add(btnImportAnim);
 
             // Finger Flex Test Panel (interactive slider & quick buttons)
             var pnlFingerFlex = new Panel { Dock = DockStyle.Top, Height = 62, Padding = new Padding(0, 4, 0, 0) };
@@ -1094,37 +1139,148 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void RebakeModelTransform()
         {
+            if (_rawParts.Count > 0)
+            {
+                var scaleMat = Matrix4.CreateScale(_mirrorX ? -_scale : _scale, _scale, _scale);
+                var rotMat = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(_rotX)) *
+                             Matrix4.CreateRotationY(MathHelper.DegreesToRadians(_rotY)) *
+                             Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(_rotZ));
+                var transMat = Matrix4.CreateTranslation(_offset);
+                var mat = scaleMat * rotMat * transMat;
+                var normalMat = rotMat;
+
+                _modelParts.Clear();
+                var allVerts = new List<Vector3>();
+                var allNorms = new List<Vector3>();
+                var allUVs = new List<Vector2>();
+                var allIndices = new List<int>();
+                var allSkin = new List<VertexInfluence[]>();
+
+                float minX = float.MaxValue, maxX = float.MinValue;
+                float minY = float.MaxValue, maxY = float.MinValue;
+                float minZ = float.MaxValue, maxZ = float.MinValue;
+
+                foreach (var raw in _rawParts)
+                {
+                    int nVerts = raw.RawVertices.Length;
+                    var bakedVerts = new Vector3[nVerts];
+                    var bakedNorms = new Vector3[nVerts];
+
+                    for (int i = 0; i < nVerts; i++)
+                    {
+                        var v = Vector3.TransformPosition(raw.RawVertices[i], mat);
+                        bakedVerts[i] = v;
+
+                        minX = Math.Min(minX, v.X); maxX = Math.Max(maxX, v.X);
+                        minY = Math.Min(minY, v.Y); maxY = Math.Max(maxY, v.Y);
+                        minZ = Math.Min(minZ, v.Z); maxZ = Math.Max(maxZ, v.Z);
+
+                        if (raw.RawNormals != null && i < raw.RawNormals.Length)
+                            bakedNorms[i] = Vector3.TransformNormal(raw.RawNormals[i], normalMat).Normalized();
+                        else
+                            bakedNorms[i] = Vector3.UnitZ;
+                    }
+
+                    var part = new GrannyModelPart
+                    {
+                        Name = raw.Name,
+                        MaterialName = raw.MaterialName,
+                        Color = raw.Color,
+                        TextureName = raw.TextureName,
+                        Vertices = bakedVerts,
+                        Normals = bakedNorms,
+                        UVs = raw.UVs,
+                        Indices = raw.Indices,
+                        Skin = raw.Skin != null ? (VertexInfluence[][])raw.Skin.Clone() : null
+                    };
+                    _modelParts.Add(part);
+
+                    int baseIdx = allVerts.Count;
+                    allVerts.AddRange(bakedVerts);
+                    allNorms.AddRange(bakedNorms);
+                    if (raw.UVs != null) allUVs.AddRange(raw.UVs);
+                    else allUVs.AddRange(Enumerable.Repeat(Vector2.Zero, nVerts));
+
+                    if (raw.Indices != null)
+                    {
+                        for (int i = 0; i < raw.Indices.Length; i++)
+                            allIndices.Add(baseIdx + raw.Indices[i]);
+                    }
+
+                    if (raw.Skin != null && raw.Skin.Length == nVerts)
+                        allSkin.AddRange(raw.Skin);
+                    else
+                        allSkin.AddRange(Enumerable.Repeat(Array.Empty<VertexInfluence>(), nVerts));
+                }
+
+                _baseVertices = allVerts.ToArray();
+                _baseNormals = allNorms.ToArray();
+                _rawUVs = allUVs.ToArray();
+                _indices = allIndices.ToArray();
+                _rawSkin = allSkin.ToArray();
+
+                float w = maxX - minX;
+                float d = maxY - minY;
+                float h = maxZ - minZ;
+                lblBoundsInfo.Text = $"Taille : Largeur={w:F2}m | Prof={d:F2}m | Hauteur={h:F2}m (Pieds Z: {minZ:F2}m)";
+
+                if (_indices != null)
+                {
+                    _meshVertexCount = _indices.Length;
+                    _interleaved = new float[_meshVertexCount * 8];
+                    for (int i = 0; i < _meshVertexCount; i++)
+                    {
+                        int vi = _indices[i];
+                        var pos = _baseVertices[vi];
+                        var norm = _baseNormals[vi];
+                        var uv = (_rawUVs != null && vi < _rawUVs.Length) ? _rawUVs[vi] : Vector2.Zero;
+
+                        int off = i * 8;
+                        _interleaved[off + 0] = pos.X;
+                        _interleaved[off + 1] = pos.Y;
+                        _interleaved[off + 2] = pos.Z;
+                        _interleaved[off + 3] = norm.X;
+                        _interleaved[off + 4] = norm.Y;
+                        _interleaved[off + 5] = norm.Z;
+                        _interleaved[off + 6] = uv.X;
+                        _interleaved[off + 7] = uv.Y;
+                    }
+
+                    UploadMeshToGl();
+                }
+                return;
+            }
+
             if (_rawVertices == null || _rawVertices.Length == 0) return;
 
             int n = _rawVertices.Length;
             _baseVertices = new Vector3[n];
             _baseNormals = new Vector3[n];
 
-            // Build transformation matrix: Scale -> Rotate -> Translate
-            var scaleMat = Matrix4.CreateScale(_mirrorX ? -_scale : _scale, _scale, _scale);
-            var rotMat = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(_rotX)) *
+            var scaleMatFallback = Matrix4.CreateScale(_mirrorX ? -_scale : _scale, _scale, _scale);
+            var rotMatFallback = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(_rotX)) *
                          Matrix4.CreateRotationY(MathHelper.DegreesToRadians(_rotY)) *
                          Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(_rotZ));
-            var transMat = Matrix4.CreateTranslation(_offset);
-            var mat = scaleMat * rotMat * transMat;
-            var normalMat = rotMat;
+            var transMatFallback = Matrix4.CreateTranslation(_offset);
+            var matFallback = scaleMatFallback * rotMatFallback * transMatFallback;
+            var normalMatFallback = rotMatFallback;
 
-            float minX = float.MaxValue, maxX = float.MinValue;
-            float minY = float.MaxValue, maxY = float.MinValue;
-            float minZ = float.MaxValue, maxZ = float.MinValue;
+            float minXf = float.MaxValue, maxXf = float.MinValue;
+            float minYf = float.MaxValue, maxYf = float.MinValue;
+            float minZf = float.MaxValue, maxZf = float.MinValue;
 
             for (int i = 0; i < n; i++)
             {
-                var v = Vector3.TransformPosition(_rawVertices[i], mat);
+                var v = Vector3.TransformPosition(_rawVertices[i], matFallback);
                 _baseVertices[i] = v;
 
-                minX = Math.Min(minX, v.X); maxX = Math.Max(maxX, v.X);
-                minY = Math.Min(minY, v.Y); maxY = Math.Max(maxY, v.Y);
-                minZ = Math.Min(minZ, v.Z); maxZ = Math.Max(maxZ, v.Z);
+                minXf = Math.Min(minXf, v.X); maxXf = Math.Max(maxXf, v.X);
+                minYf = Math.Min(minYf, v.Y); maxYf = Math.Max(maxYf, v.Y);
+                minZf = Math.Min(minZf, v.Z); maxZf = Math.Max(maxZf, v.Z);
 
                 if (_rawNormals != null && i < _rawNormals.Length)
                 {
-                    _baseNormals[i] = Vector3.TransformNormal(_rawNormals[i], normalMat).Normalized();
+                    _baseNormals[i] = Vector3.TransformNormal(_rawNormals[i], normalMatFallback).Normalized();
                 }
                 else
                 {
@@ -1132,12 +1288,11 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
 
-            float w = maxX - minX;
-            float d = maxY - minY;
-            float h = maxZ - minZ;
-            lblBoundsInfo.Text = $"Taille : Largeur={w:F2}m | Prof={d:F2}m | Hauteur={h:F2}m (Pieds Z: {minZ:F2}m)";
+            float wf = maxXf - minXf;
+            float df = maxYf - minYf;
+            float hf = maxZf - minZf;
+            lblBoundsInfo.Text = $"Taille : Largeur={wf:F2}m | Prof={df:F2}m | Hauteur={hf:F2}m (Pieds Z: {minZf:F2}m)";
 
-            // Update interleaved buffer for OpenGL
             if (_indices != null)
             {
                 _meshVertexCount = _indices.Length;
@@ -1215,8 +1370,81 @@ namespace UoFiddler.Plugin.Granny3D
         private void PopulateTestAnimations()
         {
             cbAnimTest.Items.Clear();
+
+            // 1. Current active animation from UoFiddler preview if available
+            if (_activeSceneAnim != null)
+            {
+                string activeName = !string.IsNullOrEmpty(_activeSceneAnimPath) ? Path.GetFileNameWithoutExtension(_activeSceneAnimPath) : "Animation en cours";
+                cbAnimTest.Items.Add(new AnimTestItem
+                {
+                    DisplayName = $"⭐ [Action active UO] {activeName}",
+                    FilePath = _activeSceneAnimPath,
+                    PreloadedAnim = _activeSceneAnim
+                });
+            }
+
+            // 2. Embedded animation clips from the source FBX file if any
+            if (!string.IsNullOrEmpty(_currentModelPath) && File.Exists(_currentModelPath) && Path.GetExtension(_currentModelPath).Equals(".fbx", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    using var aCtx = new AssimpContext();
+                    var aScene = aCtx.ImportFile(_currentModelPath, PostProcessSteps.None);
+                    if (aScene != null && aScene.AnimationCount > 0)
+                    {
+                        var bonesForRetarget = (_previewModel != null && _previewModel.Bones.Count > 0) ? _previewModel.Bones : _refBones;
+                        for (int ai = 0; ai < aScene.AnimationCount; ai++)
+                        {
+                            var clip = aScene.Animations[ai];
+                            string clipName = !string.IsNullOrEmpty(clip.Name) ? clip.Name : $"Clip_{ai + 1}";
+                            if (bonesForRetarget != null && MixamoRetarget.TryImport(_currentModelPath, bonesForRetarget, clipName, out var fbxAnim, out _, ai) && fbxAnim != null)
+                            {
+                                cbAnimTest.Items.Add(new AnimTestItem
+                                {
+                                    DisplayName = $"🎬 [Action FBX] {clipName}",
+                                    FilePath = _currentModelPath,
+                                    PreloadedAnim = fbxAnim,
+                                    FbxAnimIndex = ai
+                                });
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 3. User imported actions (*.anim and custom *.grn) from _outFolder, Others, and model directory
+            var animFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(_outFolder) && Directory.Exists(_outFolder)) animFolders.Add(_outFolder);
+            string othersDir = Path.Combine(_basePath, "Others");
+            if (!Directory.Exists(othersDir)) othersDir = @"d:\Games\sphere\PROGRAMMESD_UO\Models\Others";
+            if (Directory.Exists(othersDir)) animFolders.Add(othersDir);
+            if (!string.IsNullOrEmpty(_currentModelPath))
+            {
+                string? mDir = Path.GetDirectoryName(_currentModelPath);
+                if (!string.IsNullOrEmpty(mDir) && Directory.Exists(mDir)) animFolders.Add(mDir);
+            }
+
+            foreach (var dir in animFolders)
+            {
+                try
+                {
+                    foreach (var af in Directory.GetFiles(dir, "*.anim"))
+                    {
+                        string afn = Path.GetFileName(af);
+                        cbAnimTest.Items.Add(new AnimTestItem
+                        {
+                            DisplayName = $"📁 [Action importée] {afn}",
+                            FilePath = af
+                        });
+                    }
+                }
+                catch { }
+            }
+
+            // 4. Standard UO Animations from Humans/
             string humansDir = Path.Combine(_basePath, "Humans");
-            if (!Directory.Exists(humansDir)) humansDir = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans";
+            if (!Directory.Exists(humansDir)) humansDir = @"d:\Games\sphere\PROGRAMMESD_UO\Models\Humans";
 
             if (Directory.Exists(humansDir))
             {
@@ -1238,17 +1466,19 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     bool hasFingers = HasFingerMotionAnim(f);
                     string displayName = hasFingers ? $"✨ {f} [Doigts animés]" : f;
-                    cbAnimTest.Items.Add(displayName);
+                    cbAnimTest.Items.Add(new AnimTestItem
+                    {
+                        DisplayName = displayName,
+                        FilePath = Path.Combine(humansDir, f)
+                    });
                 }
             }
 
-            // Find preferred default animation: Walk or Run
+            // Select default animation
             int defaultIdx = -1;
-            string prefix = rbFemale.Checked ? "H_Female_" : "H_Male_";
-            string walkTarget = prefix + "Walk_01.grn";
             for (int i = 0; i < cbAnimTest.Items.Count; i++)
             {
-                if (string.Equals(cbAnimTest.Items[i].ToString(), walkTarget, StringComparison.OrdinalIgnoreCase))
+                if (cbAnimTest.Items[i] is AnimTestItem item && (item.DisplayName.StartsWith("⭐") || item.DisplayName.StartsWith("🎬")))
                 {
                     defaultIdx = i;
                     break;
@@ -1256,9 +1486,22 @@ namespace UoFiddler.Plugin.Granny3D
             }
             if (defaultIdx < 0)
             {
+                string prefix = rbFemale.Checked ? "H_Female_" : "H_Male_";
+                string walkTarget = prefix + "Walk_01.grn";
                 for (int i = 0; i < cbAnimTest.Items.Count; i++)
                 {
-                    if (cbAnimTest.Items[i].ToString()!.IndexOf("Walk", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (cbAnimTest.Items[i] is AnimTestItem item && item.DisplayName.IndexOf(walkTarget, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        defaultIdx = i;
+                        break;
+                    }
+                }
+            }
+            if (defaultIdx < 0)
+            {
+                for (int i = 0; i < cbAnimTest.Items.Count; i++)
+                {
+                    if (cbAnimTest.Items[i] is AnimTestItem item && item.DisplayName.IndexOf("Walk", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         defaultIdx = i;
                         break;
@@ -1288,23 +1531,106 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void LoadSelectedTestAnimation()
         {
-            if (cbAnimTest.SelectedItem == null) return;
-            string rawFn = cbAnimTest.SelectedItem.ToString()!;
-            string fn = rawFn.StartsWith("✨ ") ? rawFn.Substring(2).Replace(" [Doigts animés]", "").Trim() : rawFn;
-            string humansDir = Path.Combine(_basePath, "Humans");
-            if (!Directory.Exists(humansDir)) humansDir = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans";
-            string fullPath = Path.Combine(humansDir, fn);
-
-            if (File.Exists(fullPath))
+            if (cbAnimTest.SelectedItem is AnimTestItem item)
             {
-                var parser = new GrannyFormatParser();
-                parser.Load(fullPath);
-                if (parser.Animation != null)
+                if (item.PreloadedAnim != null)
                 {
-                    _testAnim = parser.Animation;
+                    _testAnim = item.PreloadedAnim;
                     tbAnimScrub.Value = 0;
                     _animTime = 0f;
+                    ApplyAnimationPose(0f);
+                    glControl.Invalidate();
+                    return;
                 }
+
+                if (!string.IsNullOrEmpty(item.FilePath) && File.Exists(item.FilePath))
+                {
+                    string ext = Path.GetExtension(item.FilePath).ToLowerInvariant();
+                    if (ext == ".anim")
+                    {
+                        _testAnim = GrannyAnimFile.Load(item.FilePath);
+                    }
+                    else if (ext == ".grn")
+                    {
+                        var parser = new GrannyFormatParser();
+                        if (parser.Load(item.FilePath) && parser.Animation != null)
+                            _testAnim = parser.Animation;
+                    }
+                    else if (ext == ".fbx")
+                    {
+                        var bonesForRetarget = (_previewModel != null && _previewModel.Bones.Count > 0) ? _previewModel.Bones : _refBones;
+                        if (bonesForRetarget != null && MixamoRetarget.TryImport(item.FilePath, bonesForRetarget, Path.GetFileNameWithoutExtension(item.FilePath), out var anim, out _, item.FbxAnimIndex))
+                        {
+                            _testAnim = anim;
+                        }
+                    }
+
+                    if (_testAnim != null)
+                    {
+                        tbAnimScrub.Value = 0;
+                        _animTime = 0f;
+                        ApplyAnimationPose(0f);
+                        glControl.Invalidate();
+                    }
+                }
+            }
+        }
+
+        private void PromptImportTestAnimation()
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Choisir une Action / Animation pour tester le Rig",
+                Filter = "Toutes les Animations (*.anim;*.grn;*.fbx)|*.anim;*.grn;*.fbx|Animations Retarget UO (*.anim)|*.anim|Animations Granny UO (*.grn)|*.grn|Animations FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*",
+                InitialDirectory = Directory.Exists(_outFolder) ? _outFolder : _basePath
+            };
+
+            if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+            string path = ofd.FileName;
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            GrannyAnimation? loadedAnim = null;
+
+            if (ext == ".anim")
+            {
+                loadedAnim = GrannyAnimFile.Load(path);
+            }
+            else if (ext == ".grn")
+            {
+                var parser = new GrannyFormatParser();
+                if (parser.Load(path) && parser.Animation != null)
+                    loadedAnim = parser.Animation;
+            }
+            else if (ext == ".fbx")
+            {
+                if (_refBones == null || _refBones.Count == 0) LoadReferenceBones();
+                var bonesForRetarget = (_previewModel != null && _previewModel.Bones.Count > 0) ? _previewModel.Bones : _refBones;
+                string? err = null;
+                if (bonesForRetarget != null && MixamoRetarget.TryImport(path, bonesForRetarget, Path.GetFileNameWithoutExtension(path), out var anim, out err))
+                {
+                    loadedAnim = anim;
+                }
+                else
+                {
+                    MessageBox.Show("Impossible de retargeter l'animation FBX : " + (err ?? "erreur inconnue"), "Erreur Animation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+
+            if (loadedAnim != null)
+            {
+                var item = new AnimTestItem
+                {
+                    DisplayName = $"📂 [Action importée] {Path.GetFileName(path)}",
+                    FilePath = path,
+                    PreloadedAnim = loadedAnim
+                };
+                cbAnimTest.Items.Insert(0, item);
+                cbAnimTest.SelectedIndex = 0;
+                if (!_isPlayingAnim) TogglePlayAnimation();
+            }
+            else
+            {
+                MessageBox.Show("Aucune piste d'animation trouvée dans ce fichier.", "Animation", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
 
@@ -1421,8 +1747,31 @@ namespace UoFiddler.Plugin.Granny3D
 
             AdaptPreviewBonesToMarkers();
 
-            // Setup preview part for CPU skinning deformation
-            if (_baseVertices != null && _baseVertices.Length > 0 && _indices != null)
+            // Populate all parts into previewModel while preserving names, textures, and individual skinning
+            if (_modelParts != null && _modelParts.Count > 0)
+            {
+                _previewModel.Parts = new List<GrannyModelPart>(_modelParts);
+
+                for (int pi = 0; pi < _previewModel.Parts.Count; pi++)
+                {
+                    var part = _previewModel.Parts[pi];
+                    bool hasSkin = part.Skin != null && part.Skin.Length == part.Vertices.Length && part.Skin.Any(x => x != null && x.Length > 0);
+                    if (!hasSkin || chkForceAutoSkin.Checked)
+                    {
+                        MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
+                    }
+                }
+
+                // Update combined _rawSkin for animated preview VAO
+                var allSkin = new List<VertexInfluence[]>();
+                foreach (var part in _previewModel.Parts)
+                {
+                    if (part.Skin != null) allSkin.AddRange(part.Skin);
+                    else allSkin.AddRange(Enumerable.Repeat(Array.Empty<VertexInfluence>(), part.Vertices.Length));
+                }
+                _rawSkin = allSkin.ToArray();
+            }
+            else if (_baseVertices != null && _baseVertices.Length > 0 && _indices != null)
             {
                 _previewModel.Parts.Clear();
                 var part = new GrannyModelPart
@@ -2011,10 +2360,22 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (_previewModel == null || _previewModel.Parts.Count == 0 || _baseVertices == null) return;
             EnsurePreviewModel();
-            var part = _previewModel.Parts[0];
-            MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
-            _rawSkin = part.Skin;
-            MessageBox.Show($"Skinning volumétrique Mixamo complet recalculé pour {part.Vertices.Length:N0} sommets.", "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            int totalVerts = 0;
+            foreach (var part in _previewModel.Parts)
+            {
+                MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
+                totalVerts += part.Vertices.Length;
+            }
+
+            var allSkin = new List<VertexInfluence[]>();
+            foreach (var part in _previewModel.Parts)
+            {
+                if (part.Skin != null) allSkin.AddRange(part.Skin);
+                else allSkin.AddRange(Enumerable.Repeat(Array.Empty<VertexInfluence>(), part.Vertices.Length));
+            }
+            _rawSkin = allSkin.ToArray();
+
+            MessageBox.Show($"Skinning volumétrique complet recalculé pour {_previewModel.Parts.Count} mesh(s) ({totalVerts:N0} sommets au total).", "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
             glControl.Invalidate();
         }
 
@@ -2242,32 +2603,24 @@ namespace UoFiddler.Plugin.Granny3D
             try
             {
                 _liveMeshes = meshes;
-                var vertList = new List<Vector3>();
-                var normList = new List<Vector3>();
-                var uvList = new List<Vector2>();
-                var idxList = new List<int>();
-                var skinList = new List<VertexInfluence[]>();
-
-                int totalVerts = 0;
-                int totalFaces = 0;
+                _rawParts.Clear();
 
                 if (_refBones == null || _refBones.Count == 0)
                     LoadReferenceBones();
+
+                int totalVerts = 0;
+                int totalFaces = 0;
 
                 foreach (var lm in meshes)
                 {
                     if (lm.Hidden) continue;
                     if (lm.BaseVertices == null || lm.BaseVertices.Length == 0) continue;
-                    int baseIdx = vertList.Count;
 
-                    for (int i = 0; i < lm.BaseVertices.Length; i++)
+                    int vCount = lm.BaseVertices.Length;
+                    var skinList = new List<VertexInfluence[]>();
+
+                    for (int i = 0; i < vCount; i++)
                     {
-                        vertList.Add(lm.BaseVertices[i]);
-                        Vector3 n = (lm.BaseCornerNormals != null && i < lm.BaseCornerNormals.Length) ? lm.BaseCornerNormals[i] : Vector3.UnitZ;
-                        normList.Add(n);
-                        Vector2 uv = (lm.SourceMesh?.UVs != null && i < lm.SourceMesh.UVs.Count) ? lm.SourceMesh.UVs[i] : Vector2.Zero;
-                        uvList.Add(uv);
-
                         if (lm.Skin != null && i < lm.Skin.Length && lm.Skin[i] != null && lm.Skin[i].Length > 0)
                         {
                             var oldInfs = lm.Skin[i];
@@ -2299,30 +2652,41 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
 
-                    if (lm.Indices != null)
+                    var norms = new Vector3[vCount];
+                    for (int i = 0; i < vCount; i++) norms[i] = Vector3.UnitZ;
+                    if (lm.BaseCornerNormals != null && lm.Indices != null)
                     {
-                        for (int i = 0; i < lm.Indices.Length; i += 3)
+                        for (int ci = 0; ci < lm.Indices.Length; ci++)
                         {
-                            if (i + 2 < lm.Indices.Length)
-                            {
-                                idxList.Add(baseIdx + lm.Indices[i]);
-                                idxList.Add(baseIdx + lm.Indices[i + 1]);
-                                idxList.Add(baseIdx + lm.Indices[i + 2]);
-                            }
+                            int vi = lm.Indices[ci];
+                            if (vi >= 0 && vi < vCount && ci < lm.BaseCornerNormals.Length)
+                                norms[vi] = lm.BaseCornerNormals[ci];
                         }
                     }
 
-                    totalVerts += lm.BaseVertices.Length;
+                    var uvs = (lm.SourceMesh?.UVs != null && lm.SourceMesh.UVs.Count == vCount)
+                        ? lm.SourceMesh.UVs.ToArray()
+                        : Enumerable.Repeat(Vector2.Zero, vCount).ToArray();
+
+                    var raw = new RawPartData
+                    {
+                        Name = !string.IsNullOrEmpty(lm.Name) ? lm.Name : $"Mesh_{_rawParts.Count + 1}",
+                        MaterialName = string.Empty,
+                        Color = lm.MeshColor,
+                        TextureName = lm.TextureName ?? string.Empty,
+                        RawVertices = (Vector3[])lm.BaseVertices.Clone(),
+                        RawNormals = norms,
+                        UVs = uvs,
+                        Indices = lm.Indices != null ? (int[])lm.Indices.Clone() : Array.Empty<int>(),
+                        Skin = skinList.ToArray()
+                    };
+                    _rawParts.Add(raw);
+
+                    totalVerts += vCount;
                     totalFaces += (lm.Indices?.Length ?? 0) / 3;
                 }
 
-                if (vertList.Count == 0) return;
-
-                _rawVertices = vertList.ToArray();
-                _rawNormals = normList.ToArray();
-                _rawUVs = uvList.ToArray();
-                _indices = idxList.ToArray();
-                _rawSkin = skinList.ToArray();
+                if (_rawParts.Count == 0) return;
 
                 if (string.IsNullOrEmpty(_currentModelPath))
                 {
@@ -2331,11 +2695,13 @@ namespace UoFiddler.Plugin.Granny3D
                 _textureName = meshes.FirstOrDefault(m => !string.IsNullOrEmpty(m.TextureName))?.TextureName;
                 string fn = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetFileName(_currentModelPath) : "Scène UOFiddler active";
 
-                lblModelInfo.Text = $"Modèle actif : {fn}\n" +
-                                    $"Sommets : {totalVerts:N0} | Faces : {totalFaces:N0}\n" +
-                                    $"Source : Scène active UOFiddler (Preview de gauche)";
+                string partNames = string.Join(", ", _rawParts.Take(4).Select(p => p.Name));
+                if (_rawParts.Count > 4) partNames += "...";
 
-                // Live meshes in UO viewer are already Z-up meters
+                lblModelInfo.Text = $"Modèle actif : {fn}\n" +
+                                    $"Meshs ({_rawParts.Count}) : {partNames}\n" +
+                                    $"Sommets : {totalVerts:N0} | Faces : {totalFaces:N0}";
+
                 _scale = 1.0f;
                 nudScale.Value = 1.0m;
                 _rotX = 0f; _rotY = 0f; _rotZ = 0f;
@@ -2362,6 +2728,7 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 EnsurePreviewModel();
+                PopulateTestAnimations();
                 glControl.Invalidate();
             }
             catch (Exception ex)
@@ -2389,42 +2756,38 @@ namespace UoFiddler.Plugin.Granny3D
                     var model = GrannyModelFile.Load(filePath);
                     if (model != null && model.Parts.Count > 0)
                     {
-                        var vList = new List<Vector3>();
-                        var nList = new List<Vector3>();
-                        var uList = new List<Vector2>();
-                        var iList = new List<int>();
-                        var sList = new List<VertexInfluence[]>();
+                        _rawParts.Clear();
+                        int totalVerts = 0;
+                        int totalFaces = 0;
 
                         foreach (var part in model.Parts)
                         {
-                            int baseIdx = vList.Count;
-                            for (int i = 0; i < part.Vertices.Length; i++)
+                            _rawParts.Add(new RawPartData
                             {
-                                vList.Add(part.Vertices[i]);
-                                nList.Add(part.Normals != null && i < part.Normals.Length ? part.Normals[i] : Vector3.UnitZ);
-                                uList.Add(part.UVs != null && i < part.UVs.Length ? part.UVs[i] : Vector2.Zero);
-                                sList.Add(part.Skin != null && i < part.Skin.Length ? part.Skin[i] : Array.Empty<VertexInfluence>());
-                            }
-                            if (part.Indices != null)
-                            {
-                                for (int i = 0; i < part.Indices.Length; i++)
-                                    iList.Add(baseIdx + part.Indices[i]);
-                            }
+                                Name = !string.IsNullOrEmpty(part.Name) ? part.Name : $"Mesh_{_rawParts.Count + 1}",
+                                MaterialName = part.MaterialName,
+                                Color = part.Color,
+                                TextureName = part.TextureName,
+                                RawVertices = (Vector3[])part.Vertices.Clone(),
+                                RawNormals = part.Normals != null ? (Vector3[])part.Normals.Clone() : Enumerable.Repeat(Vector3.UnitZ, part.Vertices.Length).ToArray(),
+                                UVs = part.UVs != null ? (Vector2[])part.UVs.Clone() : Enumerable.Repeat(Vector2.Zero, part.Vertices.Length).ToArray(),
+                                Indices = part.Indices != null ? (int[])part.Indices.Clone() : Array.Empty<int>(),
+                                Skin = part.Skin != null ? (VertexInfluence[][])part.Skin.Clone() : null
+                            });
+                            totalVerts += part.Vertices.Length;
+                            totalFaces += (part.Indices?.Length ?? 0) / 3;
                         }
 
-                        _rawVertices = vList.ToArray();
-                        _rawNormals = nList.ToArray();
-                        _rawUVs = uList.ToArray();
-                        _indices = iList.ToArray();
-                        _rawSkin = sList.ToArray();
                         _textureName = model.Parts.FirstOrDefault(p => !string.IsNullOrEmpty(p.TextureName))?.TextureName;
-
                         _scale = 1.0f; nudScale.Value = 1.0m;
                         _rotX = 0f; _rotY = 0f; _rotZ = 0f; _offset = Vector3.Zero; _mirrorX = false;
 
+                        string partNames = string.Join(", ", _rawParts.Take(4).Select(p => p.Name));
+                        if (_rawParts.Count > 4) partNames += "...";
+
                         lblModelInfo.Text = $"Fichier : {fn}\n" +
-                                            $"Sommets : {_rawVertices.Length:N0} | Faces : {(_indices.Length / 3):N0}\n" +
-                                            $"Format : Character UO (.char) avec rig intégré";
+                                            $"Meshs ({_rawParts.Count}) : {partNames}\n" +
+                                            $"Sommets : {totalVerts:N0} | Faces : {totalFaces:N0} (Character UO)";
 
                         _previewModel = model;
                         RebakeModelTransform();
@@ -2438,6 +2801,7 @@ namespace UoFiddler.Plugin.Granny3D
                             AutoPlaceMixamoLandmarks();
                         }
                         EnsurePreviewModel();
+                        PopulateTestAnimations();
                         glControl.Invalidate();
                         return;
                     }
@@ -2462,20 +2826,16 @@ namespace UoFiddler.Plugin.Granny3D
                             }
                         }
 
-                        var vList = new List<Vector3>();
-                        var nList = new List<Vector3>();
-                        var uList = new List<Vector2>();
-                        var iList = new List<int>();
-                        var sList = new List<VertexInfluence[]>();
+                        _rawParts.Clear();
+                        int totalVerts = 0;
+                        int totalFaces = 0;
 
                         foreach (var m in parser.Meshes)
                         {
-                            int baseIdx = vList.Count;
-                            for (int i = 0; i < m.Vertices.Count; i++)
+                            int vCount = m.Vertices.Count;
+                            var sList = new List<VertexInfluence[]>();
+                            for (int i = 0; i < vCount; i++)
                             {
-                                vList.Add(m.Vertices[i]);
-                                nList.Add(Vector3.UnitZ);
-                                uList.Add(m.UVs != null && i < m.UVs.Count ? m.UVs[i] : Vector2.Zero);
                                 if (m.Skin != null && i < m.Skin.Count && m.Skin[i] != null && m.Skin[i].Length > 0)
                                 {
                                     var infs = m.Skin[i];
@@ -2492,23 +2852,34 @@ namespace UoFiddler.Plugin.Granny3D
                                     sList.Add(Array.Empty<VertexInfluence>());
                                 }
                             }
-                            for (int i = 0; i < m.Indices.Count; i++)
-                                iList.Add(baseIdx + m.Indices[i]);
+
+                            _rawParts.Add(new RawPartData
+                            {
+                                Name = $"Mesh_{_rawParts.Count + 1}",
+                                MaterialName = string.Empty,
+                                Color = new Vector3(0.72f, 0.66f, 0.55f),
+                                TextureName = parser.TextureName ?? string.Empty,
+                                RawVertices = m.Vertices.ToArray(),
+                                RawNormals = Enumerable.Repeat(Vector3.UnitZ, vCount).ToArray(),
+                                UVs = (m.UVs != null && m.UVs.Count == vCount) ? m.UVs.ToArray() : Enumerable.Repeat(Vector2.Zero, vCount).ToArray(),
+                                Indices = m.Indices.ToArray(),
+                                Skin = sList.ToArray()
+                            });
+
+                            totalVerts += vCount;
+                            totalFaces += m.Indices.Count / 3;
                         }
 
-                        _rawVertices = vList.ToArray();
-                        _rawNormals = nList.ToArray();
-                        _rawUVs = uList.ToArray();
-                        _indices = iList.ToArray();
-                        _rawSkin = sList.ToArray();
                         _textureName = parser.TextureName;
-
                         _scale = 1.0f; nudScale.Value = 1.0m;
                         _rotX = 0f; _rotY = 0f; _rotZ = 0f; _offset = Vector3.Zero; _mirrorX = false;
 
+                        string partNames = string.Join(", ", _rawParts.Take(4).Select(p => p.Name));
+                        if (_rawParts.Count > 4) partNames += "...";
+
                         lblModelInfo.Text = $"Fichier : {fn}\n" +
-                                            $"Sommets : {_rawVertices.Length:N0} | Faces : {(_indices.Length / 3):N0}\n" +
-                                            $"Format : Modèle Granny UO (.grn)";
+                                            $"Meshs ({_rawParts.Count}) : {partNames}\n" +
+                                            $"Sommets : {totalVerts:N0} | Faces : {totalFaces:N0} (Granny UO)";
 
                         _previewModel = new GrannyModelFile
                         {
@@ -2540,6 +2911,7 @@ namespace UoFiddler.Plugin.Granny3D
                             AutoPlaceMixamoLandmarks();
                         }
                         EnsurePreviewModel();
+                        PopulateTestAnimations();
                         glControl.Invalidate();
                         return;
                     }
@@ -2555,42 +2927,38 @@ namespace UoFiddler.Plugin.Granny3D
                     if (MixamoCharacterImport.TryImport(filePath, _outFolder, _refPath, out var importedModel, out string importErr) && importedModel != null && importedModel.Parts.Count > 0)
                     {
                         _previewModel = importedModel;
-                        var vList = new List<Vector3>();
-                        var nList = new List<Vector3>();
-                        var uList = new List<Vector2>();
-                        var iList = new List<int>();
-                        var sList = new List<VertexInfluence[]>();
+                        _rawParts.Clear();
+                        int totalVerts = 0;
+                        int totalFaces = 0;
 
                         foreach (var part in importedModel.Parts)
                         {
-                            int baseIdx = vList.Count;
-                            for (int i = 0; i < part.Vertices.Length; i++)
+                            _rawParts.Add(new RawPartData
                             {
-                                vList.Add(part.Vertices[i]);
-                                nList.Add(part.Normals != null && i < part.Normals.Length ? part.Normals[i] : Vector3.UnitZ);
-                                uList.Add(part.UVs != null && i < part.UVs.Length ? part.UVs[i] : Vector2.Zero);
-                                sList.Add(part.Skin != null && i < part.Skin.Length ? part.Skin[i] : Array.Empty<VertexInfluence>());
-                            }
-                            if (part.Indices != null)
-                            {
-                                for (int i = 0; i < part.Indices.Length; i++)
-                                    iList.Add(baseIdx + part.Indices[i]);
-                            }
+                                Name = !string.IsNullOrEmpty(part.Name) ? part.Name : $"Mesh_{_rawParts.Count + 1}",
+                                MaterialName = part.MaterialName,
+                                Color = part.Color,
+                                TextureName = part.TextureName,
+                                RawVertices = (Vector3[])part.Vertices.Clone(),
+                                RawNormals = part.Normals != null ? (Vector3[])part.Normals.Clone() : Enumerable.Repeat(Vector3.UnitZ, part.Vertices.Length).ToArray(),
+                                UVs = part.UVs != null ? (Vector2[])part.UVs.Clone() : Enumerable.Repeat(Vector2.Zero, part.Vertices.Length).ToArray(),
+                                Indices = part.Indices != null ? (int[])part.Indices.Clone() : Array.Empty<int>(),
+                                Skin = part.Skin != null ? (VertexInfluence[][])part.Skin.Clone() : null
+                            });
+                            totalVerts += part.Vertices.Length;
+                            totalFaces += (part.Indices?.Length ?? 0) / 3;
                         }
 
-                        _rawVertices = vList.ToArray();
-                        _rawNormals = nList.ToArray();
-                        _rawUVs = uList.ToArray();
-                        _indices = iList.ToArray();
-                        _rawSkin = sList.ToArray();
                         _textureName = importedModel.Parts.FirstOrDefault(p => !string.IsNullOrEmpty(p.TextureName))?.TextureName;
-
                         _scale = 1.0f; nudScale.Value = 1.0m;
                         _rotX = 0f; _rotY = 0f; _rotZ = 0f; _offset = Vector3.Zero; _mirrorX = false;
 
+                        string partNames = string.Join(", ", _rawParts.Take(4).Select(p => p.Name));
+                        if (_rawParts.Count > 4) partNames += "...";
+
                         lblModelInfo.Text = $"Fichier : {fn}\n" +
-                                            $"Sommets : {_rawVertices.Length:N0} | Faces : {(_indices.Length / 3):N0}\n" +
-                                            $"Format : FBX Rigged Auto-Adapté (Squelette + Skinning artiste préservés)";
+                                            $"Meshs ({_rawParts.Count}) : {partNames}\n" +
+                                            $"Sommets : {totalVerts:N0} | Faces : {totalFaces:N0} (FBX Rigged)";
 
                         RebakeModelTransform();
                         if (importedModel.Bones != null && importedModel.Bones.Count > 0)
@@ -2599,20 +2967,16 @@ namespace UoFiddler.Plugin.Granny3D
                             InitMarkersFromLiveBones(importedModel.Bones);
                         }
                         EnsurePreviewModel();
+                        PopulateTestAnimations();
                         glControl.Invalidate();
                         return;
                     }
                 }
 
-                int totalVerts = 0;
-                int totalFaces = 0;
+                _rawParts.Clear();
+                int totalVertsStatic = 0;
+                int totalFacesStatic = 0;
 
-                var vertList = new List<Vector3>();
-                var normList = new List<Vector3>();
-                var uvList = new List<Vector2>();
-                var idxList = new List<int>();
-
-                // Detect scene bounding box in raw file space
                 var bboxMin = new Assimp.Vector3D(float.MaxValue, float.MaxValue, float.MaxValue);
                 var bboxMax = new Assimp.Vector3D(float.MinValue, float.MinValue, float.MinValue);
                 foreach (var m in scene.Meshes)
@@ -2627,79 +2991,101 @@ namespace UoFiddler.Plugin.Granny3D
                 float rawH_X = Math.Abs(bboxMax.X - bboxMin.X);
                 float rawH_Y = Math.Abs(bboxMax.Y - bboxMin.Y);
                 float rawH_Z = Math.Abs(bboxMax.Z - bboxMin.Z);
-
-                // Auto-detect orientation: Y-up vs Z-up
                 bool isZUp = rawH_Z > rawH_Y * 1.1f;
 
-                // Auto-detect unit scale: cm (~180) vs meters (~1.8) vs mm (~1800)
                 float maxH = Math.Max(rawH_Y, rawH_Z);
                 float initialScale = 1.0f;
                 if (maxH > 500f) initialScale = 0.001f;
                 else if (maxH > 20f) initialScale = 0.01f;
                 else initialScale = 1.0f;
 
-                foreach (var mesh in scene.Meshes)
+                for (int mi = 0; mi < scene.MeshCount; mi++)
                 {
-                    totalVerts += mesh.VertexCount;
-                    totalFaces += mesh.FaceCount;
-                    if (mesh.HasBones && mesh.BoneCount > 0) hasBones = true;
+                    var mesh = scene.Meshes[mi];
+                    if (mesh.VertexCount == 0 || mesh.FaceCount == 0) continue;
 
-                    int baseIdx = vertList.Count;
+                    string mName = !string.IsNullOrEmpty(mesh.Name) ? mesh.Name : $"Mesh_{mi + 1}";
+                    string texName = string.Empty;
+                    string matName = string.Empty;
+                    Vector3 partCol = new Vector3(0.72f, 0.66f, 0.55f);
+
+                    if (mesh.MaterialIndex >= 0 && mesh.MaterialIndex < scene.MaterialCount)
+                    {
+                        var mat = scene.Materials[mesh.MaterialIndex];
+                        matName = mat.Name ?? string.Empty;
+                        var diff = mat.ColorDiffuse;
+                        if (diff.R > 0.001f || diff.G > 0.001f || diff.B > 0.001f)
+                            partCol = new Vector3(diff.R, diff.G, diff.B);
+                        if (mat.HasTextureDiffuse && !string.IsNullOrEmpty(mat.TextureDiffuse.FilePath))
+                            texName = Path.GetFileName(mat.TextureDiffuse.FilePath);
+                    }
+
+                    var pVerts = new Vector3[mesh.VertexCount];
+                    var pNorms = new Vector3[mesh.VertexCount];
+                    var pUVs = new Vector2[mesh.VertexCount];
+
                     for (int i = 0; i < mesh.VertexCount; i++)
                     {
                         var v = mesh.Vertices[i];
-                        vertList.Add(new Vector3(v.X * initialScale, v.Y * initialScale, v.Z * initialScale));
-
+                        pVerts[i] = new Vector3(v.X * initialScale, v.Y * initialScale, v.Z * initialScale);
                         if (mesh.HasNormals)
                         {
                             var n = mesh.Normals[i];
-                            normList.Add(new Vector3(n.X, n.Y, n.Z).Normalized());
+                            pNorms[i] = new Vector3(n.X, n.Y, n.Z).Normalized();
                         }
-                        else
-                        {
-                            normList.Add(Vector3.UnitZ);
-                        }
+                        else pNorms[i] = Vector3.UnitZ;
 
                         if (mesh.HasTextureCoords(0))
                         {
                             var uv = mesh.TextureCoordinateChannels[0][i];
-                            uvList.Add(new Vector2(uv.X, 1.0f - uv.Y));
+                            pUVs[i] = new Vector2(uv.X, 1.0f - uv.Y);
                         }
-                        else
-                        {
-                            uvList.Add(Vector2.Zero);
-                        }
+                        else pUVs[i] = Vector2.Zero;
                     }
 
+                    var pIndices = new List<int>();
                     foreach (var face in mesh.Faces)
                     {
                         if (face.IndexCount == 3)
                         {
-                            idxList.Add(baseIdx + face.Indices[0]);
-                            idxList.Add(baseIdx + face.Indices[1]);
-                            idxList.Add(baseIdx + face.Indices[2]);
+                            pIndices.Add(face.Indices[0]);
+                            pIndices.Add(face.Indices[1]);
+                            pIndices.Add(face.Indices[2]);
                         }
                     }
+
+                    _rawParts.Add(new RawPartData
+                    {
+                        Name = mName,
+                        MaterialName = matName,
+                        Color = partCol,
+                        TextureName = texName,
+                        RawVertices = pVerts,
+                        RawNormals = pNorms,
+                        UVs = pUVs,
+                        Indices = pIndices.ToArray(),
+                        Skin = null
+                    });
+
+                    totalVertsStatic += mesh.VertexCount;
+                    totalFacesStatic += mesh.FaceCount;
                 }
 
-                _rawVertices = vertList.ToArray();
-                _rawNormals = normList.ToArray();
-                _rawUVs = uvList.ToArray();
-                _indices = idxList.ToArray();
-                _rawSkin = null;
+                if (_rawParts.Count == 0) return;
+
+                string staticPartNames = string.Join(", ", _rawParts.Take(4).Select(p => p.Name));
+                if (_rawParts.Count > 4) staticPartNames += "...";
 
                 lblModelInfo.Text = $"Fichier : {fn}\n" +
-                                    $"Sommets : {totalVerts:N0} | Faces : {totalFaces:N0}\n" +
-                                    $"Squelette FBX : {(hasBones ? "OUI (os détectés)" : "NON (Modèle statique)")}";
+                                    $"Meshs ({_rawParts.Count}) : {staticPartNames}\n" +
+                                    $"Sommets : {totalVertsStatic:N0} | Faces : {totalFacesStatic:N0} (Statique Assimp)";
 
-                if (!hasBones) chkForceAutoSkin.Checked = true;
-
+                chkForceAutoSkin.Checked = true;
                 _scale = 1.0f;
                 nudScale.Value = 1.0m;
                 _mirrorX = false;
                 _offset = Vector3.Zero;
 
-                // If raw file was Y-up (like standard Mixamo FBX), rotate +90 around X to stand upright in UO Z-up space
                 if (!isZUp)
                 {
                     _rotX = 90f; _rotY = 0f; _rotZ = 0f;
@@ -2714,6 +3100,7 @@ namespace UoFiddler.Plugin.Granny3D
                 AutoScaleToSkeleton();
                 AutoPlaceMixamoLandmarks();
                 EnsurePreviewModel();
+                PopulateTestAnimations();
                 glControl.Invalidate();
             }
             catch (Exception ex)
@@ -2954,24 +3341,18 @@ namespace UoFiddler.Plugin.Granny3D
                 EnsurePreviewModel();
 
                 string? err = null;
-                GrannyModelFile? model = null;
+                GrannyModelFile? model = _previewModel;
 
                 string ext = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetExtension(_currentModelPath).ToLowerInvariant() : "";
                 var customJoints = _markers.ToDictionary(m => m.BoneName, m => m.Position, StringComparer.OrdinalIgnoreCase);
                 bool forceAuto = chkForceAutoSkin.Checked;
 
-                if (_previewModel != null && _previewModel.Parts.Count > 0 && _previewModel.Bones.Count > 0)
+                if (model == null || model.Parts.Count == 0 || model.Bones.Count == 0)
                 {
-                    model = _previewModel;
-                }
-                else if (ext == ".fbx" && File.Exists(_currentModelPath) && !forceAuto)
-                {
-                    MixamoCharacterImport.TryImport(_currentModelPath, _outFolder, _refPath, out model, out err, customJoints, forceAuto);
-                }
-
-                if (model == null && _previewModel != null)
-                {
-                    model = _previewModel;
+                    if (ext == ".fbx" && File.Exists(_currentModelPath) && !forceAuto)
+                    {
+                        MixamoCharacterImport.TryImport(_currentModelPath, _outFolder, _refPath, out model, out err, customJoints, forceAuto);
+                    }
                 }
 
                 if (model == null)

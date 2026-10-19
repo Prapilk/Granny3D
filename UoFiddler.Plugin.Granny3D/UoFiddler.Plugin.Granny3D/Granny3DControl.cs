@@ -1916,8 +1916,8 @@ namespace UoFiddler.Plugin.Granny3D
                 if (string.IsNullOrEmpty(outFolder))
                     outFolder = Path.Combine(BasePath, "Others");
 
-                // Pass BOTH sourceFile AND active _loadedMeshes so AutoRigDialog has the 3D model immediately
-                using var dlg = new AutoRigDialog(sourceFile, BasePath, outFolder, _loadedMeshes);
+                // Pass BOTH sourceFile AND active _loadedMeshes, as well as current active animation, so AutoRigDialog has full context
+                using var dlg = new AutoRigDialog(sourceFile, BasePath, outFolder, _loadedMeshes, _currentAnimation, _currentAnimPath);
                 if (dlg.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(dlg.GeneratedCharPath))
                 {
                     string charPath = dlg.GeneratedCharPath;

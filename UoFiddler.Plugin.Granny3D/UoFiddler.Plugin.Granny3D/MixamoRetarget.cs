@@ -239,11 +239,11 @@ namespace UoFiddler.Plugin.Granny3D
             return false;
         }
 
-        public static bool TryImport(string fbxPath, IReadOnlyList<GrannyBone> refBones, string clipName, out GrannyAnimation anim, out string error)
+        public static bool TryImport(string fbxPath, IReadOnlyList<GrannyBone> refBones, string clipName, out GrannyAnimation anim, out string error, int animIndex = 0)
         {
             try
             {
-                anim = Import(fbxPath, refBones, clipName);
+                anim = Import(fbxPath, refBones, clipName, animIndex);
                 error = anim == null ? "import échoué" : null;
                 return anim != null;
             }
@@ -255,7 +255,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
-        public static GrannyAnimation Import(string fbxPath, IReadOnlyList<GrannyBone> refBones, string clipName)
+        public static GrannyAnimation Import(string fbxPath, IReadOnlyList<GrannyBone> refBones, string clipName, int animIndex = 0)
         {
             if (refBones == null || refBones.Count == 0) return null;
 
@@ -292,7 +292,8 @@ namespace UoFiddler.Plugin.Granny3D
             for (int i = 0; i < nodes.Count; i++)
                 if (!nameToNode.ContainsKey(nodes[i].Name)) nameToNode[nodes[i].Name] = i;
 
-            var anim = scene.Animations[0];
+            if (animIndex < 0 || animIndex >= scene.AnimationCount) animIndex = 0;
+            var anim = scene.Animations[animIndex];
             var chanByNode = new Dictionary<int, NodeAnimationChannel>();
             foreach (var ch in anim.NodeAnimationChannels)
                 if (nameToNode.TryGetValue(ch.NodeName, out int ni)) chanByNode[ni] = ch;
