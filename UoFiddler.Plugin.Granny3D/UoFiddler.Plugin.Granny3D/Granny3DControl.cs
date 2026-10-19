@@ -699,7 +699,7 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlModelTools = new Panel { Dock = DockStyle.Bottom, Height = 84 };
             btnApplyMixamo = new Button
             {
-                Text = "⚡ Apply Mixamo for UO…",
+                Text = "⚡ Convert/create rig to UO…",
                 Dock = DockStyle.Top,
                 Height = 28,
                 BackColor = Color.FromArgb(35, 75, 110),
@@ -1724,7 +1724,7 @@ namespace UoFiddler.Plugin.Granny3D
             // If right-clicked on empty area or no node selected
             if (node == null || info == null)
             {
-                var applyMixamoGen = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer & Adapter un modèle)...", null, (s, a) =>
+                var applyMixamoGen = new ToolStripMenuItem("⚡ Convert/create rig to UO (Rig Studio)...", null, (s, a) =>
                 {
                     ApplyMixamoForUo(null);
                 });
@@ -1748,7 +1748,7 @@ namespace UoFiddler.Plugin.Granny3D
                 });
 
                 tvMenu.Items.Add(new ToolStripSeparator());
-                var applyMixamoFolder = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer & Adapter un modèle)...", null, (s, a) =>
+                var applyMixamoFolder = new ToolStripMenuItem("⚡ Convert/create rig to UO (Rig Studio)...", null, (s, a) =>
                 {
                     ApplyMixamoForUo(info.Folder);
                 });
@@ -1770,7 +1770,7 @@ namespace UoFiddler.Plugin.Granny3D
                 });
 
                 tvMenu.Items.Add(new ToolStripSeparator());
-                var applyMixamoLeaf = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter une animation / modèle)...", null, (s, a) =>
+                var applyMixamoLeaf = new ToolStripMenuItem("⚡ Convert/create rig to UO (Rig Studio)...", null, (s, a) =>
                 {
                     var parentInfo = node.Parent?.Tag as TreeNodeInfo;
                     ApplyMixamoForUo(parentInfo?.MeshPath);
@@ -1790,7 +1790,7 @@ namespace UoFiddler.Plugin.Granny3D
                 });
 
                 tvMenu.Items.Add(new ToolStripSeparator());
-                var applyMixamoModel = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+                var applyMixamoModel = new ToolStripMenuItem("⚡ Convert/create rig to UO (Adapter au squelette UO Biped)...", null, (s, a) =>
                 {
                     ApplyMixamoForUo(info.MeshPath);
                 });
@@ -1929,7 +1929,7 @@ namespace UoFiddler.Plugin.Granny3D
             catch (Exception ex)
             {
                 Log($"Auto-Rig Studio error: {ex.Message}\n{ex}");
-                MessageBox.Show("Erreur dans Auto-Rig Studio : " + ex.Message, "Apply Mixamo for UO", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Erreur dans Auto-Rig Studio : " + ex.Message, "Convert/create rig to UO", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -3035,7 +3035,7 @@ namespace UoFiddler.Plugin.Granny3D
             var node = tvAnims.SelectedNode;
             if (node == null)
             {
-                var applyMixamoGen = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer & Adapter un FBX)...", null, (s, a) =>
+                var applyMixamoGen = new ToolStripMenuItem("⚡ Convert/create rig to UO (Importer & Adapter un FBX)...", null, (s, a) =>
                 {
                     ApplyMixamoForUo(null);
                 });
@@ -3052,7 +3052,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 tvAnimMenu.Items.Add(node.IsExpanded ? "Réduire" : "Développer", null, (s, a) => node.Toggle());
                 tvAnimMenu.Items.Add(new ToolStripSeparator());
-                var applyCat = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer une animation FBX)...", null, (s, a) => BtnImportAnim_Click(s, a));
+                var applyCat = new ToolStripMenuItem("⚡ Convert/create rig to UO (Importer une animation FBX)...", null, (s, a) => BtnImportAnim_Click(s, a));
                 applyCat.Font = new Font(tvAnimMenu.Font, FontStyle.Bold);
                 tvAnimMenu.Items.Add(applyCat);
                 return;
@@ -3060,7 +3060,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (string.IsNullOrEmpty(animPath))
             {
-                var applyMixamoGen = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer & Adapter un FBX)...", null, (s, a) =>
+                var applyMixamoGen = new ToolStripMenuItem("⚡ Convert/create rig to UO (Importer & Adapter un FBX)...", null, (s, a) =>
                 {
                     ApplyMixamoForUo(null);
                 });
@@ -3071,7 +3071,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             tvAnimMenu.Items.Add("Lire l'animation", null, (s, a) => PlayAnimationFile(animPath));
             tvAnimMenu.Items.Add(new ToolStripSeparator());
-            var applyMixamoClip = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Importer une animation FBX)...", null, (s, a) => BtnImportAnim_Click(s, a));
+            var applyMixamoClip = new ToolStripMenuItem("⚡ Convert/create rig to UO (Importer une animation FBX)...", null, (s, a) => BtnImportAnim_Click(s, a));
             applyMixamoClip.Font = new Font(tvAnimMenu.Font, FontStyle.Bold);
             tvAnimMenu.Items.Add(applyMixamoClip);
 
@@ -4835,7 +4835,7 @@ namespace UoFiddler.Plugin.Granny3D
             int idx = lstLoaded.SelectedIndex;
             if (idx < 0 || idx >= _loadedMeshes.Count)
             {
-                var applyMixamoFallback = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+                var applyMixamoFallback = new ToolStripMenuItem("⚡ Convert/create rig to UO (Adapter au squelette UO Biped)...", null, (s, a) =>
                 {
                     string target = !string.IsNullOrEmpty(_currentModelPath) ? _currentModelPath : null;
                     ApplyMixamoForUo(target);
@@ -4876,7 +4876,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             lstLoadedMenu.Items.Add(new ToolStripSeparator());
-            var applyMixamoLoaded = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+            var applyMixamoLoaded = new ToolStripMenuItem("⚡ Convert/create rig to UO (Adapter au squelette UO Biped)...", null, (s, a) =>
             {
                 string target = !string.IsNullOrEmpty(lm.SourcePath) ? lm.SourcePath : _currentModelPath;
                 ApplyMixamoForUo(target);
@@ -7888,7 +7888,7 @@ void main(){
 
             glContextMenu.Items.Clear();
 
-            var applyMixamoItem = new ToolStripMenuItem("⚡ Apply Mixamo for UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+            var applyMixamoItem = new ToolStripMenuItem("⚡ Convert/create rig to UO (Adapter au squelette UO Biped)...", null, (s, a) =>
             {
                 string target = !string.IsNullOrEmpty(_currentModelPath) ? _currentModelPath : null;
                 ApplyMixamoForUo(target);

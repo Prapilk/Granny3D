@@ -28,18 +28,54 @@ namespace UoFiddler.Plugin.Granny3D
             ("mixamorig:LeftArm",      "Bip01 L UpperArm"),
             ("mixamorig:LeftForeArm",  "Bip01 L Forearm"),
             ("mixamorig:LeftHand",     "Bip01 L Hand"),
+            // Left Hand Fingers (Mixamo 5 fingers -> UO Finger0/Finger1):
             ("mixamorig:LeftHandThumb1",  "Bip01 L Finger0"),
             ("mixamorig:LeftHandThumb2",  "Bip01 L Finger01"),
+            ("mixamorig:LeftHandThumb3",  "Bip01 L Finger01"),
+            ("mixamorig:LeftHandThumb4",  "Bip01 L Finger01"),
             ("mixamorig:LeftHandIndex1",   "Bip01 L Finger1"),
             ("mixamorig:LeftHandIndex2",   "Bip01 L Finger11"),
+            ("mixamorig:LeftHandIndex3",   "Bip01 L Finger11"),
+            ("mixamorig:LeftHandIndex4",   "Bip01 L Finger11"),
+            ("mixamorig:LeftHandMiddle1",  "Bip01 L Finger1"),
+            ("mixamorig:LeftHandMiddle2",  "Bip01 L Finger11"),
+            ("mixamorig:LeftHandMiddle3",  "Bip01 L Finger11"),
+            ("mixamorig:LeftHandMiddle4",  "Bip01 L Finger11"),
+            ("mixamorig:LeftHandRing1",    "Bip01 L Finger1"),
+            ("mixamorig:LeftHandRing2",    "Bip01 L Finger11"),
+            ("mixamorig:LeftHandRing3",    "Bip01 L Finger11"),
+            ("mixamorig:LeftHandRing4",    "Bip01 L Finger11"),
+            ("mixamorig:LeftHandPinky1",   "Bip01 L Finger1"),
+            ("mixamorig:LeftHandPinky2",   "Bip01 L Finger11"),
+            ("mixamorig:LeftHandPinky3",   "Bip01 L Finger11"),
+            ("mixamorig:LeftHandPinky4",   "Bip01 L Finger11"),
+
             ("mixamorig:RightShoulder","Bip01 R Clavicle"),
             ("mixamorig:RightArm",     "Bip01 R UpperArm"),
             ("mixamorig:RightForeArm", "Bip01 R Forearm"),
             ("mixamorig:RightHand",    "Bip01 R Hand"),
+
+            // Right Hand Fingers (Mixamo 5 fingers -> UO Finger0/Finger1):
             ("mixamorig:RightHandThumb1", "Bip01 R Finger0"),
             ("mixamorig:RightHandThumb2", "Bip01 R Finger01"),
+            ("mixamorig:RightHandThumb3", "Bip01 R Finger01"),
+            ("mixamorig:RightHandThumb4", "Bip01 R Finger01"),
             ("mixamorig:RightHandIndex1",  "Bip01 R Finger1"),
             ("mixamorig:RightHandIndex2",  "Bip01 R Finger11"),
+            ("mixamorig:RightHandIndex3",  "Bip01 R Finger11"),
+            ("mixamorig:RightHandIndex4",  "Bip01 R Finger11"),
+            ("mixamorig:RightHandMiddle1", "Bip01 R Finger1"),
+            ("mixamorig:RightHandMiddle2", "Bip01 R Finger11"),
+            ("mixamorig:RightHandMiddle3", "Bip01 R Finger11"),
+            ("mixamorig:RightHandMiddle4", "Bip01 R Finger11"),
+            ("mixamorig:RightHandRing1",   "Bip01 R Finger1"),
+            ("mixamorig:RightHandRing2",   "Bip01 R Finger11"),
+            ("mixamorig:RightHandRing3",   "Bip01 R Finger11"),
+            ("mixamorig:RightHandRing4",   "Bip01 R Finger11"),
+            ("mixamorig:RightHandPinky1",  "Bip01 R Finger1"),
+            ("mixamorig:RightHandPinky2",  "Bip01 R Finger11"),
+            ("mixamorig:RightHandPinky3",  "Bip01 R Finger11"),
+            ("mixamorig:RightHandPinky4",  "Bip01 R Finger11"),
             ("mixamorig:LeftUpLeg",    "Bip01 L Thigh"),
             ("mixamorig:LeftLeg",      "Bip01 L Calf"),
             ("mixamorig:LeftFoot",     "Bip01 L Foot"),
@@ -72,6 +108,39 @@ namespace UoFiddler.Plugin.Granny3D
             ("calf_r",        "Bip01 R Calf"),
             ("foot_r",        "Bip01 R Foot"),
             ("ball_r",        "Bip01 R Toe0"),
+
+            // Standard finger bones (Thumb -> Finger0, Other fingers -> Finger1):
+            ("thumb_01_l",    "Bip01 L Finger0"),
+            ("thumb_02_l",    "Bip01 L Finger01"),
+            ("thumb_03_l",    "Bip01 L Finger01"),
+            ("index_01_l",    "Bip01 L Finger1"),
+            ("index_02_l",    "Bip01 L Finger11"),
+            ("index_03_l",    "Bip01 L Finger11"),
+            ("middle_01_l",   "Bip01 L Finger1"),
+            ("middle_02_l",   "Bip01 L Finger11"),
+            ("middle_03_l",   "Bip01 L Finger11"),
+            ("ring_01_l",     "Bip01 L Finger1"),
+            ("ring_02_l",     "Bip01 L Finger11"),
+            ("ring_03_l",     "Bip01 L Finger11"),
+            ("pinky_01_l",    "Bip01 L Finger1"),
+            ("pinky_02_l",    "Bip01 L Finger11"),
+            ("pinky_03_l",    "Bip01 L Finger11"),
+
+            ("thumb_01_r",    "Bip01 R Finger0"),
+            ("thumb_02_r",    "Bip01 R Finger01"),
+            ("thumb_03_r",    "Bip01 R Finger01"),
+            ("index_01_r",    "Bip01 R Finger1"),
+            ("index_02_r",    "Bip01 R Finger11"),
+            ("index_03_r",    "Bip01 R Finger11"),
+            ("middle_01_r",   "Bip01 R Finger1"),
+            ("middle_02_r",   "Bip01 R Finger11"),
+            ("middle_03_r",   "Bip01 R Finger11"),
+            ("ring_01_r",     "Bip01 R Finger1"),
+            ("ring_02_r",     "Bip01 R Finger11"),
+            ("ring_03_r",     "Bip01 R Finger11"),
+            ("pinky_01_r",    "Bip01 R Finger1"),
+            ("pinky_02_r",    "Bip01 R Finger11"),
+            ("pinky_03_r",    "Bip01 R Finger11"),
         };
 
         // Mixamo is Y-up, UO models are Z-up: +/-90deg about X bridges the two when
@@ -156,19 +225,13 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (lower.Contains("thumb"))
                 {
-                    alias = (lower.Contains("01") || lower.Contains("thumb1")) ? $"Bip01 {side} Finger0" : $"Bip01 {side} Finger01";
+                    alias = (lower.Contains("01") || lower.Contains("thumb1") || lower.EndsWith("_1") || lower.EndsWith(".1")) ? $"Bip01 {side} Finger0" : $"Bip01 {side} Finger01";
                     return true;
                 }
-                if (lower.Contains("index") || (lower.Contains("finger") && !lower.Contains("middle") && !lower.Contains("ring") && !lower.Contains("pinky")))
+                if (lower.Contains("index") || lower.Contains("middle") || lower.Contains("ring") || lower.Contains("pinky") || lower.Contains("little") || lower.Contains("finger"))
                 {
-                    alias = (lower.Contains("01") || lower.Contains("index1"))
-                        ? $"Bip01 {side} Finger1" : $"Bip01 {side} Finger11";
-                    return true;
-                }
-                if (lower.Contains("middle") || lower.Contains("ring") || lower.Contains("pinky") || lower.Contains("little"))
-                {
-                    // Map non-index fingers to Hand so they stay naturally shaped and don't stretch
-                    alias = $"Bip01 {side} Hand";
+                    bool isBase = lower.Contains("01") || lower.Contains("index1") || lower.Contains("middle1") || lower.Contains("ring1") || lower.Contains("pinky1") || lower.Contains("little1") || lower.Contains("finger1") || lower.EndsWith("_1") || lower.EndsWith(".1");
+                    alias = isBase ? $"Bip01 {side} Finger1" : $"Bip01 {side} Finger11";
                     return true;
                 }
             }

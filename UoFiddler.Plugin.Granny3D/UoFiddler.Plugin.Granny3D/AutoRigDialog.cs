@@ -57,6 +57,9 @@ namespace UoFiddler.Plugin.Granny3D
         private Button btnStopAnim = null!;
         private TrackBar tbAnimScrub = null!;
         private Button btnValidate = null!;
+        private TrackBar tbFingerFlex = null!;
+        private Label lblFingerFlex = null!;
+        private float _fingerFlexAmount = 0.0f;
 
         // 3D Scene / GL State
         private int _shaderMeshProg;
@@ -191,6 +194,13 @@ namespace UoFiddler.Plugin.Granny3D
             _markers.Add(new JointMarker { BoneName = "Bip01 L Hand", DisplayName = "Poignet G (Wrist)", Position = new Vector3(-0.63f, 0.045f, 1.33f), Color = Color.FromArgb(0, 191, 255), ParentName = "Bip01 L Forearm", SymmetricBoneName = "Bip01 R Hand" });
             _markers.Add(new JointMarker { BoneName = "Bip01 R Hand", DisplayName = "Poignet D (Wrist)", Position = new Vector3(0.63f, 0.045f, 1.33f), Color = Color.FromArgb(255, 99, 71), ParentName = "Bip01 R Forearm", SymmetricBoneName = "Bip01 L Hand" });
 
+            // Fingers & Thumbs (Direct interactive markers on hands!)
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger0", DisplayName = "Pouce G (Thumb)", Position = new Vector3(-0.68f, 0.07f, 1.31f), Color = Color.FromArgb(255, 191, 0), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger0" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger1", DisplayName = "Doigts G (Fingers)", Position = new Vector3(-0.73f, 0.04f, 1.31f), Color = Color.FromArgb(0, 255, 255), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger1" });
+
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger0", DisplayName = "Pouce D (Thumb)", Position = new Vector3(0.68f, 0.07f, 1.31f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger0" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger1", DisplayName = "Doigts D (Fingers)", Position = new Vector3(0.73f, 0.04f, 1.31f), Color = Color.FromArgb(0, 206, 209), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger1" });
+
             // Legs (Left / Right) - G = Gauche (X < 0), D = Droite (X > 0)
             _markers.Add(new JointMarker { BoneName = "Bip01 L Thigh", DisplayName = "Hanche G (Hip)", Position = new Vector3(-0.12f, 0.015f, 0.90f), Color = Color.FromArgb(72, 209, 204), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 R Thigh" });
             _markers.Add(new JointMarker { BoneName = "Bip01 R Thigh", DisplayName = "Hanche D (Hip)", Position = new Vector3(0.12f, 0.015f, 0.90f), Color = Color.FromArgb(218, 112, 214), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 L Thigh" });
@@ -200,11 +210,24 @@ namespace UoFiddler.Plugin.Granny3D
 
             _markers.Add(new JointMarker { BoneName = "Bip01 L Foot", DisplayName = "Cheville G (Ankle)", Position = new Vector3(-0.10f, 0.05f, 0.10f), Color = Color.FromArgb(0, 139, 139), ParentName = "Bip01 L Calf", SymmetricBoneName = "Bip01 R Foot" });
             _markers.Add(new JointMarker { BoneName = "Bip01 R Foot", DisplayName = "Cheville D (Ankle)", Position = new Vector3(0.10f, 0.05f, 0.10f), Color = Color.FromArgb(255, 105, 180), ParentName = "Bip01 R Calf", SymmetricBoneName = "Bip01 L Foot" });
+
+            RefreshJointsCombo();
+        }
+
+        private void RefreshJointsCombo()
+        {
+            if (cbJoints == null) return;
+            cbJoints.Items.Clear();
+            foreach (var m in _markers) cbJoints.Items.Add(m.DisplayName);
+            if (_selectedMarkerIndex >= 0 && _selectedMarkerIndex < cbJoints.Items.Count)
+                cbJoints.SelectedIndex = _selectedMarkerIndex;
+            else if (cbJoints.Items.Count > 0)
+                cbJoints.SelectedIndex = 0;
         }
 
         private void InitializeComponentCustom()
         {
-            Text = "⚡ UO Auto-Rigging & Adaptateur Mixamo (Rig Studio)";
+            Text = "⚡ Convert/create rig to UO (Rig Studio)";
             Size = new Size(1500, 960);
             MinimumSize = new Size(1100, 750);
             StartPosition = FormStartPosition.CenterParent;
@@ -674,11 +697,11 @@ namespace UoFiddler.Plugin.Granny3D
 
             lblRotTip = new Label
             {
-                Text = "💡 Astuce : Maintenez Shift + Glisser Souris sur le poignet pour tourner la paume !",
+                Text = "💡 Astuce : Cliquez directement sur les croix (Pouce, Doigts, etc.) et déplacez-les à la souris !",
                 Location = new Point(12, 250),
                 AutoSize = true,
-                ForeColor = Color.DarkKhaki,
-                Font = new Font("Segoe UI", 8F, FontStyle.Italic)
+                ForeColor = Color.Orange,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
             };
 
             var btnResetPose = new Button
@@ -708,7 +731,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = "5. Prévisualisation en Direct (Test Animation UO)",
                 Dock = DockStyle.Top,
-                Height = 145,
+                Height = 220,
                 ForeColor = Color.MediumOrchid,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -727,9 +750,9 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlAnimBtns = new Panel { Dock = DockStyle.Top, Height = 36, Padding = new Padding(0, 6, 0, 0) };
             btnPlayAnim = new Button
             {
-                Text = "▶ Lancer le Test d'Animation",
+                Text = "▶ Lancer le Test",
                 Location = new Point(0, 4),
-                Width = 220,
+                Width = 145,
                 Height = 28,
                 BackColor = Color.FromArgb(80, 40, 110),
                 ForeColor = Color.White,
@@ -740,9 +763,9 @@ namespace UoFiddler.Plugin.Granny3D
 
             btnStopAnim = new Button
             {
-                Text = "⏹ T-Pose (Rest)",
-                Location = new Point(228, 4),
-                Width = 140,
+                Text = "⏹ T-Pose",
+                Location = new Point(152, 4),
+                Width = 95,
                 Height = 28,
                 BackColor = Color.FromArgb(48, 48, 52),
                 ForeColor = Color.Gainsboro,
@@ -751,8 +774,102 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnStopAnim.Click += (s, e) => StopAnimation();
 
+            var btnVictoryAnim = new Button
+            {
+                Text = "✨ Test Doigts (Victoire)",
+                Location = new Point(254, 4),
+                Width = 220,
+                Height = 28,
+                BackColor = Color.FromArgb(30, 115, 80),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold)
+            };
+            btnVictoryAnim.Click += (s, e) =>
+            {
+                for (int i = 0; i < cbAnimTest.Items.Count; i++)
+                {
+                    string itemStr = cbAnimTest.Items[i].ToString() ?? "";
+                    if (itemStr.IndexOf("Victory_01", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        itemStr.IndexOf("Victory", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        cbAnimTest.SelectedIndex = i;
+                        break;
+                    }
+                }
+                if (!_isPlayingAnim) TogglePlayAnimation();
+            };
+
             pnlAnimBtns.Controls.Add(btnPlayAnim);
             pnlAnimBtns.Controls.Add(btnStopAnim);
+            pnlAnimBtns.Controls.Add(btnVictoryAnim);
+
+            // Finger Flex Test Panel (interactive slider & quick buttons)
+            var pnlFingerFlex = new Panel { Dock = DockStyle.Top, Height = 62, Padding = new Padding(0, 4, 0, 0) };
+            lblFingerFlex = new Label
+            {
+                Text = "✋ Test Flexion Doigts / Poing : 0%",
+                Location = new Point(0, 4),
+                AutoSize = true,
+                ForeColor = Color.Gold,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold)
+            };
+            var btnFlexOpen = new Button
+            {
+                Text = "Ouvrir",
+                Location = new Point(285, 2),
+                Size = new Size(60, 22),
+                BackColor = Color.FromArgb(45, 45, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8F, FontStyle.Regular)
+            };
+            var btnFlexFist = new Button
+            {
+                Text = "Poing",
+                Location = new Point(350, 2),
+                Size = new Size(60, 22),
+                BackColor = Color.FromArgb(120, 50, 20),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8F, FontStyle.Bold)
+            };
+            tbFingerFlex = new TrackBar
+            {
+                Location = new Point(0, 26),
+                Width = 475,
+                Height = 26,
+                Minimum = 0,
+                Maximum = 100,
+                TickStyle = TickStyle.None
+            };
+            btnFlexOpen.Click += (s, e) =>
+            {
+                tbFingerFlex.Value = 0;
+                _fingerFlexAmount = 0f;
+                lblFingerFlex.Text = "✋ Test Flexion Doigts / Poing : 0%";
+                ApplyAnimationPose(_animTime);
+                glControl.Invalidate();
+            };
+            btnFlexFist.Click += (s, e) =>
+            {
+                tbFingerFlex.Value = 100;
+                _fingerFlexAmount = 1.0f;
+                lblFingerFlex.Text = "✋ Test Flexion Doigts / Poing : 100%";
+                ApplyAnimationPose(_animTime);
+                glControl.Invalidate();
+            };
+            tbFingerFlex.Scroll += (s, e) =>
+            {
+                _fingerFlexAmount = tbFingerFlex.Value / 100f;
+                lblFingerFlex.Text = $"✋ Test Flexion Doigts / Poing : {tbFingerFlex.Value}%";
+                ApplyAnimationPose(_animTime);
+                glControl.Invalidate();
+            };
+            pnlFingerFlex.Controls.Add(lblFingerFlex);
+            pnlFingerFlex.Controls.Add(btnFlexOpen);
+            pnlFingerFlex.Controls.Add(btnFlexFist);
+            pnlFingerFlex.Controls.Add(tbFingerFlex);
 
             tbAnimScrub = new TrackBar
             {
@@ -773,6 +890,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
 
             grpAnim.Controls.Add(tbAnimScrub);
+            grpAnim.Controls.Add(pnlFingerFlex);
             grpAnim.Controls.Add(pnlAnimBtns);
             grpAnim.Controls.Add(cbAnimTest);
 
@@ -1117,7 +1235,11 @@ namespace UoFiddler.Plugin.Granny3D
                     .ToList();
 
                 foreach (var f in files)
-                    cbAnimTest.Items.Add(f);
+                {
+                    bool hasFingers = HasFingerMotionAnim(f);
+                    string displayName = hasFingers ? $"✨ {f} [Doigts animés]" : f;
+                    cbAnimTest.Items.Add(displayName);
+                }
             }
 
             // Find preferred default animation: Walk or Run
@@ -1152,10 +1274,23 @@ namespace UoFiddler.Plugin.Granny3D
             LoadSelectedTestAnimation();
         }
 
+        private static bool HasFingerMotionAnim(string fn)
+        {
+            if (string.IsNullOrEmpty(fn)) return false;
+            return fn.IndexOf("Victory", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   fn.IndexOf("Wave", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   fn.IndexOf("Spell_Summon", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   fn.IndexOf("What!", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   fn.IndexOf("Blow_Kiss", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   fn.IndexOf("Up_Yours", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   fn.IndexOf("Attackcrossbow", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private void LoadSelectedTestAnimation()
         {
             if (cbAnimTest.SelectedItem == null) return;
-            string fn = cbAnimTest.SelectedItem.ToString()!;
+            string rawFn = cbAnimTest.SelectedItem.ToString()!;
+            string fn = rawFn.StartsWith("✨ ") ? rawFn.Substring(2).Replace(" [Doigts animés]", "").Trim() : rawFn;
             string humansDir = Path.Combine(_basePath, "Humans");
             if (!Directory.Exists(humansDir)) humansDir = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans";
             string fullPath = Path.Combine(humansDir, fn);
@@ -1218,6 +1353,9 @@ namespace UoFiddler.Plugin.Granny3D
             btnPlayAnim.BackColor = Color.FromArgb(80, 40, 110);
             _animTime = 0f;
             tbAnimScrub.Value = 0;
+            if (tbFingerFlex != null) tbFingerFlex.Value = 0;
+            _fingerFlexAmount = 0f;
+            if (lblFingerFlex != null) lblFingerFlex.Text = "✋ Test Flexion Doigts / Poing : 0%";
             _boneWorldMatrices = null;
 
             // Re-upload rest pose interleaved buffer
@@ -1320,7 +1458,8 @@ namespace UoFiddler.Plugin.Granny3D
             var uoBindWorld = new Matrix4[nb];
             for (int i = 0; i < nb; i++)
             {
-                var inv = _refBones[i].InverseBindMatrix;
+                int refIdx = _refBones.FindIndex(rb => string.Equals(rb.Name, _previewModel.Bones[i].Name, StringComparison.OrdinalIgnoreCase));
+                var inv = (refIdx >= 0 && refIdx < _refBones.Count) ? _refBones[refIdx].InverseBindMatrix : _previewModel.Bones[i].InverseBindMatrix;
                 if (Math.Abs(inv.Determinant) > 1e-5f)
                     uoBindWorld[i] = Matrix4.Invert(inv);
                 else
@@ -1401,6 +1540,26 @@ namespace UoFiddler.Plugin.Granny3D
                     int p = GetParentIndex(_previewModel.Bones, idx);
                     if (p >= 0 && p < nb && p != idx)
                     {
+                        // Check if live original bones exist to preserve artist finger joint proportions & angles!
+                        if (_liveOriginalBones != null && _liveOriginalBones.Count > 0)
+                        {
+                            int liveIdx = FindMatchingBoneIndex(_liveOriginalBones, name);
+                            int liveP = FindMatchingBoneIndex(_liveOriginalBones, _previewModel.Bones[p].Name);
+                            if (liveIdx >= 0 && liveP >= 0 && liveIdx < _liveOriginalBones.Count && liveP < _liveOriginalBones.Count)
+                            {
+                                var invChild = _liveOriginalBones[liveIdx].InverseBindMatrix;
+                                var invParent = _liveOriginalBones[liveP].InverseBindMatrix;
+                                if (Math.Abs(invChild.Determinant) > 1e-5f && Math.Abs(invParent.Determinant) > 1e-5f)
+                                {
+                                    var liveChildWorld = Matrix4.Invert(invChild);
+                                    var liveParentWorld = Matrix4.Invert(invParent);
+                                    var liveLocal = liveChildWorld * Matrix4.Invert(liveParentWorld);
+                                    fittedWorld[idx] = liveLocal * fittedWorld[p];
+                                    goto DistalComputed;
+                                }
+                            }
+                        }
+
                         int refSourceIdx = idx;
                         int refParentIdx = p;
                         if (fittedWorld[p].Row3.X < -0.01f && uoBindWorld[p].Row3.X > 0.01f)
@@ -1436,6 +1595,7 @@ namespace UoFiddler.Plugin.Granny3D
                         fittedWorld[idx] = uoBindWorld[idx];
                     }
                 }
+            DistalComputed: ;
 
                 foreach (int child in children[idx])
                     ComputeFitted(child);
@@ -1500,6 +1660,10 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (isLeft)
             {
+                if (lower.Contains("finger0") || lower.Contains("thumb"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("thumb", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("finger0", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("finger") || lower.Contains("index") || lower.Contains("middle"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("index", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("finger1", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("middle", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
                 if (lower.Contains("hand"))
                     return bones.FindIndex(b => (b.Name.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("wrist", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("left", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_l", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" l ", StringComparison.OrdinalIgnoreCase) >= 0));
                 if (lower.Contains("forearm"))
@@ -1517,6 +1681,10 @@ namespace UoFiddler.Plugin.Granny3D
             }
             else if (isRight)
             {
+                if (lower.Contains("finger0") || lower.Contains("thumb"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("thumb", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("finger0", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (lower.Contains("finger") || lower.Contains("index") || lower.Contains("middle"))
+                    return bones.FindIndex(b => (b.Name.IndexOf("index", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("finger1", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("middle", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
                 if (lower.Contains("hand"))
                     return bones.FindIndex(b => (b.Name.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("wrist", StringComparison.OrdinalIgnoreCase) >= 0) && (b.Name.IndexOf("right", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("_r", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf(" r ", StringComparison.OrdinalIgnoreCase) >= 0));
                 if (lower.Contains("forearm"))
@@ -1588,12 +1756,66 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (int r in roots)
                 ComputeFk(r);
 
+            if (_refBones == null || _refBones.Count == 0) LoadReferenceBones();
+
             foreach (var m in _markers)
             {
                 int bIdx = FindMatchingBoneIndex(bones, m.BoneName);
                 if (bIdx >= 0 && bIdx < nb)
                 {
                     m.Position = boneWorldPos[bIdx];
+
+                    // Recover rotation offset if reference bones exist
+                    if (_refBones != null && _refBones.Count > 0)
+                    {
+                        int refIdx = FindMatchingBoneIndex(_refBones, m.BoneName);
+                        if (refIdx >= 0 && refIdx < _refBones.Count)
+                        {
+                            int rotSourceIdx = refIdx;
+                            // Check symmetrical bone reference if mirrored
+                            if (m.Position.X < -0.01f && Math.Abs(_refBones[refIdx].InverseBindMatrix.Determinant) > 1e-5f)
+                            {
+                                var refPos = Matrix4.Invert(_refBones[refIdx].InverseBindMatrix).Row3.X;
+                                if (refPos > 0.01f)
+                                {
+                                    int symIdx = FindMatchingBoneIndex(_refBones, m.SymmetricBoneName ?? "");
+                                    if (symIdx >= 0 && symIdx < _refBones.Count) rotSourceIdx = symIdx;
+                                }
+                            }
+                            else if (m.Position.X > 0.01f && Math.Abs(_refBones[refIdx].InverseBindMatrix.Determinant) > 1e-5f)
+                            {
+                                var refPos = Matrix4.Invert(_refBones[refIdx].InverseBindMatrix).Row3.X;
+                                if (refPos < -0.01f)
+                                {
+                                    int symIdx = FindMatchingBoneIndex(_refBones, m.SymmetricBoneName ?? "");
+                                    if (symIdx >= 0 && symIdx < _refBones.Count) rotSourceIdx = symIdx;
+                                }
+                            }
+
+                            if (Math.Abs(_refBones[rotSourceIdx].InverseBindMatrix.Determinant) > 1e-5f && Math.Abs(boneWorldMat[bIdx].Determinant) > 1e-5f)
+                            {
+                                var refWorld = Matrix4.Invert(_refBones[rotSourceIdx].InverseBindMatrix);
+                                var refRotMat = Matrix4.CreateFromQuaternion(refWorld.ExtractRotation());
+                                var curRotMat = Matrix4.CreateFromQuaternion(boneWorldMat[bIdx].ExtractRotation());
+                                var diffMat = Matrix4.Invert(refRotMat) * curRotMat;
+
+                                float sinY = -diffMat.Row0.Z;
+                                float rotY = MathF.Asin(MathHelper.Clamp(sinY, -1f, 1f));
+                                float cosY = MathF.Cos(rotY);
+                                float rotX = 0f; float rotZ = 0f;
+                                if (MathF.Abs(cosY) > 1e-4f)
+                                {
+                                    rotX = MathF.Atan2(diffMat.Row1.Z, diffMat.Row2.Z);
+                                    rotZ = MathF.Atan2(diffMat.Row0.Y, diffMat.Row0.X);
+                                }
+                                var deg = new Vector3(MathHelper.RadiansToDegrees(rotX), MathHelper.RadiansToDegrees(rotY), MathHelper.RadiansToDegrees(rotZ));
+                                if (deg.LengthSquared > 0.01f)
+                                {
+                                    m.RotationDegrees = deg;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1647,8 +1869,15 @@ namespace UoFiddler.Plugin.Granny3D
             SetPos("Bip01 R Forearm", new Vector3(halfWidth * 0.72f, armY, minZ + height * 0.72f));
 
             // Poignets (Wrists)
-            SetPos("Bip01 L Hand", new Vector3(-halfWidth * 0.95f, armY, minZ + height * 0.70f));
-            SetPos("Bip01 R Hand", new Vector3(halfWidth * 0.95f, armY, minZ + height * 0.70f));
+            SetPos("Bip01 L Hand", new Vector3(-halfWidth * 0.90f, armY, minZ + height * 0.70f));
+            SetPos("Bip01 R Hand", new Vector3(halfWidth * 0.90f, armY, minZ + height * 0.70f));
+
+            // Pouces et Doigts (Thumbs & Fingers)
+            SetPos("Bip01 L Finger0", new Vector3(-halfWidth * 0.95f, armY + 0.035f, minZ + height * 0.69f));
+            SetPos("Bip01 L Finger1", new Vector3(-halfWidth * 1.00f, armY - 0.015f, minZ + height * 0.69f));
+
+            SetPos("Bip01 R Finger0", new Vector3(halfWidth * 0.95f, armY + 0.035f, minZ + height * 0.69f));
+            SetPos("Bip01 R Finger1", new Vector3(halfWidth * 1.00f, armY - 0.015f, minZ + height * 0.69f));
 
             // 4. Jambes (Hanches, Genoux, Chevilles)
             SetPos("Bip01 L Thigh", new Vector3(-halfWidth * 0.22f, midY, minZ + height * 0.48f));
@@ -1792,7 +2021,8 @@ namespace UoFiddler.Plugin.Granny3D
         private void ApplyAnimationPose(float time)
         {
             EnsurePreviewModel();
-            if (_testAnim == null || _previewModel == null || _previewModel.Bones.Count == 0) return;
+            if (_previewModel == null || _previewModel.Bones.Count == 0) return;
+            if (_testAnim == null && _fingerFlexAmount <= 0.001f) return;
 
             int nb = _previewModel.Bones.Count;
             if (_boneWorldMatrices == null || _boneWorldMatrices.Length != nb)
@@ -1854,9 +2084,10 @@ namespace UoFiddler.Plugin.Granny3D
                                       bone.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
                                       TrackPositionVaries(track, 0.002f);
                     Vector3 pos;
-                    if (bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase) && _refBones != null && idx < _refBones.Count)
+                    if (bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
                     {
-                        var refBindPos = Matrix4.Invert(_refBones[idx].InverseBindMatrix).Row3.Xyz;
+                        var refBip = _refBones?.FirstOrDefault(b => string.Equals(b.Name, "Bip01", StringComparison.OrdinalIgnoreCase));
+                        Vector3 refBindPos = refBip != null ? refBip.LocalPosition : new Vector3(0f, 0.026f, 0.937f);
                         var animPos = track.EvaluatePos(time);
                         var animDelta = animPos - refBindPos;
                         pos = bone.LocalPosition + animDelta;
@@ -1871,6 +2102,38 @@ namespace UoFiddler.Plugin.Granny3D
                 else
                 {
                     localTransform = Matrix4.CreateFromQuaternion(bone.LocalRotation) * Matrix4.CreateTranslation(bone.LocalPosition);
+                }
+
+                // Apply Finger Flex (Fist curl) if active!
+                if (_fingerFlexAmount > 0.001f)
+                {
+                    string bName = bone.Name;
+                    bool isLeft = bName.Contains(" L ");
+                    bool isRight = bName.Contains(" R ");
+                    if (isLeft || isRight)
+                    {
+                        float sign = isLeft ? 1f : -1f;
+                        if (bName.Contains("Finger11"))
+                        {
+                            float curlAngle = _fingerFlexAmount * MathHelper.DegreesToRadians(80f) * sign;
+                            localTransform = Matrix4.CreateRotationZ(curlAngle) * localTransform;
+                        }
+                        else if (bName.Contains("Finger1"))
+                        {
+                            float curlAngle = _fingerFlexAmount * MathHelper.DegreesToRadians(70f) * sign;
+                            localTransform = Matrix4.CreateRotationZ(curlAngle) * localTransform;
+                        }
+                        else if (bName.Contains("Finger01"))
+                        {
+                            float curlAngle = _fingerFlexAmount * MathHelper.DegreesToRadians(55f) * sign;
+                            localTransform = Matrix4.CreateRotationY(-curlAngle * 0.8f) * Matrix4.CreateRotationZ(curlAngle * 0.5f) * localTransform;
+                        }
+                        else if (bName.Contains("Finger0"))
+                        {
+                            float curlAngle = _fingerFlexAmount * MathHelper.DegreesToRadians(50f) * sign;
+                            localTransform = Matrix4.CreateRotationY(-curlAngle * 0.9f) * Matrix4.CreateRotationZ(curlAngle * 0.4f) * localTransform;
+                        }
+                    }
                 }
 
                 if (p >= 0 && p < nb && p != idx)
@@ -1890,63 +2153,71 @@ namespace UoFiddler.Plugin.Granny3D
                 EvalBone(r);
 
             // CPU skinning deformation for the animated test mesh
-            if (_baseVertices != null && _indices != null && _previewModel.Parts.Count > 0)
+            var skinToUse = _rawSkin ?? (_previewModel.Parts.Count > 0 ? _previewModel.Parts[0].Skin : null);
+            if (_baseVertices != null && _indices != null && skinToUse != null && skinToUse.Length == _baseVertices.Length)
             {
-                var part = _previewModel.Parts[0];
-                if (part.Skin != null && part.Skin.Length == _baseVertices.Length)
+                if (_animatedInterleaved == null || _animatedInterleaved.Length != _meshVertexCount * 8)
+                    _animatedInterleaved = new float[_meshVertexCount * 8];
+
+                var skinMats = new Matrix4[nb];
+                for (int b = 0; b < nb; b++)
+                    skinMats[b] = _previewModel.Bones[b].InverseBindMatrix * _boneWorldMatrices[b];
+
+                for (int i = 0; i < _meshVertexCount; i++)
                 {
-                    if (_animatedInterleaved == null || _animatedInterleaved.Length != _meshVertexCount * 8)
-                        _animatedInterleaved = new float[_meshVertexCount * 8];
+                    int vi = _indices[i];
+                    var p0 = _baseVertices[vi];
+                    var infs = skinToUse[vi];
 
-                    var skinMats = new Matrix4[nb];
-                    for (int b = 0; b < nb; b++)
-                        skinMats[b] = _previewModel.Bones[b].InverseBindMatrix * _boneWorldMatrices[b];
-
-                    for (int i = 0; i < _meshVertexCount; i++)
+                    Vector3 pAnim = Vector3.Zero;
+                    float totalW = 0f;
+                    if (infs != null && infs.Length > 0)
                     {
-                        int vi = _indices[i];
-                        var p0 = _baseVertices[vi];
-                        var infs = part.Skin[vi];
-
-                        Vector3 pAnim = Vector3.Zero;
-                        if (infs != null && infs.Length > 0)
+                        foreach (var inf in infs)
                         {
-                            foreach (var inf in infs)
+                            if (inf.BoneId >= 0 && inf.BoneId < nb && inf.Weight > 0.0001f)
                             {
-                                if (inf.BoneId >= 0 && inf.BoneId < nb)
-                                {
-                                    pAnim += Vector3.TransformPosition(p0, skinMats[inf.BoneId]) * inf.Weight;
-                                }
+                                pAnim += Vector3.TransformPosition(p0, skinMats[inf.BoneId]) * inf.Weight;
+                                totalW += inf.Weight;
                             }
                         }
-                        else
-                        {
-                            pAnim = p0;
-                        }
-
-                        int off = i * 8;
-                        _animatedInterleaved[off + 0] = pAnim.X;
-                        _animatedInterleaved[off + 1] = pAnim.Y;
-                        _animatedInterleaved[off + 2] = pAnim.Z;
-                        _animatedInterleaved[off + 3] = _interleaved != null ? _interleaved[off + 3] : 0f;
-                        _animatedInterleaved[off + 4] = _interleaved != null ? _interleaved[off + 4] : 0f;
-                        _animatedInterleaved[off + 5] = _interleaved != null ? _interleaved[off + 5] : 1f;
-                        _animatedInterleaved[off + 6] = _interleaved != null ? _interleaved[off + 6] : 0f;
-                        _animatedInterleaved[off + 7] = _interleaved != null ? _interleaved[off + 7] : 0f;
+                    }
+                    if (totalW > 0.001f)
+                    {
+                        if (MathF.Abs(totalW - 1.0f) > 0.001f)
+                            pAnim /= totalW;
+                    }
+                    else
+                    {
+                        pAnim = p0;
                     }
 
-                    // Upload deformed vertices
-                    if (glControl.IsHandleCreated)
+                    int off = i * 8;
+                    _animatedInterleaved[off + 0] = pAnim.X;
+                    _animatedInterleaved[off + 1] = pAnim.Y;
+                    _animatedInterleaved[off + 2] = pAnim.Z;
+                    _animatedInterleaved[off + 3] = _interleaved != null ? _interleaved[off + 3] : 0f;
+                    _animatedInterleaved[off + 4] = _interleaved != null ? _interleaved[off + 4] : 0f;
+                    _animatedInterleaved[off + 5] = _interleaved != null ? _interleaved[off + 5] : 1f;
+                    _animatedInterleaved[off + 6] = _interleaved != null ? _interleaved[off + 6] : 0f;
+                    _animatedInterleaved[off + 7] = _interleaved != null ? _interleaved[off + 7] : 0f;
+                }
+
+                // Upload deformed vertices
+                if (glControl.IsHandleCreated)
+                {
+                    try
                     {
-                        try
+                        glControl.MakeCurrent();
+                        if (_meshVbo == 0) UploadMeshToGl();
+                        if (_meshVbo != 0)
                         {
-                            glControl.MakeCurrent();
                             GL.BindBuffer(BufferTarget.ArrayBuffer, _meshVbo);
                             GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, _animatedInterleaved.Length * sizeof(float), _animatedInterleaved);
                             GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
                         }
-                        catch { }
                     }
+                    catch { }
                 }
             }
         }
@@ -1980,8 +2251,12 @@ namespace UoFiddler.Plugin.Granny3D
                 int totalVerts = 0;
                 int totalFaces = 0;
 
+                if (_refBones == null || _refBones.Count == 0)
+                    LoadReferenceBones();
+
                 foreach (var lm in meshes)
                 {
+                    if (lm.Hidden) continue;
                     if (lm.BaseVertices == null || lm.BaseVertices.Length == 0) continue;
                     int baseIdx = vertList.Count;
 
@@ -1992,10 +2267,36 @@ namespace UoFiddler.Plugin.Granny3D
                         normList.Add(n);
                         Vector2 uv = (lm.SourceMesh?.UVs != null && i < lm.SourceMesh.UVs.Count) ? lm.SourceMesh.UVs[i] : Vector2.Zero;
                         uvList.Add(uv);
-                        if (lm.Skin != null && i < lm.Skin.Length)
-                            skinList.Add(lm.Skin[i]);
+
+                        if (lm.Skin != null && i < lm.Skin.Length && lm.Skin[i] != null && lm.Skin[i].Length > 0)
+                        {
+                            var oldInfs = lm.Skin[i];
+                            if (lm.Bones != null && lm.Bones.Count > 0 && _refBones != null && _refBones.Count > 0)
+                            {
+                                var remapped = new List<VertexInfluence>();
+                                foreach (var inf in oldInfs)
+                                {
+                                    if (inf.BoneId >= 0 && inf.BoneId < lm.Bones.Count)
+                                    {
+                                        string bName = lm.Bones[inf.BoneId].Name;
+                                        int masterId = _refBones.FindIndex(rb => string.Equals(rb.Name, bName, StringComparison.OrdinalIgnoreCase));
+                                        if (masterId >= 0)
+                                        {
+                                            remapped.Add(new VertexInfluence { BoneId = masterId, Weight = inf.Weight });
+                                        }
+                                    }
+                                }
+                                skinList.Add(remapped.Count > 0 ? remapped.ToArray() : oldInfs);
+                            }
+                            else
+                            {
+                                skinList.Add(oldInfs);
+                            }
+                        }
                         else
+                        {
                             skinList.Add(Array.Empty<VertexInfluence>());
+                        }
                     }
 
                     if (lm.Indices != null)
@@ -2043,12 +2344,17 @@ namespace UoFiddler.Plugin.Granny3D
 
                 RebakeModelTransform();
 
-                var meshWithBones = meshes.FirstOrDefault(m => m.Bones != null && m.Bones.Count > 0);
-                if (meshWithBones != null)
+                var meshWithBones = meshes.OrderByDescending(m => m.Bones?.Count ?? 0).FirstOrDefault(m => m.Bones != null && m.Bones.Count > 0);
+                if (meshWithBones != null && meshWithBones.Bones.Count > 0)
                 {
                     for (int i = 0; i < meshWithBones.Bones.Count; i++) meshWithBones.Bones[i].Id = i;
                     _liveOriginalBones = new List<GrannyBone>(meshWithBones.Bones);
                     InitMarkersFromLiveBones(meshWithBones.Bones);
+                }
+                else if (_refBones != null && _refBones.Count > 0)
+                {
+                    _liveOriginalBones = new List<GrannyBone>(_refBones);
+                    InitMarkersFromLiveBones(_refBones);
                 }
                 else
                 {
@@ -2120,6 +2426,7 @@ namespace UoFiddler.Plugin.Granny3D
                                             $"Sommets : {_rawVertices.Length:N0} | Faces : {(_indices.Length / 3):N0}\n" +
                                             $"Format : Character UO (.char) avec rig intégré";
 
+                        _previewModel = model;
                         RebakeModelTransform();
                         if (model.Bones != null && model.Bones.Count > 0)
                         {
@@ -2142,6 +2449,19 @@ namespace UoFiddler.Plugin.Granny3D
                     var parser = new GrannyFormatParser();
                     if (parser.Load(filePath) && parser.Meshes.Count > 0)
                     {
+                        if (_refBones == null || _refBones.Count == 0)
+                            LoadReferenceBones();
+
+                        var boneRemap = new Dictionary<int, int>();
+                        if (parser.Bones != null && parser.Bones.Count > 0 && _refBones != null)
+                        {
+                            for (int pb = 0; pb < parser.Bones.Count; pb++)
+                            {
+                                int rIdx = _refBones.FindIndex(rb => string.Equals(rb.Name, parser.Bones[pb].Name, StringComparison.OrdinalIgnoreCase));
+                                boneRemap[pb] = rIdx >= 0 ? rIdx : pb;
+                            }
+                        }
+
                         var vList = new List<Vector3>();
                         var nList = new List<Vector3>();
                         var uList = new List<Vector2>();
@@ -2156,7 +2476,21 @@ namespace UoFiddler.Plugin.Granny3D
                                 vList.Add(m.Vertices[i]);
                                 nList.Add(Vector3.UnitZ);
                                 uList.Add(m.UVs != null && i < m.UVs.Count ? m.UVs[i] : Vector2.Zero);
-                                sList.Add(m.Skin != null && i < m.Skin.Count ? m.Skin[i] : Array.Empty<VertexInfluence>());
+                                if (m.Skin != null && i < m.Skin.Count && m.Skin[i] != null && m.Skin[i].Length > 0)
+                                {
+                                    var infs = m.Skin[i];
+                                    var remapped = new VertexInfluence[infs.Length];
+                                    for (int k = 0; k < infs.Length; k++)
+                                    {
+                                        int targetBone = boneRemap.TryGetValue(infs[k].BoneId, out int rb) ? rb : infs[k].BoneId;
+                                        remapped[k] = new VertexInfluence { BoneId = targetBone, Weight = infs[k].Weight };
+                                    }
+                                    sList.Add(remapped);
+                                }
+                                else
+                                {
+                                    sList.Add(Array.Empty<VertexInfluence>());
+                                }
                             }
                             for (int i = 0; i < m.Indices.Count; i++)
                                 iList.Add(baseIdx + m.Indices[i]);
@@ -2176,11 +2510,30 @@ namespace UoFiddler.Plugin.Granny3D
                                             $"Sommets : {_rawVertices.Length:N0} | Faces : {(_indices.Length / 3):N0}\n" +
                                             $"Format : Modèle Granny UO (.grn)";
 
-                        RebakeModelTransform();
-                        if (parser.Bones != null && parser.Bones.Count > 0)
+                        _previewModel = new GrannyModelFile
                         {
-                            _liveOriginalBones = new List<GrannyBone>(parser.Bones);
-                            InitMarkersFromLiveBones(parser.Bones);
+                            Name = Path.GetFileNameWithoutExtension(filePath),
+                            Bones = new List<GrannyBone>()
+                        };
+                        for (int i = 0; i < _refBones.Count; i++)
+                        {
+                            var b = _refBones[i];
+                            _previewModel.Bones.Add(new GrannyBone
+                            {
+                                Id = i,
+                                ParentId = b.ParentId,
+                                Name = b.Name,
+                                LocalPosition = b.LocalPosition,
+                                LocalRotation = b.LocalRotation,
+                                InverseBindMatrix = b.InverseBindMatrix
+                            });
+                        }
+
+                        RebakeModelTransform();
+                        if (_previewModel.Bones != null && _previewModel.Bones.Count > 0)
+                        {
+                            _liveOriginalBones = new List<GrannyBone>(_previewModel.Bones);
+                            InitMarkersFromLiveBones(_previewModel.Bones);
                         }
                         else
                         {
@@ -2196,9 +2549,63 @@ namespace UoFiddler.Plugin.Granny3D
                 var ctx = new AssimpContext();
                 var scene = ctx.ImportFile(filePath, PostProcessSteps.Triangulate | PostProcessSteps.GenerateSmoothNormals);
 
+                bool hasBones = scene.Meshes.Any(m => m.HasBones && m.BoneCount > 0);
+                if (ext == ".fbx" && hasBones)
+                {
+                    if (MixamoCharacterImport.TryImport(filePath, _outFolder, _refPath, out var importedModel, out string importErr) && importedModel != null && importedModel.Parts.Count > 0)
+                    {
+                        _previewModel = importedModel;
+                        var vList = new List<Vector3>();
+                        var nList = new List<Vector3>();
+                        var uList = new List<Vector2>();
+                        var iList = new List<int>();
+                        var sList = new List<VertexInfluence[]>();
+
+                        foreach (var part in importedModel.Parts)
+                        {
+                            int baseIdx = vList.Count;
+                            for (int i = 0; i < part.Vertices.Length; i++)
+                            {
+                                vList.Add(part.Vertices[i]);
+                                nList.Add(part.Normals != null && i < part.Normals.Length ? part.Normals[i] : Vector3.UnitZ);
+                                uList.Add(part.UVs != null && i < part.UVs.Length ? part.UVs[i] : Vector2.Zero);
+                                sList.Add(part.Skin != null && i < part.Skin.Length ? part.Skin[i] : Array.Empty<VertexInfluence>());
+                            }
+                            if (part.Indices != null)
+                            {
+                                for (int i = 0; i < part.Indices.Length; i++)
+                                    iList.Add(baseIdx + part.Indices[i]);
+                            }
+                        }
+
+                        _rawVertices = vList.ToArray();
+                        _rawNormals = nList.ToArray();
+                        _rawUVs = uList.ToArray();
+                        _indices = iList.ToArray();
+                        _rawSkin = sList.ToArray();
+                        _textureName = importedModel.Parts.FirstOrDefault(p => !string.IsNullOrEmpty(p.TextureName))?.TextureName;
+
+                        _scale = 1.0f; nudScale.Value = 1.0m;
+                        _rotX = 0f; _rotY = 0f; _rotZ = 0f; _offset = Vector3.Zero; _mirrorX = false;
+
+                        lblModelInfo.Text = $"Fichier : {fn}\n" +
+                                            $"Sommets : {_rawVertices.Length:N0} | Faces : {(_indices.Length / 3):N0}\n" +
+                                            $"Format : FBX Rigged Auto-Adapté (Squelette + Skinning artiste préservés)";
+
+                        RebakeModelTransform();
+                        if (importedModel.Bones != null && importedModel.Bones.Count > 0)
+                        {
+                            _liveOriginalBones = new List<GrannyBone>(importedModel.Bones);
+                            InitMarkersFromLiveBones(importedModel.Bones);
+                        }
+                        EnsurePreviewModel();
+                        glControl.Invalidate();
+                        return;
+                    }
+                }
+
                 int totalVerts = 0;
                 int totalFaces = 0;
-                bool hasBones = false;
 
                 var vertList = new List<Vector3>();
                 var normList = new List<Vector3>();
@@ -2481,7 +2888,7 @@ namespace UoFiddler.Plugin.Granny3D
                 var sym = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
                 if (sym != null)
                 {
-                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, m.RotationDegrees.Y, -m.RotationDegrees.Z);
+                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, -m.RotationDegrees.Y, -m.RotationDegrees.Z);
                 }
             }
 
@@ -2503,7 +2910,7 @@ namespace UoFiddler.Plugin.Granny3D
                 var sym = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
                 if (sym != null)
                 {
-                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, m.RotationDegrees.Y, -m.RotationDegrees.Z);
+                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, -m.RotationDegrees.Y, -m.RotationDegrees.Z);
                 }
             }
 
@@ -2523,7 +2930,7 @@ namespace UoFiddler.Plugin.Granny3D
                 var sym = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
                 if (sym != null)
                 {
-                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, m.RotationDegrees.Y, -m.RotationDegrees.Z);
+                    sym.RotationDegrees = new Vector3(-m.RotationDegrees.X, -m.RotationDegrees.Y, -m.RotationDegrees.Z);
                 }
             }
 
@@ -2786,8 +3193,8 @@ void main() {
         {
             var lines = new List<float>();
 
-            // If animation is playing, draw dynamic animated bones!
-            if (_isPlayingAnim && _boneWorldMatrices != null && _previewModel != null)
+            // If animation is playing or finger flex is active, draw dynamic animated bones!
+            if ((_isPlayingAnim || _fingerFlexAmount > 0.001f) && _boneWorldMatrices != null && _previewModel != null)
             {
                 int nb = _previewModel.Bones.Count;
                 for (int i = 0; i < nb; i++)
@@ -2882,7 +3289,7 @@ void main() {
                 bool isSelected = (i == _selectedMarkerIndex);
 
                 Vector3 pos = m.Position;
-                if (_isPlayingAnim && _boneWorldMatrices != null && _previewModel != null)
+                if ((_isPlayingAnim || _fingerFlexAmount > 0.001f) && _boneWorldMatrices != null && _previewModel != null)
                 {
                     int bidx = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, m.BoneName, StringComparison.OrdinalIgnoreCase));
                     if (bidx >= 0 && bidx < _boneWorldMatrices.Length)
@@ -2896,57 +3303,7 @@ void main() {
                     : new Vector4(m.Color.R / 255f, m.Color.G / 255f, m.Color.B / 255f, 1.0f);
 
                 GL.Uniform4(uColor, col);
-                DrawCrossMarker(mvp, pos, isSelected ? 0.12f : 0.08f, col);
-            }
-
-            // Visual alignment aids for selected wrist: Gold line to thumb, Cyan line to fingers, orientation disc
-            if (_selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
-            {
-                var selM = _markers[_selectedMarkerIndex];
-                if (selM.BoneName.Contains("Hand") && _previewModel != null)
-                {
-                    string f0Name = selM.BoneName.Contains(" L ") ? "Bip01 L Finger0" : "Bip01 R Finger0";
-                    string f1Name = selM.BoneName.Contains(" L ") ? "Bip01 L Finger1" : "Bip01 R Finger1";
-                    int idx0 = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, f0Name, StringComparison.OrdinalIgnoreCase));
-                    int idx1 = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, f1Name, StringComparison.OrdinalIgnoreCase));
-
-                    if (idx0 >= 0 && idx0 < _previewModel.Bones.Count)
-                    {
-                        Vector3 pThumb = Matrix4.Invert(_previewModel.Bones[idx0].InverseBindMatrix).Row3.Xyz;
-                        float[] thumbLine = new float[] { selM.Position.X, selM.Position.Y, selM.Position.Z, pThumb.X, pThumb.Y, pThumb.Z };
-                        DrawLinesImmediate(mvp, thumbLine, new Vector4(1f, 0.84f, 0f, 1f), 3.5f); // Gold line to thumb
-                        DrawCrossMarker(mvp, pThumb, 0.035f, new Vector4(1f, 0.84f, 0f, 1f));
-                    }
-
-                    if (idx1 >= 0 && idx1 < _previewModel.Bones.Count)
-                    {
-                        Vector3 pFingers = Matrix4.Invert(_previewModel.Bones[idx1].InverseBindMatrix).Row3.Xyz;
-                        float[] fingerLine = new float[] { selM.Position.X, selM.Position.Y, selM.Position.Z, pFingers.X, pFingers.Y, pFingers.Z };
-                        DrawLinesImmediate(mvp, fingerLine, new Vector4(0f, 1f, 1f, 1f), 3.5f); // Cyan line to fingers
-                        DrawCrossMarker(mvp, pFingers, 0.035f, new Vector4(0f, 1f, 1f, 1f));
-                    }
-
-                    int handIdx = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, selM.BoneName, StringComparison.OrdinalIgnoreCase));
-                    if (handIdx >= 0)
-                    {
-                        Matrix4 hWorld = Matrix4.Invert(_previewModel.Bones[handIdx].InverseBindMatrix);
-                        Vector3 localY = hWorld.Row1.Xyz.Normalized();
-                        Vector3 localZ = hWorld.Row2.Xyz.Normalized();
-                        const int segments = 24;
-                        float radius = 0.06f;
-                        var circleVerts = new List<float>();
-                        for (int s = 0; s < segments; s++)
-                        {
-                            float a0 = (s / (float)segments) * MathF.PI * 2f;
-                            float a1 = ((s + 1) / (float)segments) * MathF.PI * 2f;
-                            Vector3 pt0 = selM.Position + (localY * MathF.Cos(a0) + localZ * MathF.Sin(a0)) * radius;
-                            Vector3 pt1 = selM.Position + (localY * MathF.Cos(a1) + localZ * MathF.Sin(a1)) * radius;
-                            circleVerts.Add(pt0.X); circleVerts.Add(pt0.Y); circleVerts.Add(pt0.Z);
-                            circleVerts.Add(pt1.X); circleVerts.Add(pt1.Y); circleVerts.Add(pt1.Z);
-                        }
-                        DrawLinesImmediate(mvp, circleVerts.ToArray(), new Vector4(1f, 0.6f, 0.1f, 0.9f), 2.0f);
-                    }
-                }
+                DrawCrossMarker(mvp, pos, isSelected ? 0.07f : 0.045f, col);
             }
 
             GL.Enable(EnableCap.DepthTest);
@@ -3104,12 +3461,6 @@ void main() {
             if (_isDraggingMarker && _selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
             {
                 var m = _markers[_selectedMarkerIndex];
-                if (ModifierKeys.HasFlag(Keys.Shift) && m.BoneName.Contains("Hand"))
-                {
-                    ApplyRollOffset(dx * 0.8f);
-                    return;
-                }
-
                 if (UnprojectMouseToPlane(e.X, e.Y, _dragPlanePoint, _dragPlaneNormal, out Vector3 rawHit))
                 {
                     Vector3 targetHit = rawHit + _dragGrabOffset;
@@ -3176,16 +3527,6 @@ void main() {
 
         private void GlControl_MouseWheel(object? sender, MouseEventArgs e)
         {
-            if (ModifierKeys.HasFlag(Keys.Shift) && _selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
-            {
-                var m = _markers[_selectedMarkerIndex];
-                if (m.BoneName.Contains("Hand"))
-                {
-                    ApplyRollOffset(e.Delta > 0 ? 5f : -5f);
-                    return;
-                }
-            }
-
             float zoomFactor = e.Delta > 0 ? 0.9f : 1.1f;
             _cameraDist = MathHelper.Clamp(_cameraDist * zoomFactor, 0.3f, 30.0f);
             glControl.Invalidate();

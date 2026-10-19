@@ -977,6 +977,18 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
 
+                // 2b) Dossier de destination outFolder (si des textures y ont été extraites ou converties)
+                if (!string.IsNullOrEmpty(outFolder) && Directory.Exists(outFolder))
+                {
+                    foreach (var f in Directory.GetFiles(outFolder, "*.*", SearchOption.TopDirectoryOnly))
+                    {
+                        if (supportedExts.Contains(Path.GetExtension(f)) && !candidateFiles.Contains(f))
+                        {
+                            candidateFiles.Add(f);
+                        }
+                    }
+                }
+
                 // 3) Chemins relatifs dérivés de embeddedRefPath (ex: "Texture\Spear\BaseColor.png" -> "Spear\BaseColor.png")
                 if (!string.IsNullOrEmpty(embeddedRefPath))
                 {
@@ -1035,6 +1047,11 @@ namespace UoFiddler.Plugin.Granny3D
             string cNameLower = (charName ?? string.Empty).ToLowerInvariant();
             string fbxBaseLower = Path.GetFileNameWithoutExtension(fbxPath).ToLowerInvariant();
 
+            bool nameHasAlpha = matNameLower.Contains("alpha") ||
+                                mNameLower.Contains("alpha") ||
+                                cNameLower.Contains("alpha") ||
+                                fbxBaseLower.Contains("alpha");
+
             foreach (var filePath in candidateFiles)
             {
                 string fn = Path.GetFileNameWithoutExtension(filePath);
@@ -1055,7 +1072,9 @@ namespace UoFiddler.Plugin.Granny3D
                     fnLower.EndsWith("_ao") || fnLower.Contains("_ao_") || fnLower.Contains("occlusion") ||
                     fnLower.Contains("height") || fnLower.Contains("displacement") || fnLower.Contains("_disp") ||
                     fnLower.Contains("bump") ||
-                    fnLower.Contains("opacity") || fnLower.Contains("alpha") || fnLower.Contains("transparency") ||
+                    fnLower.Contains("opacity") ||
+                    (!nameHasAlpha && (fnLower.EndsWith("_alpha") || fnLower.Contains("_alpha.") || fnLower.Contains("-alpha") || fnLower.EndsWith("_a") || fnLower.Contains("_a."))) ||
+                    fnLower.Contains("transparency") ||
                     fnLower.Contains("emission") || fnLower.Contains("emissive") || fnLower.Contains("glow") ||
                     fnLower.Contains("gloss") || fnLower.Contains("glossiness");
 
@@ -1067,11 +1086,20 @@ namespace UoFiddler.Plugin.Granny3D
                 var genericTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                 {
                     "mat", "material", "body", "mesh", "object", "surface", "default", "model",
-                    "char", "part", "sub", "main", "base", "color", "tex", "texture", "lod", "alpha"
+                    "char", "part", "sub", "main", "base", "color", "tex", "texture", "lod"
                 };
+                if (!nameHasAlpha) genericTokens.Add("alpha");
 
                 // Split target file name into tokens for exact word matching
                 var fnTokens = new HashSet<string>(fnLower.Split(new[] { '_', '-', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+
+                // Exact match between filename and charName + meshName (e.g. T-Pose_Alpha_Surface.png)
+                if (!string.IsNullOrEmpty(cNameLower) && !string.IsNullOrEmpty(mNameLower) &&
+                    fnLower.Contains(cNameLower) && fnLower.Contains(mNameLower))
+                {
+                    score += 700;
+                    hasContextMatch = true;
+                }
 
                 // 2) CORRESPONDANCE AVEC LA RÉFÉRENCE ASSIMP (mat.TextureDiffuse)
                 if (!string.IsNullOrEmpty(embFnWithoutExt))
@@ -1173,11 +1201,20 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 string ext = Path.GetExtension(bestFile);
                 string cleanMesh = !string.IsNullOrEmpty(meshName) ? Granny3DControl.MakeSafeFilename(meshName) : "mesh";
-                string candParent = Path.GetFileName(Path.GetDirectoryName(bestFile));
-                string tag = (!string.IsNullOrEmpty(candParent) && !string.Equals(candParent, Path.GetFileName(fbxDir), StringComparison.OrdinalIgnoreCase))
-                    ? $"{cleanMesh}_{candParent}"
-                    : cleanMesh;
-                string destName = $"{charName}_{tag}{ext}";
+                string destName;
+                if (!string.IsNullOrEmpty(outFolder) && string.Equals(Path.GetDirectoryName(bestFile), outFolder, StringComparison.OrdinalIgnoreCase))
+                {
+                    destName = Path.GetFileName(bestFile);
+                }
+                else
+                {
+                    string candParent = Path.GetFileName(Path.GetDirectoryName(bestFile));
+                    bool isCandParentOutFolder = !string.IsNullOrEmpty(outFolder) && string.Equals(candParent, Path.GetFileName(outFolder), StringComparison.OrdinalIgnoreCase);
+                    string tag = (!string.IsNullOrEmpty(candParent) && !string.Equals(candParent, Path.GetFileName(fbxDir), StringComparison.OrdinalIgnoreCase) && !isCandParentOutFolder)
+                        ? $"{cleanMesh}_{candParent}"
+                        : cleanMesh;
+                    destName = $"{charName}_{tag}{ext}";
+                }
 
 
                 if (!string.IsNullOrEmpty(outFolder))
@@ -1294,7 +1331,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (clean.IndexOf("Thumb", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                bool isBase = clean.IndexOf("Thumb1", StringComparison.OrdinalIgnoreCase) >= 0 || clean.IndexOf("01", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isBase = clean.IndexOf("Thumb1", StringComparison.OrdinalIgnoreCase) >= 0 || clean.IndexOf("01", StringComparison.OrdinalIgnoreCase) >= 0 || clean.EndsWith("_1", StringComparison.OrdinalIgnoreCase) || clean.EndsWith(".1", StringComparison.OrdinalIgnoreCase);
                 string targetUo = isBase
                     ? (isLeft ? "Bip01 L Finger0" : (isRight ? "Bip01 R Finger0" : null))
                     : (isLeft ? "Bip01 L Finger01" : (isRight ? "Bip01 R Finger01" : null));
@@ -1302,9 +1339,25 @@ namespace UoFiddler.Plugin.Granny3D
                     return uoIdx;
             }
 
-            if (clean.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (clean.IndexOf("Index", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                clean.IndexOf("Little", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                (clean.IndexOf("Finger", StringComparison.OrdinalIgnoreCase) >= 0 && clean.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) < 0))
             {
-                bool isBase = clean.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0 || clean.IndexOf("01", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isBase = clean.IndexOf("1", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                             clean.IndexOf("11", StringComparison.OrdinalIgnoreCase) < 0 &&
+                             (clean.EndsWith("1", StringComparison.OrdinalIgnoreCase) ||
+                              clean.IndexOf("01", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Index1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Middle1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Ring1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Pinky1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Little1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.IndexOf("Finger1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              clean.EndsWith("_1", StringComparison.OrdinalIgnoreCase) ||
+                              clean.EndsWith(".1", StringComparison.OrdinalIgnoreCase));
                 string targetUo = isBase
                     ? (isLeft ? "Bip01 L Finger1" : (isRight ? "Bip01 R Finger1" : null))
                     : (isLeft ? "Bip01 L Finger11" : (isRight ? "Bip01 R Finger11" : null));
@@ -1312,19 +1365,8 @@ namespace UoFiddler.Plugin.Granny3D
                     return uoIdx;
             }
 
-            if (clean.IndexOf("Middle", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                clean.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                clean.IndexOf("Pinky", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                clean.IndexOf("Little", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                // Map other fingers to Hand to preserve their rest geometry and avoid elongation
-                string targetUo = isLeft ? "Bip01 L Hand" : (isRight ? "Bip01 R Hand" : null);
-                if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out uoIdx))
-                    return uoIdx;
-            }
-
             if (clean.IndexOf("Hand", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                clean.IndexOf("Finger", StringComparison.OrdinalIgnoreCase) >= 0)
+                clean.IndexOf("Wrist", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 string targetUo = isLeft ? "Bip01 L Hand" : (isRight ? "Bip01 R Hand" : null);
                 if (targetUo != null && uoBoneByName.TryGetValue(targetUo, out uoIdx))
@@ -1374,18 +1416,14 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (lower.Contains("thumb"))
                 {
-                    string target = (lower.Contains("01") || lower.Contains("thumb1")) ? $"Bip01 {s} Finger0" : $"Bip01 {s} Finger01";
+                    string target = (lower.Contains("01") || lower.Contains("thumb1") || lower.EndsWith("_1") || lower.EndsWith(".1")) ? $"Bip01 {s} Finger0" : $"Bip01 {s} Finger01";
                     if (uoBoneByName.TryGetValue(target, out uoIdx)) return uoIdx;
                 }
-                if (lower.Contains("index") || (lower.Contains("finger") && !lower.Contains("middle") && !lower.Contains("ring") && !lower.Contains("pinky")))
+                if (lower.Contains("index") || lower.Contains("middle") || lower.Contains("ring") || lower.Contains("pinky") || lower.Contains("little") || lower.Contains("finger"))
                 {
-                    string target = (lower.Contains("01") || lower.Contains("index1"))
-                        ? $"Bip01 {s} Finger1" : $"Bip01 {s} Finger11";
+                    bool isBase = lower.Contains("01") || lower.Contains("index1") || lower.Contains("middle1") || lower.Contains("ring1") || lower.Contains("pinky1") || lower.Contains("little1") || lower.Contains("finger1") || lower.EndsWith("_1") || lower.EndsWith(".1");
+                    string target = isBase ? $"Bip01 {s} Finger1" : $"Bip01 {s} Finger11";
                     if (uoBoneByName.TryGetValue(target, out uoIdx)) return uoIdx;
-                }
-                if (lower.Contains("middle") || lower.Contains("ring") || lower.Contains("pinky") || lower.Contains("little"))
-                {
-                    if (uoBoneByName.TryGetValue($"Bip01 {s} Hand", out uoIdx)) return uoIdx;
                 }
             }
 
@@ -1466,17 +1504,23 @@ namespace UoFiddler.Plugin.Granny3D
             AddSeg("Bip01 L Clavicle", "Bip01 L UpperArm");
             AddSeg("Bip01 L UpperArm", "Bip01 L Forearm");
             AddSeg("Bip01 L Forearm", "Bip01 L Hand");
+            AddSeg("Bip01 L Hand", "Bip01 L Finger0");
             AddSeg("Bip01 L Hand", "Bip01 L Finger1");
             AddSeg("Bip01 L Finger0", "Bip01 L Finger01");
             AddSeg("Bip01 L Finger1", "Bip01 L Finger11");
+            AddSeg("Bip01 L Finger01", "Bip01 L Finger0Nub");
+            AddSeg("Bip01 L Finger11", "Bip01 L Finger1Nub");
 
             // Right Arm
             AddSeg("Bip01 R Clavicle", "Bip01 R UpperArm");
             AddSeg("Bip01 R UpperArm", "Bip01 R Forearm");
             AddSeg("Bip01 R Forearm", "Bip01 R Hand");
+            AddSeg("Bip01 R Hand", "Bip01 R Finger0");
             AddSeg("Bip01 R Hand", "Bip01 R Finger1");
             AddSeg("Bip01 R Finger0", "Bip01 R Finger01");
             AddSeg("Bip01 R Finger1", "Bip01 R Finger11");
+            AddSeg("Bip01 R Finger01", "Bip01 R Finger0Nub");
+            AddSeg("Bip01 R Finger11", "Bip01 R Finger1Nub");
 
             // Left Leg
             AddSeg("Bip01 L Thigh", "Bip01 L Calf");
