@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
@@ -293,7 +294,7 @@ namespace UoFiddler.Plugin.Granny3D
         private TextBox txtModelFilter;
         private ListBox lbAnimations;
         private Label lblAnimations;
-        private ListBox lstLoaded;
+        private TreeView tvLoaded;
         private GroupBox grpLoaded;
         private ContextMenuStrip tvMenu;
         private ContextMenuStrip tvAnimMenu;
@@ -346,7 +347,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblEquipTarget;
         private CheckBox cbMirrorX, cbMirrorY, cbMirrorZ;
         private NumericUpDown nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, nudClothGrav;
-        private Button btnEquipReset, btnSkinWrap, btnSubdiv, btnClothBake;
+        private Button btnEquipReset, btnSkinWrap, btnSubdiv, btnClothBake, btnBakeModifs;
         private CheckBox chkCloth;
         private NumericUpDown nudBakeFps, nudLoopBlend;
         private bool _suppressEquip;
@@ -564,34 +565,38 @@ namespace UoFiddler.Plugin.Granny3D
             // ---- Loaded meshes list + bone attach ----
             grpLoaded = new GroupBox
             {
-                Text = "Meshes affiches (double-clic = retirer ; Ctrl/Shift = multi-sélection)",
+                Text = "Meshes affichés (double-clic = retirer ; coches = sélection par lot)",
                 Dock = DockStyle.Bottom,
-                Height = 210,
+                Height = 220,
                 ForeColor = Color.Gainsboro,
                 Padding = new Padding(4)
             };
-            lstLoaded = new ListBox
+            tvLoaded = new TreeView
             {
                 Dock = DockStyle.Fill,
-                IntegralHeight = false,
-                SelectionMode = SelectionMode.MultiExtended,
                 BackColor = Color.FromArgb(30, 30, 30),
                 ForeColor = Color.Gainsboro,
-                BorderStyle = BorderStyle.FixedSingle
+                BorderStyle = BorderStyle.FixedSingle,
+                CheckBoxes = true,
+                ShowPlusMinus = true,
+                ShowLines = true,
+                ShowRootLines = true,
+                HideSelection = false
             };
             lstLoadedMenu = new ContextMenuStrip();
             lstLoadedMenu.Opening += LstLoadedMenu_Opening;
-            lstLoaded.ContextMenuStrip = lstLoadedMenu;
-            lstLoaded.MouseDown += (s, e) =>
+            tvLoaded.ContextMenuStrip = lstLoadedMenu;
+            tvLoaded.MouseDown += (s, e) =>
             {
                 if (e.Button == MouseButtons.Right)
                 {
-                    int idx = lstLoaded.IndexFromPoint(e.Location);
-                    if (idx >= 0) lstLoaded.SelectedIndex = idx;
+                    var n = tvLoaded.GetNodeAt(e.Location);
+                    if (n != null) tvLoaded.SelectedNode = n;
                 }
             };
-            lstLoaded.DoubleClick += LstLoaded_DoubleClick;
-            lstLoaded.SelectedIndexChanged += LstLoaded_SelectedIndexChanged;
+            tvLoaded.DoubleClick += TvLoaded_DoubleClick;
+            tvLoaded.AfterSelect += (s, e) => TvLoaded_AfterSelect(s, e);
+            tvLoaded.AfterCheck += (s, e) => TvLoaded_AfterCheck(s, e);
 
             var pnlAttach = new Panel { Dock = DockStyle.Bottom, Height = 52 };
             lblBone = new Label
@@ -628,7 +633,7 @@ namespace UoFiddler.Plugin.Granny3D
             pnlAttach.Controls.Add(cbBones);
             pnlAttach.Controls.Add(btnAttach);
             pnlAttach.Controls.Add(lblBone);
-            grpLoaded.Controls.Add(lstLoaded);
+            grpLoaded.Controls.Add(tvLoaded);
             grpLoaded.Controls.Add(pnlAttach);
 
             lblModels = new Label
@@ -951,9 +956,9 @@ namespace UoFiddler.Plugin.Granny3D
             grpEquip.Controls.Add(MakeRotBtn("+90", 126, 164, nudRotZ, 90));
             grpEquip.Controls.Add(MakeRotBtn("-90", 166, 164, nudRotZ, -90));
 
-            nudOffX = MakeNud(262, 112, -1, 1, 0.01m, 3);
-            nudOffY = MakeNud(262, 138, -1, 1, 0.01m, 3);
-            nudOffZ = MakeNud(262, 164, -1, 1, 0.01m, 3);
+            nudOffX = MakeNud(262, 112, -100m, 100m, 0.01m, 3);
+            nudOffY = MakeNud(262, 138, -100m, 100m, 0.01m, 3);
+            nudOffZ = MakeNud(262, 164, -100m, 100m, 0.01m, 3);
             grpEquip.Controls.Add(new Label { Text = "X", Location = new Point(242, 116), Width = 18, ForeColor = Color.Gainsboro });
             grpEquip.Controls.Add(new Label { Text = "Y", Location = new Point(242, 142), Width = 18, ForeColor = Color.Gainsboro });
             grpEquip.Controls.Add(new Label { Text = "Z", Location = new Point(242, 168), Width = 18, ForeColor = Color.Gainsboro });
@@ -961,19 +966,19 @@ namespace UoFiddler.Plugin.Granny3D
             // Uniform scale + per-axis scale: inflate/deflate a piece so the body no
             // longer pokes through it (skinned armor) or resize a weapon.
             grpEquip.Controls.Add(new Label { Text = "Échelle (globale)", Location = new Point(8, 200), Width = 120, ForeColor = Color.Gainsboro });
-            nudScale = MakeNud(140, 197, 0.2m, 5m, 0.01m, 3);
+            nudScale = MakeNud(140, 197, 0.001m, 100m, 0.01m, 3);
 
             grpEquip.Controls.Add(new Label { Text = "Échelle X/Y/Z", Location = new Point(8, 229), Width = 120, ForeColor = Color.Gainsboro });
-            nudScaleX = MakeNud(100, 226, 0.2m, 5m, 0.01m, 3);
-            nudScaleY = MakeNud(195, 226, 0.2m, 5m, 0.01m, 3);
-            nudScaleZ = MakeNud(290, 226, 0.2m, 5m, 0.01m, 3);
+            nudScaleX = MakeNud(100, 226, 0.001m, 100m, 0.01m, 3);
+            nudScaleY = MakeNud(195, 226, 0.001m, 100m, 0.01m, 3);
+            nudScaleZ = MakeNud(290, 226, 0.001m, 100m, 0.01m, 3);
             grpEquip.Controls.Add(new Label { Text = "X", Location = new Point(86, 229), Width = 14, ForeColor = Color.Gray });
             grpEquip.Controls.Add(new Label { Text = "Y", Location = new Point(181, 229), Width = 14, ForeColor = Color.Gray });
             grpEquip.Controls.Add(new Label { Text = "Z", Location = new Point(276, 229), Width = 14, ForeColor = Color.Gray });
 
             // Thickness: push the piece outward along its normals (anti poke-through).
             grpEquip.Controls.Add(new Label { Text = "Épaisseur (normale)", Location = new Point(8, 258), Width = 130, ForeColor = Color.Gainsboro });
-            nudThickness = MakeNud(140, 255, 0m, 0.5m, 0.002m, 3);
+            nudThickness = MakeNud(140, 255, -1m, 5m, 0.002m, 3);
             grpEquip.Controls.Add(new Label { Text = "0 = aucune", Location = new Point(240, 258), Width = 120, ForeColor = Color.Gray });
 
             // Real-time cloth simulation (capes / robes / skirts).
@@ -1022,7 +1027,22 @@ namespace UoFiddler.Plugin.Granny3D
             cmbCutoutRole.SelectedIndexChanged += CmbCutoutRole_SelectedIndexChanged;
             grpEquip.Controls.Add(cmbCutoutRole);
 
-            grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnSubdiv, nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole });
+            btnBakeModifs = new Button
+            {
+                Text = "💾 Figer & Enregistrer les modifications",
+                Location = new Point(8, 492),
+                Width = 330,
+                Height = 30,
+                BackColor = Color.FromArgb(35, 95, 45),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font(Font.FontFamily, 9f, FontStyle.Bold)
+            };
+            btnBakeModifs.FlatAppearance.BorderColor = Color.FromArgb(60, 140, 70);
+            btnBakeModifs.Click += (s, e) => BakeAndSaveSelectedMesh();
+            grpEquip.Controls.Add(btnBakeModifs);
+
+            grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnSubdiv, nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole, btnBakeModifs });
 
             // ---- Multipart character menu (H_Male / H_Female parts) ----
             grpChar = new GroupBox
@@ -1146,7 +1166,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             grpCamera.Controls.AddRange(new Control[] { chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert, nudUoBright, chkUoFeet, nudUoOffX, nudUoOffY, chkUoRef, nudUoRefAction, nudUoRefFrame, nudUoRefScale, nudUoRefOpacity, nudUoYaw, nudUoGlobal });
 
-            var pnlPlayRow = new Panel { Dock = DockStyle.Top, Height = 500 };
+            var pnlPlayRow = new Panel { Dock = DockStyle.Top, Height = 540 };
             pnlPlayRow.Controls.Add(grpEquip);      // Fill
             pnlPlayRow.Controls.Add(grpCamera);     // Right (docked first -> further right)
             pnlPlayRow.Controls.Add(grpChar);       // Right
@@ -1668,15 +1688,25 @@ namespace UoFiddler.Plugin.Granny3D
                     // replacing the scene. Full NPC "Character_*" still replace.
                     // Layout: keeps the body's animation untouched.
                     bool isEquipCategory = !string.IsNullOrEmpty(info.Folder)
-                        && string.Equals(Path.GetFileName(info.Folder), "Others", StringComparison.OrdinalIgnoreCase);
-                    bool looksCharacter = Path.GetFileName(info.MeshPath)
-                        .StartsWith("Character_", StringComparison.OrdinalIgnoreCase);
-                    bool isCustomCharacter = GrannyModelFile.IsModelFile(info.MeshPath) ||
-                        info.MeshPath.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) ||
-                        info.MeshPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase);
-                    if (isEquipCategory && !looksCharacter && !isCustomCharacter && _loadedMeshes.Count > 0)
+                        && (string.Equals(Path.GetFileName(info.Folder), "Others", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(Path.GetFileName(info.Folder), "Equipment", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(Path.GetFileName(info.Folder), "Meshs custom", StringComparison.OrdinalIgnoreCase)
+                         || info.IsCustomMeshCategory
+                         || info.IsOthersCategory);
+                    bool looksCharacter = Path.GetFileName(info.MeshPath).StartsWith("Character_", StringComparison.OrdinalIgnoreCase)
+                        || Path.GetFileName(info.MeshPath).StartsWith("H_Male", StringComparison.OrdinalIgnoreCase)
+                        || Path.GetFileName(info.MeshPath).StartsWith("H_Female", StringComparison.OrdinalIgnoreCase);
+                    bool isFullCharacter = looksCharacter;
+                    if (!isFullCharacter && GrannyModelFile.IsModelFile(info.MeshPath))
                     {
-                        AddToScene(info.MeshPath);
+                        var m = GrannyModelFile.Load(info.MeshPath);
+                        if (m != null && m.Bones != null && m.Bones.Count >= 20)
+                            isFullCharacter = true;
+                    }
+
+                    if (isEquipCategory && !isFullCharacter && _loadedMeshes.Count > 0)
+                    {
+                        AddToScene(info.MeshPath, MeshCutoutRole.Accessory);
                         return;
                     }
                     EnsureMeshLoaded(info.MeshPath);
@@ -2474,7 +2504,9 @@ namespace UoFiddler.Plugin.Granny3D
                         Indices = part.Indices,
                         Skin = (part.Skin != null && part.Skin.Length > 0) ? part.Skin : null,
                         MeshColor = part.Color,
-                        CutoutRole = role
+                        CutoutRole = role,
+                        AttachBoneName = null,
+                        AttachInBindSpace = false
                     };
 
                     BuildCornerData(lm);
@@ -2493,6 +2525,7 @@ namespace UoFiddler.Plugin.Granny3D
 
                 RefreshLoadedList();
                 PopulateBoneCombo();
+                SelectBoneByName(null);
 
                 if (_currentAnimation != null)
                 {
@@ -2523,6 +2556,33 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (mesh.Vertices.Count == 0 || mesh.Indices.Count == 0) continue;
 
+                bool isClothingOrBody = IsClothingOrSkinnedGrn(path, parser, mesh);
+                string attachBone = null;
+                if (!isClothingOrBody && role == MeshCutoutRole.Accessory)
+                {
+                    string fn = Path.GetFileName(path).ToLowerInvariant();
+                    bool isLeftHand = fn.Contains("shield") || fn.Contains("buckler");
+                    string[] prefs = isLeftHand
+                        ? new[] { "CP_Grasp_Lhand", "Bip01 L Hand" }
+                        : new[] { "CP_Grasp_Rhand", "Bip01 R Hand" };
+
+                    foreach (var host in _loadedMeshes)
+                    {
+                        if (host.Bones != null && host.Bones.Count >= 20)
+                        {
+                            foreach (var pref in prefs)
+                            {
+                                if (host.Bones.Exists(b => string.Equals(b.Name, pref, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    attachBone = pref;
+                                    break;
+                                }
+                            }
+                            if (attachBone != null) break;
+                        }
+                    }
+                }
+
                 var lm = new LoadedMesh
                 {
                     Name = $"{Path.GetFileName(path)} ({_loadedMeshes.Count})",
@@ -2532,7 +2592,9 @@ namespace UoFiddler.Plugin.Granny3D
                     BaseVertices = mesh.Vertices.ToArray(),
                     Indices = mesh.Indices.ToArray(),
                     Skin = mesh.Skin.Count > 0 ? mesh.Skin.ToArray() : null,
-                    CutoutRole = role
+                    CutoutRole = isClothingOrBody ? MeshCutoutRole.Accessory : role,
+                    AttachBoneName = attachBone,
+                    AttachInBindSpace = false
                 };
 
                 BuildCornerData(lm);
@@ -2551,6 +2613,10 @@ namespace UoFiddler.Plugin.Granny3D
 
             RefreshLoadedList();
             PopulateBoneCombo();
+            if (added > 0 && !string.IsNullOrEmpty(_loadedMeshes[_loadedMeshes.Count - 1].AttachBoneName))
+                SelectBoneByName(_loadedMeshes[_loadedMeshes.Count - 1].AttachBoneName);
+            else
+                SelectBoneByName(null);
 
             if (_currentAnimation != null)
             {
@@ -3802,7 +3868,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             _loadedMeshes.Clear();
             _sceneExtras.Clear();
-            if (lstLoaded != null) lstLoaded.Items.Clear();
+            if (tvLoaded != null) tvLoaded.Nodes.Clear();
             _currentModelPath = path;
 
             // H_Male_Lod2 / H_Female_Lod2 only contain the 43-bone skeleton and a
@@ -3814,6 +3880,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (mesh.Vertices.Count == 0 || mesh.Indices.Count == 0) continue;
 
+                bool isFullChar = humanPlaceholder || (_modelParser.Bones != null && _modelParser.Bones.Count >= 20);
                 var lm = new LoadedMesh
                 {
                     Name = $"{Path.GetFileName(path)} ({_loadedMeshes.Count})",
@@ -3822,7 +3889,8 @@ namespace UoFiddler.Plugin.Granny3D
                     Bones = new List<GrannyBone>(_modelParser.Bones),
                     BaseVertices = mesh.Vertices.ToArray(),
                     Indices = mesh.Indices.ToArray(),
-                    Skin = mesh.Skin.Count > 0 ? mesh.Skin.ToArray() : null
+                    Skin = mesh.Skin.Count > 0 ? mesh.Skin.ToArray() : null,
+                    CutoutRole = isFullChar ? MeshCutoutRole.Body : MeshCutoutRole.Accessory
                 };
 
                 BuildCornerData(lm);
@@ -3832,7 +3900,6 @@ namespace UoFiddler.Plugin.Granny3D
                 lm.Hidden = humanPlaceholder;   // keep the 43-bone skeleton as host, don't draw the box
                 if (!lm.Hidden) TryAutoAttachUnskinned(lm);
                 _loadedMeshes.Add(lm);
-                if (lstLoaded != null) lstLoaded.Items.Add(lm.Name);
                 Log($"  built mesh vbo={lm.Vbo} vao={lm.Vao} verts={lm.BaseVertices.Length} corners={lm.Indices.Length} tex={lm.TextureId} skin={(lm.Skin != null ? lm.Skin.Length : 0)}");
             }
 
@@ -3878,7 +3945,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             _loadedMeshes.Clear();
             _sceneExtras.Clear();
-            if (lstLoaded != null) lstLoaded.Items.Clear();
+            if (tvLoaded != null) tvLoaded.Nodes.Clear();
             _currentModelPath = path;
             ResetCharMenu();
 
@@ -3901,6 +3968,7 @@ namespace UoFiddler.Plugin.Granny3D
                     if (v.Z > gmesh.MaxZ) gmesh.MaxZ = v.Z;
                 }
 
+                bool isFullChar = model.Bones != null && model.Bones.Count >= 20;
                 var lm = new LoadedMesh
                 {
                     Name = string.IsNullOrEmpty(part.Name) ? Path.GetFileNameWithoutExtension(path) : part.Name,
@@ -3911,7 +3979,8 @@ namespace UoFiddler.Plugin.Granny3D
                     Indices = part.Indices,
                     Skin = (part.Skin != null && part.Skin.Length > 0) ? part.Skin : null,
                     MeshColor = part.Color,
-                    TextureName = part.TextureName ?? string.Empty
+                    TextureName = part.TextureName ?? string.Empty,
+                    CutoutRole = isFullChar ? MeshCutoutRole.Body : MeshCutoutRole.Accessory
                 };
 
                 BuildCornerData(lm);
@@ -3919,7 +3988,6 @@ namespace UoFiddler.Plugin.Granny3D
                 lm.TextureId = !string.IsNullOrEmpty(part.TextureName) ? TryLoadTexture(path, part.TextureName) : -1;
                 lm.HasTexture = lm.TextureId > 0;
                 _loadedMeshes.Add(lm);
-                if (lstLoaded != null) lstLoaded.Items.Add(lm.Name);
                 Log($"  built custom mesh vbo={lm.Vbo} vao={lm.Vao} verts={lm.BaseVertices.Length} corners={lm.Indices.Length} color={lm.MeshColor}");
             }
 
@@ -4063,7 +4131,8 @@ namespace UoFiddler.Plugin.Granny3D
         // the VBO and (if enabled) the cloth are rebuilt.
         private void SubdivideSelectedMesh()
         {
-            int si = lstLoaded?.SelectedIndex ?? -1;
+            var idxs = GetSelectedMeshIndices();
+            int si = idxs.Count > 0 ? idxs[0] : -1;
             if (si < 0 || si >= _loadedMeshes.Count) { Log("Subdiviser : aucun mesh sélectionné."); return; }
             var lm = _loadedMeshes[si];
             if (lm.BaseVertices == null || lm.Indices == null || lm.CornerVertex == null || lm.Interleaved == null) return;
@@ -4200,15 +4269,24 @@ namespace UoFiddler.Plugin.Granny3D
             if (lm.TextureId > 0) { GL.DeleteTexture(lm.TextureId); lm.TextureId = -1; }
         }
 
-        private void LstLoaded_DoubleClick(object sender, EventArgs e)
+        private void TvLoaded_DoubleClick(object sender, EventArgs e)
         {
             try
             {
-                RemoveMeshAt(lstLoaded.SelectedIndex);
+                var node = tvLoaded?.SelectedNode;
+                if (node == null) return;
+                if (node.Tag is int idx)
+                {
+                    RemoveMeshAt(idx);
+                }
+                else if (node.Tag is List<int> list)
+                {
+                    RemoveMeshesAt(list);
+                }
             }
             catch (Exception ex)
             {
-                Log($"LstLoaded_DoubleClick error: {ex.Message}\n{ex}");
+                Log($"TvLoaded_DoubleClick error: {ex.Message}\n{ex}");
             }
         }
 
@@ -4228,6 +4306,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             cbBones.BeginUpdate();
             cbBones.Items.Clear();
+            cbBones.Items.Add("(non attaché)");
             if (bones != null)
             {
                 foreach (var b in bones)
@@ -4241,24 +4320,19 @@ namespace UoFiddler.Plugin.Granny3D
             }
             else
             {
-                string def = null;
-                foreach (var pref in new[] { "CP_Grasp_Rhand", "CP_Grasp_Lhand", "Bip01 R Hand", "Bip01 L Hand", "Bip01 Head", "Bip01 Spine" })
-                {
-                    foreach (var it in cbBones.Items)
-                        if (string.Equals(it.ToString(), pref, StringComparison.OrdinalIgnoreCase)) { def = it.ToString(); break; }
-                    if (def != null) break;
-                }
-                if (cbBones.Items.Count > 0)
-                    SelectBoneByName(def ?? cbBones.Items[0].ToString());
-                else
-                    cbBones.SelectedIndex = -1;
+                cbBones.SelectedIndex = 0;
             }
         }
 
         // Select a bone in the (DropDownList) combo by name.
         private void SelectBoneByName(string name)
         {
-            if (cbBones == null || string.IsNullOrEmpty(name)) return;
+            if (cbBones == null) return;
+            if (string.IsNullOrEmpty(name))
+            {
+                if (cbBones.Items.Count > 0) cbBones.SelectedIndex = 0;
+                return;
+            }
             for (int i = 0; i < cbBones.Items.Count; i++)
             {
                 if (string.Equals(cbBones.Items[i].ToString(), name, StringComparison.OrdinalIgnoreCase))
@@ -4267,45 +4341,202 @@ namespace UoFiddler.Plugin.Granny3D
                     return;
                 }
             }
+            if (cbBones.Items.Count > 0) cbBones.SelectedIndex = 0;
         }
 
         private void RefreshLoadedList()
         {
-            if (lstLoaded == null) return;
-            int sel = lstLoaded.SelectedIndex;
-            lstLoaded.BeginUpdate();
-            lstLoaded.Items.Clear();
-            foreach (var lm in _loadedMeshes)
-                lstLoaded.Items.Add(string.IsNullOrEmpty(lm.AttachBoneName)
-                    ? lm.Name
-                    : $"{lm.Name}  →  {lm.AttachBoneName}");
-            lstLoaded.EndUpdate();
-            if (sel >= 0 && sel < lstLoaded.Items.Count) lstLoaded.SelectedIndex = sel;
-        }
-
-        private void LstLoaded_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            if (lstLoaded != null)
+            if (tvLoaded == null) return;
+            tvLoaded.BeginUpdate();
+            try
             {
-                int i = lstLoaded.SelectedIndex;
-                if (i >= 0 && i < _loadedMeshes.Count)
+                object prevSelectedTag = tvLoaded.SelectedNode?.Tag;
+                var expandedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (TreeNode root in tvLoaded.Nodes)
+                {
+                    if (root.IsExpanded && root.Name != null)
+                        expandedKeys.Add(root.Name);
+                }
+
+                tvLoaded.Nodes.Clear();
+
+                var groups = new List<(string key, string title, List<int> indices)>();
+                var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+                for (int i = 0; i < _loadedMeshes.Count; i++)
                 {
                     var lm = _loadedMeshes[i];
-                    if (!string.IsNullOrEmpty(lm.AttachBoneName) && cbBones != null)
-                        SelectBoneByName(lm.AttachBoneName);
+                    string key = !string.IsNullOrEmpty(lm.SourcePath)
+                        ? lm.SourcePath
+                        : (!string.IsNullOrEmpty(lm.CharSlot) ? "Personnage" : lm.Name);
+
+                    if (!map.TryGetValue(key, out int gIndex))
+                    {
+                        gIndex = groups.Count;
+                        map[key] = gIndex;
+                        string title = !string.IsNullOrEmpty(lm.SourcePath)
+                            ? Path.GetFileNameWithoutExtension(lm.SourcePath)
+                            : key;
+                        groups.Add((key, title, new List<int>()));
+                    }
+                    groups[gIndex].indices.Add(i);
                 }
+
+                TreeNode nodeToSelect = null;
+
+                foreach (var grp in groups)
+                {
+                    string commonBone = null;
+                    bool sameBone = true;
+                    for (int k = 0; k < grp.indices.Count; k++)
+                    {
+                        var lm = _loadedMeshes[grp.indices[k]];
+                        if (k == 0) commonBone = lm.AttachBoneName;
+                        else if (!string.Equals(commonBone, lm.AttachBoneName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            sameBone = false;
+                            break;
+                        }
+                    }
+
+                    string parentSuffix = (sameBone && !string.IsNullOrEmpty(commonBone))
+                        ? $"  →  {commonBone}"
+                        : "";
+
+                    string parentText = $"{grp.title} ({grp.indices.Count} meshes){parentSuffix}";
+                    var parentNode = new TreeNode(parentText)
+                    {
+                        Name = grp.key,
+                        Tag = grp.indices
+                    };
+
+                    foreach (int i in grp.indices)
+                    {
+                        var lm = _loadedMeshes[i];
+                        string childText = string.IsNullOrEmpty(lm.AttachBoneName)
+                            ? lm.Name
+                            : $"{lm.Name}  →  {lm.AttachBoneName}";
+
+                        var childNode = new TreeNode(childText)
+                        {
+                            Tag = i
+                        };
+                        parentNode.Nodes.Add(childNode);
+
+                        if (prevSelectedTag is int prevI && prevI == i)
+                            nodeToSelect = childNode;
+                    }
+
+                    if (expandedKeys.Count == 0 || expandedKeys.Contains(grp.key))
+                        parentNode.Expand();
+
+                    tvLoaded.Nodes.Add(parentNode);
+
+                    if (nodeToSelect == null && prevSelectedTag is List<int> prevList &&
+                        prevList.Count == grp.indices.Count && prevList.TrueForAll(grp.indices.Contains))
+                        nodeToSelect = parentNode;
+                }
+
+                if (nodeToSelect != null)
+                    tvLoaded.SelectedNode = nodeToSelect;
+                else if (tvLoaded.Nodes.Count > 0 && tvLoaded.SelectedNode == null)
+                    tvLoaded.SelectedNode = tvLoaded.Nodes[0];
+            }
+            finally
+            {
+                tvLoaded.EndUpdate();
+            }
+        }
+
+        private void TvLoaded_AfterSelect(object sender, TreeViewEventArgs e)
+        {
+            if (e.Node == null) return;
+            var idxs = GetSelectedMeshIndices();
+            if (idxs.Count > 0 && cbBones != null)
+            {
+                var first = _loadedMeshes[idxs[0]];
+                SelectBoneByName(first.AttachBoneName);
+            }
+            else
+            {
+                SelectBoneByName(null);
             }
             LoadEquipControlsFromMesh();
         }
 
-        // Indices of the meshes currently selected in the "Meshes affiches" list
-        // (supports Ctrl/Shift multi-selection for batch placement tweaks).
+        private bool _suppressTreeCheck;
+        private void TvLoaded_AfterCheck(object sender, TreeViewEventArgs e)
+        {
+            if (_suppressTreeCheck || e.Node == null) return;
+            _suppressTreeCheck = true;
+            try
+            {
+                if (e.Node.Nodes.Count > 0)
+                {
+                    foreach (TreeNode child in e.Node.Nodes)
+                        child.Checked = e.Node.Checked;
+                }
+            }
+            finally { _suppressTreeCheck = false; }
+            LoadEquipControlsFromMesh();
+        }
+
+        // Indices of the meshes currently selected or checked in the "Meshes affichés" TreeView
+        // (supports checking parent or individual nodes for batch operations).
         private List<int> GetSelectedMeshIndices()
         {
             var list = new List<int>();
-            if (lstLoaded == null) return list;
-            foreach (int i in lstLoaded.SelectedIndices)
-                if (i >= 0 && i < _loadedMeshes.Count) list.Add(i);
+            if (tvLoaded == null) return list;
+
+            // 1. If any nodes have checkboxes checked, use checked items
+            Action<TreeNodeCollection> collectChecked = null;
+            collectChecked = (nodes) =>
+            {
+                foreach (TreeNode n in nodes)
+                {
+                    if (n.Checked)
+                    {
+                        if (n.Tag is int idx)
+                        {
+                            if (idx >= 0 && idx < _loadedMeshes.Count && !list.Contains(idx))
+                                list.Add(idx);
+                        }
+                        else if (n.Tag is List<int> grpList)
+                        {
+                            foreach (int gi in grpList)
+                            {
+                                if (gi >= 0 && gi < _loadedMeshes.Count && !list.Contains(gi))
+                                    list.Add(gi);
+                            }
+                        }
+                    }
+                    if (n.Nodes.Count > 0)
+                        collectChecked(n.Nodes);
+                }
+            };
+            collectChecked(tvLoaded.Nodes);
+
+            if (list.Count > 0) return list;
+
+            // 2. Otherwise use the currently selected node
+            var sel = tvLoaded.SelectedNode;
+            if (sel != null)
+            {
+                if (sel.Tag is int singleIdx)
+                {
+                    if (singleIdx >= 0 && singleIdx < _loadedMeshes.Count)
+                        list.Add(singleIdx);
+                }
+                else if (sel.Tag is List<int> grpIndices)
+                {
+                    foreach (int idx in grpIndices)
+                    {
+                        if (idx >= 0 && idx < _loadedMeshes.Count && !list.Contains(idx))
+                            list.Add(idx);
+                    }
+                }
+            }
+
             return list;
         }
 
@@ -4373,24 +4604,27 @@ namespace UoFiddler.Plugin.Granny3D
             _suppressEquip = true;
             try
             {
-                int i = lstLoaded?.SelectedIndex ?? -1;
-                bool ok = i >= 0 && i < _loadedMeshes.Count;
-                var lm = ok ? _loadedMeshes[i] : null;
+                var idxs = GetSelectedMeshIndices();
+                int nSel = idxs.Count;
+                bool ok = nSel > 0;
+                var lm = ok ? _loadedMeshes[idxs[0]] : null;
 
-                // Multiple meshes selected: keep the current widget values (do not
-                // clobber them from a single mesh) and show a batch target label.
-                int nSel = lstLoaded?.SelectedIndices.Count ?? 0;
+                // Multiple meshes selected: show batch target label.
                 if (nSel > 1)
                 {
+                    string groupName = (tvLoaded?.SelectedNode?.Tag is List<int>)
+                        ? tvLoaded.SelectedNode.Text
+                        : $"{nSel} meshes sélectionnés";
                     if (lblEquipTarget != null)
-                        lblEquipTarget.Text = $"Cible : {nSel} meshes sélectionnés (édition par lot)";
-                    return;
+                        lblEquipTarget.Text = $"Cible : {groupName} (édition par lot)";
                 }
-
-                if (lblEquipTarget != null)
-                    lblEquipTarget.Text = ok
-                        ? $"Cible : {lm.Name}" + (string.IsNullOrEmpty(lm.AttachBoneName) ? "  (non attaché)" : $"  → {lm.AttachBoneName}")
-                        : "Cible : (aucun)";
+                else
+                {
+                    if (lblEquipTarget != null)
+                        lblEquipTarget.Text = ok
+                            ? $"Cible : {lm.Name}" + (string.IsNullOrEmpty(lm.AttachBoneName) ? "  (non attaché)" : $"  → {lm.AttachBoneName}")
+                            : "Cible : (aucun)";
+                }
 
                 cbMirrorX.Checked = ok && lm.MirrorX;
                 cbMirrorY.Checked = ok && lm.MirrorY;
@@ -4436,194 +4670,914 @@ namespace UoFiddler.Plugin.Granny3D
             n.Value = Math.Max(n.Minimum, Math.Min(n.Maximum, d));
         }
 
-        // Skin-wrap: bind the selected accessory to the SURFACE of the body meshes by
-        // copying, for each accessory vertex, the skin weights of the nearest body
-        // vertex (in bind space). The accessory then deforms exactly like the body,
-        // regardless of its own (often mis-named/mis-bound) skeleton.
+        // Skin-wrap: bind the selected accessory to the SURFACE of the entire body (all body parts:
+        // Torso, UArms, FArms, Hands, Pelvis, ULegs, LLegs, Feet, Head, Neck...) by copying, for each
+        // accessory vertex, the skin weights of the nearest body vertices across the full body model,
+        // remapping all influences into the master host skeleton (e.g. 43-bone human).
         private void SkinWrapSelected()
         {
-            int i = lstLoaded?.SelectedIndex ?? -1;
-            if (i < 0 || i >= _loadedMeshes.Count)
+            var idxs = GetSelectedMeshIndices();
+            if (idxs.Count == 0)
             {
                 Log("Skin wrap : aucun mesh sélectionné.");
-                return;
-            }
-            var target = _loadedMeshes[i];
-            if (target.BaseVertices == null || target.BaseVertices.Length == 0)
-            {
-                Log("Skin wrap : le mesh sélectionné n'a pas de sommets.");
+                MessageBox.Show("Veuillez sélectionner ou cocher au moins un mesh à lier (skin wrap).", "Skin wrap", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
-            if (target.WrapSource != null)
+            // Check if all selected are already wrapped -> toggle detach
+            bool allWrapped = true;
+            foreach (int ti in idxs)
             {
-                Log($"Skin wrap : '{target.Name}' détaché de '{target.WrapSource.Name}'.");
-                target.WrapSource = null;
-                target.WrapSkin = null;
+                if (_loadedMeshes[ti].WrapSource == null)
+                {
+                    allWrapped = false;
+                    break;
+                }
+            }
+
+            if (allWrapped)
+            {
+                foreach (int ti in idxs)
+                {
+                    var target = _loadedMeshes[ti];
+                    Log($"Skin wrap : '{target.Name}' détaché.");
+                    target.WrapSource = null;
+                    target.WrapSkin = null;
+                }
                 ApplyAnimationPose(_currentTime);
+                RefreshVertexBuffers(true);
                 if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+                if (lblModelInfo != null) lblModelInfo.Text = $"{idxs.Count} mesh(es) détaché(s) du skin wrap";
                 return;
             }
 
-            // Candidate sources: other visible, skinned meshes with bones & weights.
+            // 1. Collect ALL body source meshes (Torso, Arms, Legs, Hands, Feet, Pelvis, Head...)
+            var targetSet = new HashSet<int>(idxs);
             var sources = new List<LoadedMesh>();
-            for (int j = 0; j < _loadedMeshes.Count; j++)
+
+            // First pass: collect explicit body parts (CutoutRole.Body or CharSlot)
+            foreach (var m in _loadedMeshes)
             {
-                if (j == i) continue;
-                var m = _loadedMeshes[j];
+                int mIdx = _loadedMeshes.IndexOf(m);
+                if (targetSet.Contains(mIdx)) continue;
                 if (m.Hidden) continue;
-                if (m.WrapSource != null) continue;                 // don't chain wraps
+                if (m.WrapSource != null) continue;
                 if (m.Skin == null || m.Skin.Length == 0) continue;
                 if (m.Bones == null || m.Bones.Count == 0) continue;
                 if (m.BaseVertices == null || m.BaseVertices.Length == 0) continue;
-                sources.Add(m);
+
+                if (m.CutoutRole == MeshCutoutRole.Body || !string.IsNullOrEmpty(m.CharSlot))
+                    sources.Add(m);
             }
+
+            // Fallback: if no explicit body meshes found (e.g. custom character), accept any visible skinned meshes
+            if (sources.Count == 0)
+            {
+                foreach (var m in _loadedMeshes)
+                {
+                    int mIdx = _loadedMeshes.IndexOf(m);
+                    if (targetSet.Contains(mIdx)) continue;
+                    if (m.Hidden) continue;
+                    if (m.WrapSource != null) continue;
+                    if (m.Skin == null || m.Skin.Length == 0) continue;
+                    if (m.Bones == null || m.Bones.Count == 0) continue;
+                    if (m.BaseVertices == null || m.BaseVertices.Length == 0) continue;
+                    sources.Add(m);
+                }
+            }
+
             if (sources.Count == 0)
             {
                 Log("Skin wrap : aucun mesh de corps skinné disponible comme source.");
+                MessageBox.Show("Aucune pièce de corps skinnée trouvée pour transférer les poids.", "Skin wrap", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            int n = target.BaseVertices.Length;
-
-            // Pass 1: global nearest over all sources -> hits per source.
-            var hits = new int[sources.Count];
-            var nearSrc = new int[n];
-            var nearIdx = new int[n];
-            for (int v = 0; v < n; v++)
+            // 2. Identify or create the master host skeleton covering all body bones
+            LoadedMesh masterHost = null;
+            int maxBones = -1;
+            foreach (var m in _loadedMeshes)
             {
-                Vector3 p = target.BaseVertices[v];
-                float best = float.MaxValue;
-                int bs = -1, bi = -1;
-                for (int s = 0; s < sources.Count; s++)
+                if (m.Bones != null && m.Bones.Count > maxBones)
                 {
-                    var sv = sources[s].BaseVertices;
-                    for (int k = 0; k < sv.Length; k++)
+                    maxBones = m.Bones.Count;
+                    masterHost = m;
+                }
+            }
+
+            // If the best skeleton in the scene has fewer than 40 bones (e.g. only individual body parts loaded),
+            // load the full 43-bone reference skeleton (H_Male_Lod2 / H_Female_Lod2) or synthesize a unified host.
+            if (masterHost == null || maxBones < 40)
+            {
+                bool preferFemale = _charGender == 2;
+                foreach (var s in sources)
+                {
+                    if (s.Name != null && s.Name.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        float d = Vector3.DistanceSquared(p, sv[k]);
-                        if (d < best) { best = d; bs = s; bi = k; }
+                        preferFemale = true;
+                        break;
                     }
                 }
-                nearSrc[v] = bs; nearIdx[v] = bi;
-                if (bs >= 0) hits[bs]++;
-            }
 
-            int win = -1, winHits = 0;
-            for (int s = 0; s < sources.Count; s++)
-                if (hits[s] > winHits) { winHits = hits[s]; win = s; }
-            if (win < 0 || winHits == 0)
-            {
-                Log("Skin wrap : aucun sommet du corps assez proche.");
-                return;
-            }
+                string refFile = preferFemale ? "H_Female_Lod2.grn" : "H_Male_Lod2.grn";
+                string refPath = Path.Combine(BasePath, "Humans", refFile);
+                if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
+                if (!File.Exists(refPath)) refPath = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\" + refFile;
+                if (!File.Exists(refPath)) refPath = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\H_Male_Lod2.grn";
 
-            var source = sources[win];
-            var wrap = new VertexInfluence[n][];
-            var srcVerts = source.BaseVertices;
-            int svN = srcVerts.Length;
-            const int K = 4;   // neighbours blended per vertex
-            var acc = new Dictionary<int, float>();
-            var tmpBone = new int[K];
-            var tmpDist = new float[K];
-            int wrapped = 0;
-            for (int v = 0; v < n; v++)
-            {
-                Vector3 p = target.BaseVertices[v];
-
-                // K nearest body vertices within the winning source (small sorted list).
-                for (int k = 0; k < K; k++) { tmpBone[k] = -1; tmpDist[k] = float.MaxValue; }
-                for (int k = 0; k < svN; k++)
+                if (File.Exists(refPath))
                 {
-                    float d = Vector3.DistanceSquared(p, srcVerts[k]);
-                    if (d < tmpDist[K - 1])
+                    var parser = new GrannyFormatParser();
+                    if (parser.Load(refPath) && parser.Bones.Count >= 40)
                     {
-                        int pos = K - 1;
-                        while (pos > 0 && d < tmpDist[pos - 1])
+                        var host = new LoadedMesh
                         {
-                            tmpDist[pos] = tmpDist[pos - 1];
-                            tmpBone[pos] = tmpBone[pos - 1];
-                            pos--;
-                        }
-                        tmpDist[pos] = d;
-                        tmpBone[pos] = k;
+                            Name = $"[Host Skeleton] {Path.GetFileNameWithoutExtension(refPath)}",
+                            SourcePath = refPath,
+                            Bones = new List<GrannyBone>(parser.Bones),
+                            BaseVertices = parser.Meshes.Count > 0 ? parser.Meshes[0].Vertices.ToArray() : new Vector3[0],
+                            Indices = parser.Meshes.Count > 0 ? parser.Meshes[0].Indices.ToArray() : new int[0],
+                            CutoutRole = MeshCutoutRole.Body,
+                            Hidden = true
+                        };
+                        _loadedMeshes.Add(host);
+                        masterHost = host;
+                        maxBones = host.Bones.Count;
+                        Log($"Skin wrap : squelette de référence chargé automatiquement ({refFile}, {maxBones} os).");
                     }
                 }
 
-                // Blend the K neighbours' influences, weighted by inverse distance, so the
-                // accessory follows the body SURFACE (not just one vertex) -> no joint
-                // divergence.
-                acc.Clear();
-                for (int k = 0; k < K; k++)
+                // If still under 2 bones, synthesize a complete skeleton from all source parts
+                if (masterHost == null || maxBones < 2)
                 {
-                    int idx = tmpBone[k];
-                    if (idx < 0 || idx >= source.Skin.Length) continue;
-                    var inf = source.Skin[idx];
-                    if (inf == null || inf.Length == 0) continue;
-                    float wdist = 1f / (tmpDist[k] + 1e-6f);
-                    for (int m = 0; m < inf.Length; m++)
+                    var synthBones = new List<GrannyBone>();
+                    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var s in sources)
                     {
-                        float cur;
-                        acc[inf[m].BoneId] = acc.TryGetValue(inf[m].BoneId, out cur) ? cur + inf[m].Weight * wdist : inf[m].Weight * wdist;
+                        if (s.Bones == null) continue;
+                        foreach (var b in s.Bones)
+                        {
+                            if (seen.Add(b.Name))
+                            {
+                                synthBones.Add(new GrannyBone
+                                {
+                                    Name = b.Name,
+                                    ParentId = -1,
+                                    LocalPosition = b.LocalPosition,
+                                    LocalRotation = b.LocalRotation,
+                                    InverseBindMatrix = b.InverseBindMatrix
+                                });
+                            }
+                        }
+                    }
+
+                    // Re-link ParentId
+                    for (int bi = 0; bi < synthBones.Count; bi++)
+                    {
+                        var mb = synthBones[bi];
+                        foreach (var s in sources)
+                        {
+                            if (s.Bones == null) continue;
+                            int li = s.Bones.FindIndex(b => string.Equals(b.Name, mb.Name, StringComparison.OrdinalIgnoreCase));
+                            if (li >= 0)
+                            {
+                                int p = s.Bones[li].ParentId;
+                                if (p >= 0 && p < s.Bones.Count)
+                                {
+                                    string pName = s.Bones[p].Name;
+                                    int mp = synthBones.FindIndex(b => string.Equals(b.Name, pName, StringComparison.OrdinalIgnoreCase));
+                                    if (mp >= 0 && mp != bi)
+                                    {
+                                        mb.ParentId = mp;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (synthBones.Count > 0)
+                    {
+                        var host = new LoadedMesh
+                        {
+                            Name = "[Host Skeleton Synthétisé]",
+                            Bones = synthBones,
+                            BaseVertices = new Vector3[0],
+                            Indices = new int[0],
+                            CutoutRole = MeshCutoutRole.Body,
+                            Hidden = true
+                        };
+                        _loadedMeshes.Add(host);
+                        masterHost = host;
+                        maxBones = host.Bones.Count;
+                        Log($"Skin wrap : squelette synthétisé avec succès ({maxBones} os uniques combinés).");
                     }
                 }
-                if (acc.Count == 0) continue;
-
-                var list = new List<KeyValuePair<int, float>>(acc);
-                list.Sort((a, b) => b.Value.CompareTo(a.Value));
-                int keep = Math.Min(4, list.Count);
-                float kept = 0f;
-                for (int m = 0; m < keep; m++) kept += list[m].Value;
-                if (kept <= 1e-6f) continue;
-                var outInf = new VertexInfluence[keep];
-                for (int m = 0; m < keep; m++)
-                    outInf[m] = new VertexInfluence { BoneId = list[m].Key, Weight = list[m].Value / kept };
-                wrap[v] = outInf;
-                wrapped++;
             }
 
-            target.WrapSource = source;
-            target.WrapSkin = wrap;
-            target.AttachMatrix = Matrix4.Identity;
-            target.HasAttachMatrix = false;
+            if (masterHost == null || maxBones < 2)
+            {
+                Log("Skin wrap : aucun squelette hôte valide trouvé sur la scène.");
+                MessageBox.Show("Impossible d'effectuer le skin wrap : aucun personnage/squelette hôte n'est présent sur la scène.", "Skin wrap", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
-            Log($"Skin wrap : '{target.Name}' ← '{source.Name}' ({wrapped}/{n} sommets liés, lissé K={K}, {source.Bones.Count} os).");
+            if (_currentAnimation != null)
+                EnsureAnimationBindings(_currentAnimation);
+
+            // Ensure master host has matrices computed
+            if (masterHost.SkinMatrices == null || masterHost.SkinMatrices.Length != masterHost.Bones.Count)
+            {
+                ApplyAnimationPose(_currentTime);
+            }
+
+            // 3. Build bone mapping tables from each source's local bones to masterHost bones
+            var sourceBoneMaps = new int[sources.Count][];
+            for (int s = 0; s < sources.Count; s++)
+            {
+                var src = sources[s];
+                var map = new int[src.Bones.Count];
+                for (int b = 0; b < src.Bones.Count; b++)
+                {
+                    string bName = src.Bones[b].Name;
+                    int masterIdx = masterHost.Bones.FindIndex(mb => string.Equals(mb.Name, bName, StringComparison.OrdinalIgnoreCase));
+                    map[b] = (masterIdx >= 0) ? masterIdx : 0;
+                }
+                sourceBoneMaps[s] = map;
+            }
+
+            // 4. Pool ALL body vertices across ALL sources into a single sample list
+            var allSamples = new List<(Vector3 pos, int srcIdx, int localVertIdx)>();
+            for (int s = 0; s < sources.Count; s++)
+            {
+                var sv = sources[s].BaseVertices;
+                var sk = sources[s].Skin;
+                for (int k = 0; k < sv.Length; k++)
+                {
+                    if (k < sk.Length && sk[k] != null && sk[k].Length > 0)
+                    {
+                        allSamples.Add((sv[k], s, k));
+                    }
+                }
+            }
+
+            if (allSamples.Count == 0)
+            {
+                Log("Skin wrap : aucun sommet skinné valide dans les sources.");
+                return;
+            }
+
+            const int K = 4; // number of nearest body neighbours to blend
+            var tmpSample = new int[K];
+            var tmpDist = new float[K];
+            var acc = new Dictionary<int, float>();
+
+            int totalWrappedMeshes = 0;
+
+            foreach (int ti in idxs)
+            {
+                var target = _loadedMeshes[ti];
+                if (target.BaseVertices == null || target.BaseVertices.Length == 0) continue;
+
+                // 1. If target was attached to a bone, detach it cleanly
+                if (!string.IsNullOrEmpty(target.AttachBoneName))
+                {
+                    target.AttachBoneName = null;
+                    target.HasAttachMatrix = false;
+                    target.AttachMatrix = Matrix4.Identity;
+                    if (IsClothingOrSkinned(target))
+                    {
+                        target.AttachOffset = Vector3.Zero;
+                        target.AttachRotation = Vector3.Zero;
+                        target.PartScale = 1f;
+                        target.PartScaleVec = Vector3.One;
+                    }
+                }
+
+                // 2. If target was tweaked (placed, scaled, rotated), bake the placement into BaseVertices
+                // so that wrap weights are calculated from the fitted rest position, and reset AttachOffset to 0
+                // to prevent any double-offset / jump!
+                if (IsMeshTweaked(target))
+                {
+                    BakeMeshGeometry(target);
+                }
+
+                int n = target.BaseVertices.Length;
+                var wrap = new VertexInfluence[n][];
+                int wrappedVerts = 0;
+
+                for (int v = 0; v < n; v++)
+                {
+                    Vector3 p = target.BaseVertices[v];
+
+                    for (int k = 0; k < K; k++)
+                    {
+                        tmpSample[k] = -1;
+                        tmpDist[k] = float.MaxValue;
+                    }
+
+                    // Find K nearest body vertices in allSamples
+                    for (int si = 0; si < allSamples.Count; si++)
+                    {
+                        float d = Vector3.DistanceSquared(p, allSamples[si].pos);
+                        if (d < tmpDist[K - 1])
+                        {
+                            int pos = K - 1;
+                            while (pos > 0 && d < tmpDist[pos - 1])
+                            {
+                                tmpDist[pos] = tmpDist[pos - 1];
+                                tmpSample[pos] = tmpSample[pos - 1];
+                                pos--;
+                            }
+                            tmpDist[pos] = d;
+                            tmpSample[pos] = si;
+                        }
+                    }
+
+                    // Blend the K neighbours' influences, weighted by inverse distance
+                    acc.Clear();
+                    for (int k = 0; k < K; k++)
+                    {
+                        int sIdx = tmpSample[k];
+                        if (sIdx < 0) continue;
+                        var sample = allSamples[sIdx];
+                        var src = sources[sample.srcIdx];
+                        var infs = src.Skin[sample.localVertIdx];
+                        if (infs == null || infs.Length == 0) continue;
+
+                        float dist = (float)Math.Sqrt(tmpDist[k]);
+                        float wdist = 1f / (dist + 0.001f);
+
+                        var map = sourceBoneMaps[sample.srcIdx];
+                        for (int m = 0; m < infs.Length; m++)
+                        {
+                            int bId = infs[m].BoneId;
+                            if (bId >= 0 && bId < map.Length)
+                            {
+                                int masterBoneId = map[bId];
+                                float w = infs[m].Weight * wdist;
+                                acc[masterBoneId] = acc.TryGetValue(masterBoneId, out float cur) ? cur + w : w;
+                            }
+                        }
+                    }
+
+                    if (acc.Count == 0) continue;
+
+                    var list = new List<KeyValuePair<int, float>>(acc);
+                    list.Sort((a, b) => b.Value.CompareTo(a.Value));
+                    int keep = Math.Min(4, list.Count);
+                    float kept = 0f;
+                    for (int m = 0; m < keep; m++) kept += list[m].Value;
+                    if (kept <= 1e-6f) continue;
+
+                    var outInf = new VertexInfluence[keep];
+                    for (int m = 0; m < keep; m++)
+                        outInf[m] = new VertexInfluence { BoneId = list[m].Key, Weight = list[m].Value / kept };
+
+                    wrap[v] = outInf;
+                    wrappedVerts++;
+                }
+
+                target.WrapSource = masterHost;
+                target.WrapSkin = wrap;
+                target.Bones = new List<GrannyBone>(masterHost.Bones);
+                target.AttachMatrix = Matrix4.Identity;
+                target.HasAttachMatrix = false;
+                target.AttachBoneName = null;
+                target.CutoutRole = MeshCutoutRole.Accessory;
+
+                Log($"Skin wrap : '{target.Name}' lié à {sources.Count} parties du corps ({wrappedVerts}/{n} sommets liés via squelette '{masterHost.Name}' [{masterHost.Bones.Count} os]).");
+                totalWrappedMeshes++;
+            }
+
+            LoadEquipControlsFromMesh();
+            RefreshLoadedList();
             ApplyAnimationPose(_currentTime);
+            RefreshVertexBuffers(true);
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+
+            if (lblModelInfo != null)
+                lblModelInfo.Text = $"Skin wrap réussi : {totalWrappedMeshes} mesh(es) lié(s) sur {sources.Count} pièces du corps ({masterHost.Bones.Count} os)";
         }
 
-        // Attach the mesh selected in the list to the chosen bone (or detach if it is
-        // already attached to that bone). An attached mesh rides the bone and follows
+        private static bool IsClothingOrSkinned(LoadedMesh lm)
+        {
+            if (lm == null) return false;
+            if (lm.Skin != null && lm.Skin.Length > 0) return true;
+            if (lm.WrapSkin != null && lm.WrapSkin.Length > 0) return true;
+            if (lm.Bones != null && lm.Bones.Count >= 5) return true;
+            if (lm.CutoutRole == MeshCutoutRole.Body) return true;
+
+            string name = (lm.Name ?? "").ToLowerInvariant();
+            string src = (lm.SourcePath ?? "").ToLowerInvariant();
+            string[] keywords = new[]
+            {
+                "robe", "tunic", "dress", "armor", "plate", "chain", "ringmail",
+                "leather", "cloak", "cape", "pants", "skirt", "boot", "shoe", "sandals",
+                "helm", "hat", "hood", "cowl", "cap", "hair", "facial", "beard",
+                "torso", "neck", "leg", "arm", "hand", "foot", "feet", "head", "body", "chest"
+            };
+            foreach (var kw in keywords)
+            {
+                if (name.Contains(kw) || src.Contains(kw)) return true;
+            }
+
+            if (lm.BaseVertices != null && lm.BaseVertices.Length > 0)
+            {
+                float minZ = float.MaxValue, maxZ = float.MinValue;
+                for (int i = 0; i < lm.BaseVertices.Length; i++)
+                {
+                    float z = lm.BaseVertices[i].Z;
+                    if (z < minZ) minZ = z;
+                    if (z > maxZ) maxZ = z;
+                }
+                if (maxZ - minZ > 0.6f || (minZ < 0.4f && maxZ > 1.0f)) return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsClothingOrSkinnedGrn(string path, GrannyFormatParser parser, GrannyMesh mesh)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            string fn = Path.GetFileName(path).ToLowerInvariant();
+
+            string[] clothingKeywords = new[]
+            {
+                "robe", "tunic", "dress", "armor", "plate", "chain", "ringmail",
+                "leather", "cloak", "cape", "pants", "skirt", "boot", "shoe", "sandals",
+                "helm", "hat", "hood", "cowl", "cap", "hair", "facial", "beard",
+                "torso", "neck", "leg", "arm", "hand", "foot", "feet", "head", "body", "chest"
+            };
+            foreach (var kw in clothingKeywords)
+            {
+                if (fn.Contains(kw)) return true;
+            }
+
+            if (mesh != null && mesh.Skin != null && mesh.Skin.Count > 0) return true;
+            if (parser != null && parser.Bones != null && parser.Bones.Count >= 5) return true;
+
+            if (mesh != null && mesh.Vertices != null && mesh.Vertices.Count > 0)
+            {
+                float minZ = float.MaxValue, maxZ = float.MinValue;
+                foreach (var v in mesh.Vertices)
+                {
+                    if (v.Z < minZ) minZ = v.Z;
+                    if (v.Z > maxZ) maxZ = v.Z;
+                }
+                if (maxZ - minZ > 0.6f || (minZ < 0.4f && maxZ > 1.0f)) return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsMeshTweaked(LoadedMesh m)
+        {
+            if (m == null) return false;
+            if (m.Thickness != 0f) return true;
+            if (m.PartScale != 1f) return true;
+            if (m.PartScaleVec.X != 1f || m.PartScaleVec.Y != 1f || m.PartScaleVec.Z != 1f) return true;
+            if (m.AttachRotation != Vector3.Zero) return true;
+            if (m.AttachOffset != Vector3.Zero) return true;
+            if (m.MirrorX || m.MirrorY || m.MirrorZ) return true;
+            if (m.WrapSkin != null) return true;
+            return false;
+        }
+
+        private void BakeMeshGeometry(LoadedMesh lm)
+        {
+            if (lm == null || lm.BaseVertices == null || lm.BaseVertices.Length == 0) return;
+
+            if (lm.BaseVertexNormals == null || lm.BaseVertexNormals.Length != lm.BaseVertices.Length)
+                BuildCornerData(lm);
+
+            Vector3 pscale = new Vector3(
+                lm.PartScale * lm.PartScaleVec.X,
+                lm.PartScale * lm.PartScaleVec.Y,
+                lm.PartScale * lm.PartScaleVec.Z);
+            bool scaleTweaked = pscale.X != 1f || pscale.Y != 1f || pscale.Z != 1f;
+
+            bool hasRot = lm.AttachRotation != Vector3.Zero;
+            bool hasMirror = lm.MirrorX || lm.MirrorY || lm.MirrorZ;
+            bool hasOffset = lm.AttachOffset != Vector3.Zero;
+            bool hasThickness = lm.Thickness != 0f && lm.BaseVertexNormals != null;
+
+            if (scaleTweaked || hasRot || hasMirror || hasOffset || hasThickness)
+            {
+                bool isRigidAttached = !string.IsNullOrEmpty(lm.AttachBoneName) || lm.HasAttachMatrix;
+
+                if (isRigidAttached)
+                {
+                    // The accessory is attached to a host bone. During animation/display, it was rendered
+                    // with BuildAttachTweak(lm) around Vector3.Zero (the attach socket origin / grip).
+                    // We must apply BuildAttachTweak(lm) so that all parts of a multi-mesh accessory (e.g. lute, weapon)
+                    // stay perfectly assembled and do NOT explode!
+                    Matrix4 tweak = BuildAttachTweak(lm);
+                    int vcount = lm.BaseVertices.Length;
+                    for (int v = 0; v < vcount; v++)
+                    {
+                        Vector3 pos = Vector3.TransformPosition(lm.BaseVertices[v], tweak);
+                        if (hasThickness && v < lm.BaseVertexNormals.Length)
+                        {
+                            Vector3 n = lm.BaseVertexNormals[v];
+                            if (n.LengthSquared > 1e-12f)
+                                pos += Vector3.Normalize(n) * lm.Thickness;
+                        }
+                        lm.BaseVertices[v] = pos;
+                    }
+                }
+                else
+                {
+                    Matrix4 rotMat = hasRot
+                        ? Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
+                            MathHelper.DegreesToRadians(lm.AttachRotation.X),
+                            MathHelper.DegreesToRadians(lm.AttachRotation.Y),
+                            MathHelper.DegreesToRadians(lm.AttachRotation.Z)))
+                        : Matrix4.Identity;
+
+                    // If part of a multi-mesh model sharing the same SourcePath, all parts MUST share
+                    // Vector3.Zero as pivot so they scale and rotate together without diverging.
+                    bool isMultiPart = !string.IsNullOrEmpty(lm.SourcePath) &&
+                        _loadedMeshes.Exists(m => !ReferenceEquals(m, lm) && string.Equals(m.SourcePath, lm.SourcePath, StringComparison.OrdinalIgnoreCase));
+                    bool isClothingOrBody = lm.CutoutRole != MeshCutoutRole.Accessory || lm.Skin != null || lm.WrapSource != null || IsClothingOrSkinned(lm);
+
+                    Vector3 scalePivot = (isMultiPart || !lm.HasBindCentroid) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : lm.BindCentroid);
+                    Vector3 rotPivot = (isMultiPart || lm.CutoutRole != MeshCutoutRole.Accessory) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : scalePivot);
+
+                    int vcount = lm.BaseVertices.Length;
+                    for (int v = 0; v < vcount; v++)
+                    {
+                        Vector3 pos = lm.BaseVertices[v];
+
+                        // 1. Scale around scalePivot
+                        if (scaleTweaked)
+                        {
+                            Vector3 r = pos - scalePivot;
+                            r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
+                            pos = scalePivot + r;
+                        }
+
+                        // 2. Thickness along normal
+                        if (hasThickness && v < lm.BaseVertexNormals.Length)
+                        {
+                            Vector3 n = lm.BaseVertexNormals[v];
+                            if (n.LengthSquared > 1e-12f)
+                                pos += Vector3.Normalize(n) * lm.Thickness;
+                        }
+
+                        // 3. Mirror, Rotation, Offset around rotPivot
+                        if (hasMirror || hasRot || hasOffset)
+                        {
+                            Vector3 rRot = pos - rotPivot;
+                            if (hasMirror)
+                            {
+                                rRot = new Vector3(
+                                    rRot.X * (lm.MirrorX ? -1f : 1f),
+                                    rRot.Y * (lm.MirrorY ? -1f : 1f),
+                                    rRot.Z * (lm.MirrorZ ? -1f : 1f));
+                            }
+                            if (hasRot)
+                            {
+                                rRot = Vector3.TransformNormal(rRot, rotMat);
+                            }
+                            pos = rotPivot + rRot + lm.AttachOffset;
+                        }
+
+                        lm.BaseVertices[v] = pos;
+                    }
+                }
+
+                // 4. Invert triangle winding if odd number of mirror axes
+                if (lm.MirrorX ^ lm.MirrorY ^ lm.MirrorZ)
+                {
+                    if (lm.Indices != null)
+                    {
+                        for (int t = 0; t + 2 < lm.Indices.Length; t += 3)
+                        {
+                            int tmp = lm.Indices[t + 1];
+                            lm.Indices[t + 1] = lm.Indices[t + 2];
+                            lm.Indices[t + 2] = tmp;
+                        }
+                    }
+                    if (lm.SourceMesh?.Indices != null)
+                    {
+                        for (int t = 0; t + 2 < lm.SourceMesh.Indices.Count; t += 3)
+                        {
+                            int tmp = lm.SourceMesh.Indices[t + 1];
+                            lm.SourceMesh.Indices[t + 1] = lm.SourceMesh.Indices[t + 2];
+                            lm.SourceMesh.Indices[t + 2] = tmp;
+                        }
+                    }
+                }
+            }
+
+            // Update SourceMesh bounds & vertices
+            if (lm.SourceMesh != null)
+            {
+                lm.SourceMesh.Vertices.Clear();
+                lm.SourceMesh.Vertices.AddRange(lm.BaseVertices);
+                lm.SourceMesh.Indices.Clear();
+                if (lm.Indices != null) lm.SourceMesh.Indices.AddRange(lm.Indices);
+                lm.SourceMesh.MinX = lm.SourceMesh.MinY = lm.SourceMesh.MinZ = float.MaxValue;
+                lm.SourceMesh.MaxX = lm.SourceMesh.MaxY = lm.SourceMesh.MaxZ = float.MinValue;
+                foreach (var v in lm.BaseVertices)
+                {
+                    if (v.X < lm.SourceMesh.MinX) lm.SourceMesh.MinX = v.X;
+                    if (v.X > lm.SourceMesh.MaxX) lm.SourceMesh.MaxX = v.X;
+                    if (v.Y < lm.SourceMesh.MinY) lm.SourceMesh.MinY = v.Y;
+                    if (v.Y > lm.SourceMesh.MaxY) lm.SourceMesh.MaxY = v.Y;
+                    if (v.Z < lm.SourceMesh.MinZ) lm.SourceMesh.MinZ = v.Z;
+                    if (v.Z > lm.SourceMesh.MaxZ) lm.SourceMesh.MaxZ = v.Z;
+                }
+            }
+
+            // Reset tweak values on lm
+            lm.PartScale = 1f;
+            lm.PartScaleVec = Vector3.One;
+            lm.Thickness = 0f;
+            lm.AttachRotation = Vector3.Zero;
+            lm.AttachOffset = Vector3.Zero;
+            lm.MirrorX = lm.MirrorY = lm.MirrorZ = false;
+
+            // If it was a cloth mesh, clear any old bakes
+            if (lm.IsCloth)
+            {
+                ClearClothBake(lm);
+                BuildClothFromMesh(lm);
+            }
+
+            // If the mesh had a temporary WrapSkin, bake it permanently into Skin & Bones!
+            if (lm.WrapSkin != null && lm.WrapSource != null)
+            {
+                lm.Skin = lm.WrapSkin;
+                lm.Bones = new List<GrannyBone>(lm.WrapSource.Bones);
+                if (lm.SourceMesh != null)
+                {
+                    lm.SourceMesh.Skin.Clear();
+                    lm.SourceMesh.Skin.AddRange(lm.WrapSkin);
+                }
+                lm.WrapSkin = null;
+                lm.WrapSource = null;
+                Log($"Bake: skin wrap fixé définitivement sur '{lm.Name}' ({lm.Skin.Length} sommets, {lm.Bones.Count} os).");
+            }
+
+            // Recompute corners, normals, and bind centroid
+            BuildCornerData(lm);
+            SetupMeshVBO(lm);
+        }
+
+        private void BakeAndSaveSelectedMesh()
+        {
+            var selIndices = GetSelectedMeshIndices();
+
+            if (selIndices.Count == 0)
+            {
+                // Check if any mesh in _loadedMeshes has modifications
+                for (int i = 0; i < _loadedMeshes.Count; i++)
+                {
+                    if (IsMeshTweaked(_loadedMeshes[i]))
+                        selIndices.Add(i);
+                }
+            }
+
+            if (selIndices.Count == 0)
+            {
+                MessageBox.Show(
+                    "Aucun mesh sélectionné ou aucune modification (échelle, épaisseur, miroir, rotation, décalage, skin wrap) détectée à figer.",
+                    "Figer et Enregistrer",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            var meshesToBake = new List<LoadedMesh>();
+            foreach (int i in selIndices)
+            {
+                if (i >= 0 && i < _loadedMeshes.Count && !meshesToBake.Contains(_loadedMeshes[i]))
+                    meshesToBake.Add(_loadedMeshes[i]);
+            }
+
+            if (meshesToBake.Count == 0) return;
+
+            string names = string.Join(", ", meshesToBake.ConvertAll(m => m.Name));
+            var dr = MessageBox.Show(
+                $"Voulez-vous figer définitivement les modifications (échelle, épaisseur, miroir, placement) et les enregistrer pour :\n\n{names}\n\nLes modifications seront écrites sur le disque afin d'être conservées lors du rechargement du modèle.",
+                "Confirmer la sauvegarde définitive",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (dr != DialogResult.Yes) return;
+
+            // Group meshes by their target .char file path
+            var pathGroups = new Dictionary<string, List<LoadedMesh>>(StringComparer.OrdinalIgnoreCase);
+            string customDir = Path.Combine(BasePath, "Meshs custom");
+            if (!Directory.Exists(customDir)) Directory.CreateDirectory(customDir);
+
+            foreach (var lm in meshesToBake)
+            {
+                string targetPath = lm.SourcePath;
+                if (string.IsNullOrEmpty(targetPath) || !targetPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+                {
+                    // If current model is a .char, try that
+                    if (!string.IsNullOrEmpty(_currentModelPath) && _currentModelPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+                    {
+                        targetPath = _currentModelPath;
+                    }
+                    else
+                    {
+                        string baseName = !string.IsNullOrEmpty(lm.SourcePath)
+                            ? Path.GetFileNameWithoutExtension(lm.SourcePath)
+                            : lm.Name;
+                        string safeName = MakeSafeFilename(baseName);
+                        targetPath = Path.Combine(customDir, safeName + GrannyModelFile.Extension);
+                    }
+                }
+
+                if (!pathGroups.TryGetValue(targetPath, out var list))
+                {
+                    list = new List<LoadedMesh>();
+                    pathGroups[targetPath] = list;
+                }
+                list.Add(lm);
+            }
+
+            int savedFilesCount = 0;
+            int bakedMeshesCount = 0;
+
+            foreach (var kvp in pathGroups)
+            {
+                string charPath = kvp.Key;
+                var groupMeshes = kvp.Value;
+
+                // 1. Bake each mesh geometry
+                foreach (var lm in groupMeshes)
+                {
+                    BakeMeshGeometry(lm);
+                    bakedMeshesCount++;
+                }
+
+                // 2. Load or create the GrannyModelFile
+                GrannyModelFile model = null;
+                if (File.Exists(charPath))
+                {
+                    model = GrannyModelFile.Load(charPath);
+                }
+
+                if (model == null)
+                {
+                    model = new GrannyModelFile
+                    {
+                        Name = Path.GetFileNameWithoutExtension(charPath),
+                        Bones = (groupMeshes[0].Bones != null) ? new List<GrannyBone>(groupMeshes[0].Bones) : new List<GrannyBone>()
+                    };
+                }
+
+                // 3. Update or add parts
+                foreach (var lm in groupMeshes)
+                {
+                    var part = model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                    if (part == null && model.Parts.Count == 1 && groupMeshes.Count == 1)
+                    {
+                        part = model.Parts[0];
+                    }
+
+                    if (part == null)
+                    {
+                        part = new GrannyModelPart
+                        {
+                            Name = lm.Name,
+                            Color = lm.MeshColor,
+                            TextureName = lm.TextureName ?? string.Empty
+                        };
+                        if (lm.SourceMesh?.UVs != null && lm.SourceMesh.UVs.Count > 0)
+                            part.UVs = lm.SourceMesh.UVs.ToArray();
+                        model.Parts.Add(part);
+                    }
+
+                    // Copy vertices, normals, indices
+                    part.Vertices = (Vector3[])lm.BaseVertices.Clone();
+                    part.Indices = (int[])lm.Indices.Clone();
+                    part.Normals = (lm.BaseVertexNormals != null && lm.BaseVertexNormals.Length == lm.BaseVertices.Length)
+                        ? (Vector3[])lm.BaseVertexNormals.Clone()
+                        : Array.Empty<Vector3>();
+
+                    if (lm.WrapSkin != null && lm.WrapSkin.Length == lm.BaseVertices.Length)
+                    {
+                        part.Skin = lm.WrapSkin;
+                        lm.Skin = lm.WrapSkin;
+                        lm.WrapSkin = null;
+                        lm.WrapSource = null;
+                    }
+                    else if (lm.Skin != null)
+                    {
+                        part.Skin = lm.Skin;
+                    }
+
+                    if (!string.IsNullOrEmpty(lm.TextureName) && string.IsNullOrEmpty(part.TextureName))
+                    {
+                        part.TextureName = lm.TextureName;
+                    }
+
+                    lm.SourcePath = charPath;
+                }
+
+                // 4. Save to disk
+                if (GrannyModelFile.Save(model, charPath))
+                {
+                    savedFilesCount++;
+                    Log($"Mesh(es) figés et sauvegardés dans {charPath}");
+                }
+                else
+                {
+                    Log($"Erreur lors de la sauvegarde de {charPath}");
+                }
+            }
+
+            // Refresh UI and GL
+            _suppressEquip = true;
+            try
+            {
+                LoadEquipControlsFromMesh();
+            }
+            finally { _suppressEquip = false; }
+
+            ApplyAnimationPose(_currentTime);
+            RefreshVertexBuffers(true);
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+
+            RefreshLoadedList();
+            RestoreModelsTree();
+
+            MessageBox.Show(
+                $"Opération terminée avec succès !\n\n• {bakedMeshesCount} mesh(es) figé(s)\n• Sauvegardé(s) dans {savedFilesCount} fichier(s) .char\n\nLes modifications sont désormais intégrées au modèle et seront rechargées telles quelles depuis l'arbre des modèles.",
+                "Modifications enregistrées",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+
+        // Attach all meshes currently selected or checked in the treeview to the chosen bone
+        // (or detach if already attached to that bone). An attached mesh rides the bone and follows
         // the current animation.
         private void AttachSelectedMeshToBone()
         {
             try
             {
-                int i = lstLoaded?.SelectedIndex ?? -1;
-                if (i < 0 || i >= _loadedMeshes.Count) { Log("Attach: no mesh selected"); return; }
-                var lm = _loadedMeshes[i];
-                string bone = cbBones?.Text?.Trim();
-                if (string.IsNullOrEmpty(bone)) { Log("Attach: no bone chosen"); return; }
-
-                // A skinned mesh (armor sleeves, hair, body parts) is already bound to
-                // the whole skeleton and follows the animation; forcing a single-bone
-                // attach would tear it. Refuse politely.
-                if (lm.Skin != null && lm.Skin.Length > 0)
+                var idxs = GetSelectedMeshIndices();
+                if (idxs.Count == 0)
                 {
-                    Log($"Attach ignored: {lm.Name} is skinned (already follows the body)");
-                    if (lblModelInfo != null) lblModelInfo.Text = "Mesh skinné : suit déjà le squelette";
+                    Log("Attach: aucun mesh sélectionné.");
+                    MessageBox.Show("Veuillez sélectionner ou cocher au moins un mesh à attacher.", "Attacher à l'os", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
 
-                if (string.Equals(lm.AttachBoneName, bone, StringComparison.OrdinalIgnoreCase))
+                string bone = cbBones?.Text?.Trim();
+                bool isDetached = string.IsNullOrEmpty(bone) || string.Equals(bone, "(non attaché)", StringComparison.OrdinalIgnoreCase);
+                if (isDetached)
                 {
-                    lm.AttachBoneName = null;
-                    lm.HasAttachMatrix = false;
-                    Log($"Detached {lm.Name}");
+                    foreach (var i in idxs)
+                    {
+                        var lm = _loadedMeshes[i];
+                        lm.AttachBoneName = null;
+                        lm.HasAttachMatrix = false;
+                        lm.AttachMatrix = Matrix4.Identity;
+                        Log($"Détaché : {lm.Name}");
+                    }
+                    RefreshLoadedList();
+                    LoadEquipControlsFromMesh();
+                    ApplyAnimationPose(_currentTime);
+                    RefreshVertexBuffers(true);
+                    if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+                    return;
                 }
-                else
+
+                // Check if all selected meshes are already attached to this bone (then toggle detach)
+                bool allAttachedToThis = true;
+                foreach (var i in idxs)
                 {
-                    lm.AttachBoneName = bone;
-                    Log($"Attached {lm.Name} -> {bone}");
+                    if (!string.Equals(_loadedMeshes[i].AttachBoneName, bone, StringComparison.OrdinalIgnoreCase))
+                    {
+                        allAttachedToThis = false;
+                        break;
+                    }
+                }
+
+                foreach (var i in idxs)
+                {
+                    var lm = _loadedMeshes[i];
+                    if (allAttachedToThis)
+                    {
+                        lm.AttachBoneName = null;
+                        lm.HasAttachMatrix = false;
+                        lm.AttachMatrix = Matrix4.Identity;
+                        Log($"Détaché : {lm.Name}");
+                    }
+                    else
+                    {
+                        lm.AttachBoneName = bone;
+                        lm.AttachInBindSpace = false;
+                        lm.CutoutRole = MeshCutoutRole.Accessory;
+                        Log($"Attaché : {lm.Name} -> {bone}");
+                    }
                 }
 
                 RefreshLoadedList();
@@ -4631,7 +5585,15 @@ namespace UoFiddler.Plugin.Granny3D
                 // ApplyAnimationPose also handles the no-animation (bind) case, so the
                 // attach is visible immediately.
                 ApplyAnimationPose(_currentTime);
+                RefreshVertexBuffers(true);
                 if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+
+                if (lblModelInfo != null)
+                {
+                    lblModelInfo.Text = allAttachedToThis
+                        ? $"{idxs.Count} mesh(es) détaché(s)"
+                        : $"{idxs.Count} mesh(es) attaché(s) à {bone}";
+                }
             }
             catch (Exception ex)
             {
@@ -4639,30 +5601,48 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
-        // Retire un mesh de l'affichage (double-clic dans la liste des meshes).
+        // Retire un ou plusieurs meshes de l'affichage.
         private void RemoveMeshAt(int index)
         {
-            if (index < 0 || index >= _loadedMeshes.Count) return;
+            RemoveMeshesAt(new[] { index });
+        }
+
+        private void RemoveMeshesAt(IEnumerable<int> indices)
+        {
+            var set = new HashSet<int>(indices);
+            var sorted = new List<int>();
+            foreach (int i in set)
+            {
+                if (i >= 0 && i < _loadedMeshes.Count)
+                    sorted.Add(i);
+            }
+            sorted.Sort();
+            sorted.Reverse();
+            if (sorted.Count == 0) return;
             if (glControl == null || !glControl.IsHandleCreated) return;
             glControl.MakeCurrent();
-            var lm = _loadedMeshes[index];
-            DestroyMesh(lm);
-            // Any mesh wrapped to this one loses its borrowed weights.
-            for (int k = 0; k < _loadedMeshes.Count; k++)
+
+            foreach (int index in sorted)
             {
-                if (k == index) continue;
-                if (_loadedMeshes[k].WrapSource == lm)
+                var lm = _loadedMeshes[index];
+                DestroyMesh(lm);
+                for (int k = 0; k < _loadedMeshes.Count; k++)
                 {
-                    _loadedMeshes[k].WrapSource = null;
-                    _loadedMeshes[k].WrapSkin = null;
+                    if (k == index) continue;
+                    if (_loadedMeshes[k].WrapSource == lm)
+                    {
+                        _loadedMeshes[k].WrapSource = null;
+                        _loadedMeshes[k].WrapSkin = null;
+                    }
                 }
+                if (!string.IsNullOrEmpty(lm.SourcePath)) _sceneExtras.Remove(lm.SourcePath);
+                _loadedMeshes.RemoveAt(index);
             }
-            if (!string.IsNullOrEmpty(lm.SourcePath)) _sceneExtras.Remove(lm.SourcePath);
-            _loadedMeshes.RemoveAt(index);
+
             RefreshLoadedList();
             UpdateModelInfo();
             glControl.Invalidate();
-            Log($"RemoveMeshAt index={index} -> remaining={_loadedMeshes.Count}");
+            Log($"RemoveMeshesAt count={sorted.Count} -> remaining={_loadedMeshes.Count}");
         }
 
         private int TryLoadTexture(string modelPath, string embeddedName = null)
@@ -4907,8 +5887,8 @@ namespace UoFiddler.Plugin.Granny3D
         private void LstLoadedMenu_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
             lstLoadedMenu.Items.Clear();
-            int idx = lstLoaded.SelectedIndex;
-            if (idx < 0 || idx >= _loadedMeshes.Count)
+            var idxs = GetSelectedMeshIndices();
+            if (idxs.Count == 0)
             {
                 var applyMixamoFallback = new ToolStripMenuItem("⚡ Convert/create rig to UO (Adapter au squelette UO Biped)...", null, (s, a) =>
                 {
@@ -4922,22 +5902,35 @@ namespace UoFiddler.Plugin.Granny3D
                 lstLoadedMenu.Items.Add("Importer un mesh...", null, BtnImportMesh_Click);
                 return;
             }
-            var lm = _loadedMeshes[idx];
 
-            var headerItem = new ToolStripMenuItem($"Mesh : {lm.Name}") { Enabled = false };
+            int firstIdx = idxs[0];
+            var lm = _loadedMeshes[firstIdx];
+            string title = idxs.Count > 1
+                ? (tvLoaded?.SelectedNode?.Tag is List<int> ? tvLoaded.SelectedNode.Text : $"{idxs.Count} meshes sélectionnés")
+                : $"Mesh : {lm.Name}";
+
+            var headerItem = new ToolStripMenuItem(title) { Enabled = false };
             lstLoadedMenu.Items.Add(headerItem);
+            lstLoadedMenu.Items.Add(new ToolStripSeparator());
+
+            var bakeMenuItem = new ToolStripMenuItem("💾 Figer & Enregistrer les modifications du mesh...", null, (s, a) =>
+            {
+                BakeAndSaveSelectedMesh();
+            });
+            bakeMenuItem.Font = new Font(lstLoadedMenu.Font, FontStyle.Bold);
+            lstLoadedMenu.Items.Add(bakeMenuItem);
             lstLoadedMenu.Items.Add(new ToolStripSeparator());
 
             lstLoadedMenu.Items.Add("Assigner une texture...", null, (s, a) =>
             {
-                AssignTextureToLoadedMesh(lm);
+                foreach (int i in idxs) AssignTextureToLoadedMesh(_loadedMeshes[i]);
             });
 
             if (lm.HasTexture && lm.TextureId > 0)
             {
                 lstLoadedMenu.Items.Add("Retirer la texture", null, (s, a) =>
                 {
-                    RemoveTextureFromLoadedMesh(lm);
+                    foreach (int i in idxs) RemoveTextureFromLoadedMesh(_loadedMeshes[i]);
                 });
             }
 
@@ -4959,9 +5952,10 @@ namespace UoFiddler.Plugin.Granny3D
             applyMixamoLoaded.Font = new Font(lstLoadedMenu.Font, FontStyle.Bold);
             lstLoadedMenu.Items.Add(applyMixamoLoaded);
 
-            lstLoadedMenu.Items.Add("Retirer ce mesh de la scène", null, (s, a) =>
+            string removeText = idxs.Count > 1 ? $"Retirer ces {idxs.Count} meshes de la scène" : "Retirer ce mesh de la scène";
+            lstLoadedMenu.Items.Add(removeText, null, (s, a) =>
             {
-                RemoveMeshAt(idx);
+                RemoveMeshesAt(idxs);
             });
         }
 
@@ -5584,7 +6578,7 @@ namespace UoFiddler.Plugin.Granny3D
                 // origin, no skin) -> place with the bone's world matrix.
                 // Unskinned accessories in bind space (e.g. Dawn_Girl's sword)
                 // also use the skin matrix.
-                bool inBodySpace = lm.AttachInBindSpace || (lm.Skin != null && lm.Skin.Length > 0);
+                bool inBodySpace = lm.AttachInBindSpace;
                 if (inBodySpace && bestBi < bestHost.SkinMatrices.Length)
                     lm.AttachMatrix = bestHost.SkinMatrices[bestBi];
                 else if (bestHost.WorldMatrices != null && bestBi < bestHost.WorldMatrices.Length)
@@ -5820,7 +6814,8 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void SetClothSelected(bool on)
         {
-            int i = lstLoaded?.SelectedIndex ?? -1;
+            var idxs = GetSelectedMeshIndices();
+            int i = idxs.Count > 0 ? idxs[0] : -1;
             if (i < 0 || i >= _loadedMeshes.Count)
             {
                 if (on) Log("Tissu : aucun mesh sélectionné.");
@@ -6235,8 +7230,11 @@ namespace UoFiddler.Plugin.Granny3D
                         MathHelper.DegreesToRadians(lm.AttachRotation.Z)))
                     : Matrix4.Identity;
 
-                Vector3 scalePivot = lm.HasBindCentroid ? lm.BindCentroid : Vector3.Zero;
-                Vector3 rotPivot = (lm.CutoutRole == MeshCutoutRole.Accessory) ? scalePivot : Vector3.Zero;
+                bool isMultiPart = !string.IsNullOrEmpty(lm.SourcePath) &&
+                    _loadedMeshes.Exists(m => !ReferenceEquals(m, lm) && string.Equals(m.SourcePath, lm.SourcePath, StringComparison.OrdinalIgnoreCase));
+                bool isClothingOrBody = lm.CutoutRole != MeshCutoutRole.Accessory || lm.Skin != null || lm.WrapSource != null || IsClothingOrSkinned(lm);
+                Vector3 scalePivot = (isMultiPart || !lm.HasBindCentroid) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : lm.BindCentroid);
+                Vector3 rotPivot = (isMultiPart || lm.CutoutRole != MeshCutoutRole.Accessory) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : scalePivot);
 
                 if (cloth)
                 {
