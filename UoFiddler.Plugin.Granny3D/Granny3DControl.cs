@@ -69,8 +69,12 @@ namespace UoFiddler.Plugin.Granny3D
         // Manual placement tweak applied (in the item's own space) before the bone
         // transform: mirror axes, rotation in degrees (X,Y,Z) and an offset.
         public bool MirrorX, MirrorY, MirrorZ;
+        public bool MirrorArms; // Bilateral mirrored rotation/offset for arms/gloves/bracers
         public Vector3 AttachRotation;  // degrees
         public Vector3 AttachOffset;    // world units
+        public Vector3 CentroidLeft;
+        public Vector3 CentroidRight;
+        public bool HasBilateralCentroids;
 
         // Multipart character slot this mesh belongs to ("face", "hair", "beard",
         // "torso", "head", ...). When a slot is replaced, all meshes sharing it are
@@ -319,6 +323,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblAnimHeader;
         private TextBox txtAnimFilter;
         private TreeView tvAnims;
+        private Button btnTPose;
         private Button btnImportAnim;
         private Button btnImportMesh;
         private Button btnImportModel;
@@ -356,9 +361,9 @@ namespace UoFiddler.Plugin.Granny3D
         // UI - equipment placement controller
         private GroupBox grpEquip;
         private Label lblEquipTarget;
-        private CheckBox cbMirrorX, cbMirrorY, cbMirrorZ;
+        private CheckBox cbMirrorX, cbMirrorY, cbMirrorZ, cbMirrorArms;
         private NumericUpDown nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, nudClothGrav;
-        private Button btnEquipReset, btnSkinWrap, btnSubdiv, btnClothBake, btnBakeModifs;
+        private Button btnEquipReset, btnDuplicateMirror, btnSkinWrap, btnSubdiv, btnClothBake, btnBakeModifs;
         private CheckBox chkCloth;
         private NumericUpDown nudBakeFps, nudLoopBlend;
         private bool _suppressEquip;
@@ -554,17 +559,30 @@ namespace UoFiddler.Plugin.Granny3D
             tvAnims.AfterSelect += TvAnims_AfterSelect;
             tvAnims.BeforeExpand += TvAnims_BeforeExpand;
 
-            var pnlAnimTools = new Panel { Dock = DockStyle.Bottom, Height = 28 };
+            var pnlAnimTools = new Panel { Dock = DockStyle.Bottom, Height = 58 };
+            btnTPose = new Button
+            {
+                Text = "T-Pose",
+                Dock = DockStyle.Top,
+                Height = 28,
+                BackColor = Color.FromArgb(48, 48, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnTPose.Click += BtnTPose_Click;
+
             btnImportAnim = new Button
             {
                 Text = "Importer un FBX Mixamo…",
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Bottom,
+                Height = 28,
                 BackColor = Color.FromArgb(48, 48, 48),
                 ForeColor = Color.Gainsboro,
                 FlatStyle = FlatStyle.Flat
             };
             btnImportAnim.Click += BtnImportAnim_Click;
             pnlAnimTools.Controls.Add(btnImportAnim);
+            pnlAnimTools.Controls.Add(btnTPose);
 
             grpAnimations.Controls.Add(tvAnims);
             grpAnimations.Controls.Add(pnlAnimTools);
@@ -951,6 +969,17 @@ namespace UoFiddler.Plugin.Granny3D
             cbMirrorY.CheckedChanged += (s, e) => ApplyEquipControls();
             cbMirrorZ.CheckedChanged += (s, e) => ApplyEquipControls();
 
+            cbMirrorArms = new CheckBox
+            {
+                Text = "Miroir sagittal D/G (Gants/Bras)",
+                Location = new Point(206, 64),
+                Width = 220,
+                ForeColor = Color.LightSkyBlue,
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold)
+            };
+            cbMirrorArms.CheckedChanged += (s, e) => ApplyEquipControls();
+            grpEquip.Controls.Add(cbMirrorArms);
+
             grpEquip.Controls.Add(new Label { Text = "Rotation (°)", Location = new Point(8, 92), Width = 90, ForeColor = Color.Gainsboro });
             grpEquip.Controls.Add(new Label { Text = "Décalage", Location = new Point(240, 92), Width = 90, ForeColor = Color.Gainsboro });
 
@@ -1004,9 +1033,13 @@ namespace UoFiddler.Plugin.Granny3D
             btnSkinWrap.Click += (s, e) => SkinWrapSelected();
             grpEquip.Controls.Add(btnSkinWrap);
 
-            btnEquipReset = new Button { Text = "Réinitialiser le placement", Location = new Point(30, 342), Width = 250, Height = 24, BackColor = Color.FromArgb(60, 60, 62), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            btnEquipReset = new Button { Text = "Réinitialiser", Location = new Point(30, 342), Width = 115, Height = 24, BackColor = Color.FromArgb(60, 60, 62), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
             btnEquipReset.Click += (s, e) => ResetEquipControls();
             grpEquip.Controls.Add(btnEquipReset);
+
+            btnDuplicateMirror = new Button { Text = "Dupliquer en miroir (D ↔ G)", Location = new Point(150, 342), Width = 195, Height = 24, BackColor = Color.FromArgb(50, 75, 100), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            btnDuplicateMirror.Click += (s, e) => DuplicateMirrorSelectedMesh();
+            grpEquip.Controls.Add(btnDuplicateMirror);
 
             btnSubdiv = new Button { Text = "Subdiviser (1 → 4)  [plus de verts]", Location = new Point(30, 372), Width = 250, Height = 24, BackColor = Color.FromArgb(60, 70, 60), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
             btnSubdiv.Click += (s, e) => SubdivideSelectedMesh();
@@ -1053,7 +1086,7 @@ namespace UoFiddler.Plugin.Granny3D
             btnBakeModifs.Click += (s, e) => BakeAndSaveSelectedMesh();
             grpEquip.Controls.Add(btnBakeModifs);
 
-            grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnSubdiv, nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole, btnBakeModifs });
+            grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, cbMirrorArms, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnDuplicateMirror, btnSubdiv, nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole, btnBakeModifs });
 
             // ---- Multipart character menu (H_Male / H_Female parts) ----
             grpChar = new GroupBox
@@ -3237,6 +3270,57 @@ namespace UoFiddler.Plugin.Granny3D
                 PlayAnimationFile(path);
         }
 
+        private void BtnTPose_Click(object sender, EventArgs e)
+        {
+            ResetToTPose();
+        }
+
+        public void ResetToTPose()
+        {
+            _playing = false;
+            _currentAnimation = null;
+            _currentAnimPath = null;
+            _animParser = null;
+            _currentTime = 0f;
+
+            if (lblAnimHeader != null)
+                lblAnimHeader.Text = "T-Pose (Rest Pose)";
+
+            if (trackTime != null)
+            {
+                trackTime.Value = 0;
+                trackTime.Maximum = 1;
+            }
+            if (lblTime != null) lblTime.Text = "Time: 0.00s";
+            if (lblDuration != null) lblDuration.Text = "/ 0.00s";
+
+            if (btnPlay != null) btnPlay.Enabled = false;
+            if (btnPause != null) btnPause.Enabled = false;
+            if (btnStop != null) btnStop.Enabled = false;
+
+            if (tvAnims != null)
+            {
+                _suppressAnimSelect = true;
+                try { tvAnims.SelectedNode = null; }
+                finally { _suppressAnimSelect = false; }
+            }
+
+            foreach (var lm in _loadedMeshes)
+            {
+                lm.BoneToAnimTrack = null;
+                lm.AnimOverride = null;
+                lm.AnimOverrideTrack = null;
+                ClearClothBake(lm);
+            }
+
+            ApplyAnimationPose(0f);
+            ResetAllCloth();
+            RefreshVertexBuffers(true);
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            UpdateModelInfo();
+            Log("Pose : T-Pose rétablie (Rest Pose).");
+        }
+
         // Import a Mixamo FBX: retarget it onto the UO Biped skeleton, write a
         // standalone ".anim" clip into the "Others" folder, then play it.
         private void BtnImportAnim_Click(object sender, EventArgs e)
@@ -4090,9 +4174,45 @@ namespace UoFiddler.Plugin.Granny3D
             if (lm.BaseVertices != null && lm.BaseVertices.Length > 0)
             {
                 Vector3 c = Vector3.Zero;
-                foreach (var v in lm.BaseVertices) c += v;
+                Vector3 cL = Vector3.Zero;
+                Vector3 cR = Vector3.Zero;
+                int countL = 0;
+                int countR = 0;
+
+                foreach (var v in lm.BaseVertices)
+                {
+                    c += v;
+                    if (v.X > 0.02f) { cL += v; countL++; }
+                    else if (v.X < -0.02f) { cR += v; countR++; }
+                }
+
                 lm.BindCentroid = c / lm.BaseVertices.Length;
                 lm.HasBindCentroid = true;
+
+                if (countL > 0 && countR > 0)
+                {
+                    lm.CentroidLeft = cL / countL;
+                    lm.CentroidRight = cR / countR;
+                    lm.HasBilateralCentroids = true;
+                }
+                else
+                {
+                    lm.CentroidLeft = lm.BindCentroid;
+                    lm.CentroidRight = lm.BindCentroid;
+                    lm.HasBilateralCentroids = false;
+                }
+
+                if (lm.HasBilateralCentroids && !lm.MirrorArms)
+                {
+                    string fn = ((lm.Name ?? "") + " " + (lm.SourcePath ?? "")).ToLowerInvariant();
+                    if (fn.Contains("glove") || fn.Contains("gant") || fn.Contains("brassard") ||
+                        fn.Contains("bracer") || fn.Contains("sleeve") || fn.Contains("arm") ||
+                        fn.Contains("hand") || fn.Contains("main") || fn.Contains("wrist") ||
+                        fn.Contains("shoulder") || fn.Contains("epaul") || fn.Contains("cuff"))
+                    {
+                        lm.MirrorArms = true;
+                    }
+                }
             }
 
             // Per-vertex rest normals: area-weighted average of adjacent face normals.
@@ -4632,6 +4752,7 @@ namespace UoFiddler.Plugin.Granny3D
             lm.MirrorX = cbMirrorX.Checked;
             lm.MirrorY = cbMirrorY.Checked;
             lm.MirrorZ = cbMirrorZ.Checked;
+            lm.MirrorArms = cbMirrorArms != null && cbMirrorArms.Checked;
             lm.AttachRotation = new Vector3((float)nudRotX.Value, (float)nudRotY.Value, (float)nudRotZ.Value);
             lm.AttachOffset = new Vector3((float)nudOffX.Value, (float)nudOffY.Value, (float)nudOffZ.Value);
             lm.PartScale = nudScale != null ? (float)nudScale.Value : 1f;
@@ -4660,6 +4781,7 @@ namespace UoFiddler.Plugin.Granny3D
             try
             {
                 cbMirrorX.Checked = cbMirrorY.Checked = cbMirrorZ.Checked = false;
+                if (cbMirrorArms != null) cbMirrorArms.Checked = false;
                 nudRotX.Value = nudRotY.Value = nudRotZ.Value = 0;
                 nudOffX.Value = nudOffY.Value = nudOffZ.Value = 0;
                 if (nudScale != null) nudScale.Value = 1m;
@@ -4670,6 +4792,102 @@ namespace UoFiddler.Plugin.Granny3D
             }
             finally { _suppressEquip = false; }
             ApplyEquipControls();
+        }
+
+        private void DuplicateMirrorSelectedMesh()
+        {
+            var idxs = GetSelectedMeshIndices();
+            if (idxs.Count == 0)
+            {
+                MessageBox.Show("Sélectionnez d'abord un mesh à dupliquer en miroir.", "Dupliquer en miroir", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            int addedCount = 0;
+            foreach (int idx in idxs)
+            {
+                if (idx < 0 || idx >= _loadedMeshes.Count) continue;
+                var src = _loadedMeshes[idx];
+                if (src.BaseVertices == null || src.BaseVertices.Length == 0) continue;
+
+                var clone = new LoadedMesh
+                {
+                    Name = $"{src.Name} (Miroir)",
+                    SourcePath = src.SourcePath,
+                    SourceMesh = src.SourceMesh,
+                    Bones = src.Bones != null ? new List<GrannyBone>(src.Bones) : new List<GrannyBone>(),
+                    BaseVertices = new Vector3[src.BaseVertices.Length],
+                    Indices = src.Indices != null ? (int[])src.Indices.Clone() : Array.Empty<int>(),
+                    Skin = src.Skin != null ? (VertexInfluence[][])src.Skin.Clone() : null,
+                    CutoutRole = src.CutoutRole,
+                    TextureId = src.TextureId,
+                    HasTexture = src.HasTexture,
+                    PartScale = src.PartScale,
+                    PartScaleVec = src.PartScaleVec,
+                    Thickness = src.Thickness,
+                    MirrorX = false,
+                    MirrorY = src.MirrorY,
+                    MirrorZ = src.MirrorZ,
+                    AttachRotation = new Vector3(src.AttachRotation.X, -src.AttachRotation.Y, -src.AttachRotation.Z),
+                    AttachOffset = new Vector3(-src.AttachOffset.X, src.AttachOffset.Y, src.AttachOffset.Z),
+                    AttachInBindSpace = src.AttachInBindSpace
+                };
+
+                // Mirror base vertices across sagittal plane X=0
+                for (int v = 0; v < src.BaseVertices.Length; v++)
+                {
+                    var p = src.BaseVertices[v];
+                    clone.BaseVertices[v] = new Vector3(-p.X, p.Y, p.Z);
+                }
+
+                // Invert triangle winding so face normals point outward
+                if (clone.Indices != null)
+                {
+                    for (int t = 0; t + 2 < clone.Indices.Length; t += 3)
+                    {
+                        int tmp = clone.Indices[t + 1];
+                        clone.Indices[t + 1] = clone.Indices[t + 2];
+                        clone.Indices[t + 2] = tmp;
+                    }
+                }
+
+                // Switch bone attach name if right/left
+                if (!string.IsNullOrEmpty(src.AttachBoneName))
+                {
+                    string b = src.AttachBoneName;
+                    if (b.IndexOf(" R ", StringComparison.OrdinalIgnoreCase) >= 0)
+                        b = System.Text.RegularExpressions.Regex.Replace(b, @"\b[Rr]\b", "L");
+                    else if (b.IndexOf("_R", StringComparison.OrdinalIgnoreCase) >= 0)
+                        b = System.Text.RegularExpressions.Regex.Replace(b, @"_[Rr]\b", "_L");
+                    else if (b.IndexOf("Rhand", StringComparison.OrdinalIgnoreCase) >= 0)
+                        b = System.Text.RegularExpressions.Regex.Replace(b, @"[Rr]hand", "Lhand");
+                    else if (b.IndexOf("Right", StringComparison.OrdinalIgnoreCase) >= 0)
+                        b = System.Text.RegularExpressions.Regex.Replace(b, @"Right", "Left");
+                    else if (b.IndexOf(" L ", StringComparison.OrdinalIgnoreCase) >= 0)
+                        b = System.Text.RegularExpressions.Regex.Replace(b, @"\b[Ll]\b", "R");
+                    else if (b.IndexOf("_L", StringComparison.OrdinalIgnoreCase) >= 0)
+                        b = System.Text.RegularExpressions.Regex.Replace(b, @"_[Ll]\b", "_R");
+                    else if (b.IndexOf("Lhand", StringComparison.OrdinalIgnoreCase) >= 0)
+                        b = System.Text.RegularExpressions.Regex.Replace(b, @"[Ll]hand", "Rhand");
+                    else if (b.IndexOf("Left", StringComparison.OrdinalIgnoreCase) >= 0)
+                        b = System.Text.RegularExpressions.Regex.Replace(b, @"Left", "Right");
+
+                    clone.AttachBoneName = b;
+                }
+
+                BuildCornerData(clone);
+                SetupMeshVBO(clone);
+                _loadedMeshes.Add(clone);
+                addedCount++;
+                Log($"Mesh dupliqué en miroir : '{src.Name}' -> '{clone.Name}'");
+            }
+
+            if (addedCount > 0)
+            {
+                RefreshLoadedList();
+                RefreshVertexBuffers(true);
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            }
         }
 
         // Reflect the selected mesh's stored placement tweak in the controller widgets.
@@ -4704,6 +4922,7 @@ namespace UoFiddler.Plugin.Granny3D
                 cbMirrorX.Checked = ok && lm.MirrorX;
                 cbMirrorY.Checked = ok && lm.MirrorY;
                 cbMirrorZ.Checked = ok && lm.MirrorZ;
+                if (cbMirrorArms != null) cbMirrorArms.Checked = ok && lm.MirrorArms;
                 SetNud(nudRotX, ok ? lm.AttachRotation.X : 0);
                 SetNud(nudRotY, ok ? lm.AttachRotation.Y : 0);
                 SetNud(nudRotZ, ok ? lm.AttachRotation.Z : 0);
@@ -5361,7 +5580,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (m.PartScaleVec.X != 1f || m.PartScaleVec.Y != 1f || m.PartScaleVec.Z != 1f) return true;
             if (m.AttachRotation != Vector3.Zero) return true;
             if (m.AttachOffset != Vector3.Zero) return true;
-            if (m.MirrorX || m.MirrorY || m.MirrorZ) return true;
+            if (m.MirrorX || m.MirrorY || m.MirrorZ || m.MirrorArms) return true;
             if (m.WrapSkin != null) return true;
             return false;
         }
@@ -5384,9 +5603,9 @@ namespace UoFiddler.Plugin.Granny3D
             bool hasOffset = lm.AttachOffset != Vector3.Zero;
             bool hasThickness = lm.Thickness != 0f && lm.BaseVertexNormals != null;
 
-            if (scaleTweaked || hasRot || hasMirror || hasOffset || hasThickness)
+            if (scaleTweaked || hasRot || hasMirror || hasOffset || hasThickness || lm.MirrorArms)
             {
-                bool isRigidAttached = !string.IsNullOrEmpty(lm.AttachBoneName) || lm.HasAttachMatrix;
+                bool isRigidAttached = (!string.IsNullOrEmpty(lm.AttachBoneName) || lm.HasAttachMatrix) && !lm.MirrorArms;
 
                 if (isRigidAttached)
                 {
@@ -5410,62 +5629,10 @@ namespace UoFiddler.Plugin.Granny3D
                 }
                 else
                 {
-                    Matrix4 rotMat = hasRot
-                        ? Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
-                            MathHelper.DegreesToRadians(lm.AttachRotation.X),
-                            MathHelper.DegreesToRadians(lm.AttachRotation.Y),
-                            MathHelper.DegreesToRadians(lm.AttachRotation.Z)))
-                        : Matrix4.Identity;
-
-                    // If part of a multi-mesh model sharing the same SourcePath, all parts MUST share
-                    // Vector3.Zero as pivot so they scale and rotate together without diverging.
-                    bool isMultiPart = !string.IsNullOrEmpty(lm.SourcePath) &&
-                        _loadedMeshes.Exists(m => !ReferenceEquals(m, lm) && string.Equals(m.SourcePath, lm.SourcePath, StringComparison.OrdinalIgnoreCase));
-                    bool isClothingOrBody = lm.CutoutRole != MeshCutoutRole.Accessory || lm.Skin != null || lm.WrapSource != null || IsClothingOrSkinned(lm);
-
-                    Vector3 scalePivot = (isMultiPart || !lm.HasBindCentroid) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : lm.BindCentroid);
-                    Vector3 rotPivot = (isMultiPart || lm.CutoutRole != MeshCutoutRole.Accessory) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : scalePivot);
-
                     int vcount = lm.BaseVertices.Length;
                     for (int v = 0; v < vcount; v++)
                     {
-                        Vector3 pos = lm.BaseVertices[v];
-
-                        // 1. Scale around scalePivot
-                        if (scaleTweaked)
-                        {
-                            Vector3 r = pos - scalePivot;
-                            r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
-                            pos = scalePivot + r;
-                        }
-
-                        // 2. Thickness along normal
-                        if (hasThickness && v < lm.BaseVertexNormals.Length)
-                        {
-                            Vector3 n = lm.BaseVertexNormals[v];
-                            if (n.LengthSquared > 1e-12f)
-                                pos += Vector3.Normalize(n) * lm.Thickness;
-                        }
-
-                        // 3. Mirror, Rotation, Offset around rotPivot
-                        if (hasMirror || hasRot || hasOffset)
-                        {
-                            Vector3 rRot = pos - rotPivot;
-                            if (hasMirror)
-                            {
-                                rRot = new Vector3(
-                                    rRot.X * (lm.MirrorX ? -1f : 1f),
-                                    rRot.Y * (lm.MirrorY ? -1f : 1f),
-                                    rRot.Z * (lm.MirrorZ ? -1f : 1f));
-                            }
-                            if (hasRot)
-                            {
-                                rRot = Vector3.TransformNormal(rRot, rotMat);
-                            }
-                            pos = rotPivot + rRot + lm.AttachOffset;
-                        }
-
-                        lm.BaseVertices[v] = pos;
+                        lm.BaseVertices[v] = ApplyMeshTweak(lm, lm.BaseVertices[v], hasThickness, (hasThickness && v < lm.BaseVertexNormals.Length) ? lm.BaseVertexNormals[v] : default);
                     }
                 }
 
@@ -5527,7 +5694,7 @@ namespace UoFiddler.Plugin.Granny3D
             lm.Thickness = 0f;
             lm.AttachRotation = Vector3.Zero;
             lm.AttachOffset = Vector3.Zero;
-            lm.MirrorX = lm.MirrorY = lm.MirrorZ = false;
+            lm.MirrorX = lm.MirrorY = lm.MirrorZ = lm.MirrorArms = false;
 
             // If it was a cloth mesh, clear any old bakes
             if (lm.IsCloth)
@@ -6160,6 +6327,7 @@ namespace UoFiddler.Plugin.Granny3D
             });
             bakeMenuItem.Font = new Font(lstLoadedMenu.Font, FontStyle.Bold);
             lstLoadedMenu.Items.Add(bakeMenuItem);
+            lstLoadedMenu.Items.Add("Dupliquer en miroir (D ↔ G)", null, (s, a) => DuplicateMirrorSelectedMesh());
             lstLoadedMenu.Items.Add(new ToolStripSeparator());
 
             lstLoadedMenu.Items.Add("Assigner une texture...", null, (s, a) =>
@@ -6940,18 +7108,27 @@ namespace UoFiddler.Plugin.Granny3D
                 (lm.MirrorY ? -1f : 1f) * ps * (lm.PartScaleVec.Y == 0f ? 1f : lm.PartScaleVec.Y),
                 (lm.MirrorZ ? -1f : 1f) * ps * (lm.PartScaleVec.Z == 0f ? 1f : lm.PartScaleVec.Z));
             Matrix4 scale = Matrix4.CreateScale(s);
+            Vector3 rotAngles = lm.MirrorX
+                ? new Vector3(lm.AttachRotation.X, -lm.AttachRotation.Y, -lm.AttachRotation.Z)
+                : lm.AttachRotation;
+
             Matrix4 rot = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
-                MathHelper.DegreesToRadians(lm.AttachRotation.X),
-                MathHelper.DegreesToRadians(lm.AttachRotation.Y),
-                MathHelper.DegreesToRadians(lm.AttachRotation.Z)));
-            Matrix4 tr = Matrix4.CreateTranslation(lm.AttachOffset);
+                MathHelper.DegreesToRadians(rotAngles.X),
+                MathHelper.DegreesToRadians(rotAngles.Y),
+                MathHelper.DegreesToRadians(rotAngles.Z)));
+
+            Vector3 off = lm.MirrorX
+                ? new Vector3(-lm.AttachOffset.X, lm.AttachOffset.Y, lm.AttachOffset.Z)
+                : lm.AttachOffset;
+
+            Matrix4 tr = Matrix4.CreateTranslation(off);
             // row-vector order: scale, then rotate, then translate
             return scale * rot * tr;
         }
 
         // ---- Real-time cloth simulation (verlet) ----
 
-        private struct ClothCapsule { public Vector3 A, B; public float R; }
+        private struct ClothCapsule { public Vector3 A, B; public float RA, RB; }
 
         private Vector3 ApplyMeshTweak(LoadedMesh lm, Vector3 pos, bool hasThickness = false, Vector3 normal = default)
         {
@@ -6968,7 +7145,7 @@ namespace UoFiddler.Plugin.Granny3D
             bool hasOffset = lm.AttachOffset != Vector3.Zero;
             bool thick = hasThickness && lm.Thickness != 0f && normal != default;
 
-            if (!scaleTweaked && !hasRot && !hasMirror && !hasOffset && !thick)
+            if (!scaleTweaked && !hasRot && !hasMirror && !hasOffset && !thick && !lm.MirrorArms)
                 return pos;
 
             bool isMultiPart = !string.IsNullOrEmpty(lm.SourcePath) &&
@@ -6977,6 +7154,114 @@ namespace UoFiddler.Plugin.Granny3D
             Vector3 scalePivot = (isMultiPart || !lm.HasBindCentroid) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : lm.BindCentroid);
             Vector3 rotPivot = (isMultiPart || lm.CutoutRole != MeshCutoutRole.Accessory) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : scalePivot);
 
+            // =========================================================================
+            // 1. BILATERAL MODE (gloves, bracers, shoulders, sleeves)
+            // Symmetrical sagittal reflection across the character's midline X = 0!
+            // =========================================================================
+            if (lm.MirrorArms)
+            {
+                bool isLeft = pos.X >= 0f;
+
+                // Strict sagittal symmetric pivots across X = 0
+                float armX = lm.HasBilateralCentroids
+                    ? (Math.Abs(lm.CentroidLeft.X) + Math.Abs(lm.CentroidRight.X)) * 0.5f
+                    : Math.Abs(rotPivot.X);
+                if (armX < 0.05f) armX = Math.Abs(pos.X);
+                float armY = lm.HasBilateralCentroids
+                    ? (lm.CentroidLeft.Y + lm.CentroidRight.Y) * 0.5f
+                    : rotPivot.Y;
+                float armZ = lm.HasBilateralCentroids
+                    ? (lm.CentroidLeft.Z + lm.CentroidRight.Z) * 0.5f
+                    : rotPivot.Z;
+
+                Vector3 armPivot = isLeft
+                    ? new Vector3(armX, armY, armZ)
+                    : new Vector3(-armX, armY, armZ);
+
+                Vector3 r = pos - armPivot;
+
+                // 1. Scale around local arm pivot
+                if (scaleTweaked)
+                {
+                    r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
+                }
+
+                // 2. Secondary axis mirrors (Y/Z) if requested
+                if (lm.MirrorY || lm.MirrorZ)
+                {
+                    r = new Vector3(r.X, r.Y * (lm.MirrorY ? -1f : 1f), r.Z * (lm.MirrorZ ? -1f : 1f));
+                }
+
+                // 3. Rotation:
+                // Right side (X < 0) rotates directly with rotMat.
+                // Left side (X >= 0) rotates with EXACT sagittal mirror of rotMat: S * R * S
+                if (hasRot)
+                {
+                    Matrix4 rotMat = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
+                        MathHelper.DegreesToRadians(lm.AttachRotation.X),
+                        MathHelper.DegreesToRadians(lm.AttachRotation.Y),
+                        MathHelper.DegreesToRadians(lm.AttachRotation.Z)));
+
+                    if (!isLeft)
+                    {
+                        r = Vector3.TransformNormal(r, rotMat);
+                    }
+                    else
+                    {
+                        Vector3 rS = new Vector3(-r.X, r.Y, r.Z);
+                        Vector3 rRot = Vector3.TransformNormal(rS, rotMat);
+                        r = new Vector3(-rRot.X, rRot.Y, rRot.Z);
+                    }
+                }
+
+                // 4. Offset (Déplacement):
+                // Symmetrical across sagittal plane X = 0:
+                // Positive AttachOffset.X pushes both arms OUTWARD away from sagittal midline.
+                // Negative AttachOffset.X pulls both arms INWARD towards sagittal midline.
+                Vector3 armOff = isLeft
+                    ? new Vector3(lm.AttachOffset.X, lm.AttachOffset.Y, lm.AttachOffset.Z)
+                    : new Vector3(-lm.AttachOffset.X, lm.AttachOffset.Y, lm.AttachOffset.Z);
+
+                pos = armPivot + r + armOff;
+
+                // 5. Thickness (along normal)
+                if (thick)
+                {
+                    Vector3 dnorm;
+                    if (hasRot)
+                    {
+                        Matrix4 rotMat = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
+                            MathHelper.DegreesToRadians(lm.AttachRotation.X),
+                            MathHelper.DegreesToRadians(lm.AttachRotation.Y),
+                            MathHelper.DegreesToRadians(lm.AttachRotation.Z)));
+
+                        if (!isLeft)
+                        {
+                            dnorm = Vector3.TransformNormal(normal, rotMat);
+                        }
+                        else
+                        {
+                            Vector3 nS = new Vector3(-normal.X, normal.Y, normal.Z);
+                            Vector3 nRot = Vector3.TransformNormal(nS, rotMat);
+                            dnorm = new Vector3(-nRot.X, nRot.Y, nRot.Z);
+                        }
+                    }
+                    else
+                    {
+                        dnorm = isLeft ? new Vector3(-normal.X, normal.Y, normal.Z) : normal;
+                    }
+
+                    if (dnorm.LengthSquared > 1e-12f)
+                        pos += Vector3.Normalize(dnorm) * lm.Thickness;
+                }
+
+                return pos;
+            }
+
+            // =========================================================================
+            // 2. UNILATERAL / STANDARD MODE (Single piece, accessory, weapon, armor)
+            // When MirrorX is checked, mirror across the SAGITTAL MIDLINE X = 0!
+            // =========================================================================
             if (scaleTweaked)
             {
                 Vector3 r = pos - scalePivot;
@@ -6986,35 +7271,75 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (hasMirror || hasRot || hasOffset)
             {
-                Vector3 rRot = pos - rotPivot;
+                // When MirrorX is active, the sagittal mirror plane is X = 0!
+                Vector3 effPivot = lm.MirrorX
+                    ? new Vector3(0, rotPivot.Y, rotPivot.Z)
+                    : rotPivot;
+
+                Vector3 rRot = pos - effPivot;
+
                 if (hasMirror)
+                {
                     rRot = new Vector3(
                         rRot.X * (lm.MirrorX ? -1f : 1f),
                         rRot.Y * (lm.MirrorY ? -1f : 1f),
                         rRot.Z * (lm.MirrorZ ? -1f : 1f));
+                }
+
                 if (hasRot)
                 {
                     Matrix4 rotMat = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
                         MathHelper.DegreesToRadians(lm.AttachRotation.X),
                         MathHelper.DegreesToRadians(lm.AttachRotation.Y),
                         MathHelper.DegreesToRadians(lm.AttachRotation.Z)));
-                    rRot = Vector3.TransformNormal(rRot, rotMat);
+
+                    if (lm.MirrorX)
+                    {
+                        // Sagittal reflection of rotation: S * R * S
+                        Vector3 rS = new Vector3(-rRot.X, rRot.Y, rRot.Z);
+                        Vector3 rRotated = Vector3.TransformNormal(rS, rotMat);
+                        rRot = new Vector3(-rRotated.X, rRotated.Y, rRotated.Z);
+                    }
+                    else
+                    {
+                        rRot = Vector3.TransformNormal(rRot, rotMat);
+                    }
                 }
-                pos = rotPivot + rRot + lm.AttachOffset;
+
+                Vector3 effOffset = lm.MirrorX
+                    ? new Vector3(-lm.AttachOffset.X, lm.AttachOffset.Y, lm.AttachOffset.Z)
+                    : lm.AttachOffset;
+
+                pos = effPivot + rRot + effOffset;
             }
 
             if (thick)
             {
                 Vector3 dnorm = normal;
                 if (hasMirror)
-                    dnorm = new Vector3(dnorm.X * (lm.MirrorX ? -1f : 1f), dnorm.Y * (lm.MirrorY ? -1f : 1f), dnorm.Z * (lm.MirrorZ ? -1f : 1f));
+                {
+                    dnorm = new Vector3(
+                        dnorm.X * (lm.MirrorX ? -1f : 1f),
+                        dnorm.Y * (lm.MirrorY ? -1f : 1f),
+                        dnorm.Z * (lm.MirrorZ ? -1f : 1f));
+                }
                 if (hasRot)
                 {
                     Matrix4 rotMat = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
                         MathHelper.DegreesToRadians(lm.AttachRotation.X),
                         MathHelper.DegreesToRadians(lm.AttachRotation.Y),
                         MathHelper.DegreesToRadians(lm.AttachRotation.Z)));
-                    dnorm = Vector3.TransformNormal(dnorm, rotMat);
+
+                    if (lm.MirrorX)
+                    {
+                        Vector3 nS = new Vector3(-dnorm.X, dnorm.Y, dnorm.Z);
+                        Vector3 nRot = Vector3.TransformNormal(nS, rotMat);
+                        dnorm = new Vector3(-nRot.X, nRot.Y, nRot.Z);
+                    }
+                    else
+                    {
+                        dnorm = Vector3.TransformNormal(dnorm, rotMat);
+                    }
                 }
                 if (dnorm.LengthSquared > 1e-12f)
                     pos += Vector3.Normalize(dnorm) * lm.Thickness;
@@ -7092,50 +7417,50 @@ namespace UoFiddler.Plugin.Granny3D
                 int v = rep[p];
                 bool pin = false;
 
-                if (hasSkin && v >= 0)
-                {
-                    var infs = (lm.WrapSkin != null && v < lm.WrapSkin.Length)
-                        ? lm.WrapSkin[v]
-                        : (lm.Skin != null && v < lm.Skin.Length ? lm.Skin[v] : null);
-                    var boneList = (lm.WrapSkin != null) ? lm.WrapSource.Bones : lm.Bones;
+                // Pinning is strictly restricted to the upper zone!
+                // For a full-body robe/dress (height > 0.8m): upper 55% (waist, torso, chest, shoulders, arms).
+                // The bottom 45% (thighs, knees, calves, hem) MUST NEVER be pinned so the cloth can freely drape and follow collisions.
+                // For a cape/short cloak: top 20%.
+                bool inPinnableZ = height > 0.8f
+                    ? (rest[p].Z >= (minZ + 0.45f * height))
+                    : (rest[p].Z >= (maxZ - 0.20f * height));
 
-                    if (infs != null && infs.Length > 0 && boneList != null)
+                if (inPinnableZ)
+                {
+                    if (hasSkin && v >= 0)
                     {
-                        float upperBodyWeight = 0f;
-                        float legWeight = 0f;
-                        for (int k = 0; k < infs.Length; k++)
+                        var infs = (lm.WrapSkin != null && v < lm.WrapSkin.Length)
+                            ? lm.WrapSkin[v]
+                            : (lm.Skin != null && v < lm.Skin.Length ? lm.Skin[v] : null);
+                        var boneList = (lm.WrapSkin != null) ? lm.WrapSource.Bones : lm.Bones;
+
+                        if (infs != null && infs.Length > 0 && boneList != null)
                         {
-                            int bid = infs[k].BoneId;
-                            if (bid >= 0 && bid < boneList.Count)
+                            float upperBodyWeight = 0f;
+                            float legWeight = 0f;
+                            for (int k = 0; k < infs.Length; k++)
                             {
-                                string bName = boneList[bid].Name;
-                                if (IsUpperBodyBone(bName))
-                                    upperBodyWeight += infs[k].Weight;
-                                else if (IsLegBone(bName))
-                                    legWeight += infs[k].Weight;
+                                int bid = infs[k].BoneId;
+                                if (bid >= 0 && bid < boneList.Count)
+                                {
+                                    string bName = boneList[bid].Name;
+                                    if (IsUpperBodyBone(bName))
+                                        upperBodyWeight += infs[k].Weight;
+                                    else if (IsLegBone(bName))
+                                        legWeight += infs[k].Weight;
+                                }
+                            }
+
+                            // If vertex belongs to upper body (torso, arms, shoulders, neck, head, pelvis), pin it!
+                            if (upperBodyWeight >= 0.35f || legWeight < 0.2f)
+                            {
+                                pin = true;
                             }
                         }
-
-                        // If vertex belongs to upper body (torso, arms, shoulders, neck, head, pelvis), pin it!
-                        if (upperBodyWeight >= 0.35f || legWeight < 0.2f)
-                        {
-                            pin = true;
-                        }
-                    }
-                }
-
-                // If not pinned by bone, or no skin info: pin by relative height (scale-invariant)
-                if (!pin)
-                {
-                    if (height > 0.8f)
-                    {
-                        // Full-body robe/dress: pin upper body / waist (top 55%)
-                        pin = rest[p].Z >= (minZ + 0.45f * height);
                     }
                     else
                     {
-                        // Cape / cloak / short skirt: pin the top 20%
-                        pin = rest[p].Z >= (maxZ - 0.20f * height);
+                        pin = true;
                     }
                 }
 
@@ -7324,6 +7649,7 @@ namespace UoFiddler.Plugin.Granny3D
                 : _loadedMeshes;
 
             var seenSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            float clearance = Math.Max(0.010f, clothMesh != null ? clothMesh.Thickness : 0.010f);
 
             foreach (var m in targetMeshes)
             {
@@ -7339,6 +7665,19 @@ namespace UoFiddler.Plugin.Granny3D
 
                     string bName = m.Bones[i].Name;
                     string pName = m.Bones[p].Name;
+
+                    // Filter out non-bone dummies (Root, master, Skin meshes, attachment points CP_, Nubs)
+                    if (pName.StartsWith("__") || pName.StartsWith("master", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (bName.Contains("Skin") || pName.Contains("Skin")) continue;
+                    if (bName.StartsWith("CP_") || pName.StartsWith("CP_")) continue;
+                    if (bName.Contains("Nub") || pName.Contains("Nub")) continue;
+
+                    // Keep only true limb segments (legs and arms).
+                    // The torso, spine, and pelvis are already pinned to the skeleton,
+                    // so internal diagonal links (like Spine->Thigh) must never create
+                    // giant capsules that flare the dress out like a crinoline hoop!
+                    if (!IsLimbSegment(pName, bName)) continue;
+
                     string segKey = $"{pName}->{bName}";
                     if (!seenSegments.Add(segKey)) continue;
 
@@ -7347,36 +7686,52 @@ namespace UoFiddler.Plugin.Granny3D
                     Vector3 A = new Vector3(wa.M41, wa.M42, wa.M43);
                     Vector3 B = new Vector3(wb.M41, wb.M42, wb.M43);
                     float len = Vector3.Distance(A, B);
-                    if (len < 1e-4f) continue;
-                    float r = Math.Max(CapsuleRadiusFor(bName), CapsuleRadiusFor(pName));
-                    caps.Add(new ClothCapsule { A = A, B = B, R = r });
+                    if (len < 0.05f) continue;
+                    float rA = CapsuleRadiusFor(pName, clearance);
+                    float rB = CapsuleRadiusFor(bName, clearance);
+                    caps.Add(new ClothCapsule { A = A, B = B, RA = rA, RB = rB });
                 }
             }
             return caps;
         }
 
-        // Body-envelope radius per bone to keep cloth smoothly outside limbs.
-        private static float CapsuleRadiusFor(string boneName)
+        private static bool IsLimbSegment(string pName, string bName)
         {
-            if (string.IsNullOrEmpty(boneName)) return 0.10f;
-            string s = boneName.ToLowerInvariant();
-            if (s.Contains("thigh")) return 0.14f;
-            if (s.Contains("calf") || s.Contains("knee") || s.Contains("shin")) return 0.12f;
-            if (s.Contains("foot") || s.Contains("toe")) return 0.09f;
-            if (s.Contains("pelvis") || s.Contains("hip")) return 0.16f;
-            if (s.Contains("spine")) return 0.14f;
-            if (s.Contains("neck")) return 0.10f;
-            if (s.Contains("head")) return 0.12f;
-            if (s.Contains("upperarm")) return 0.10f;
-            if (s.Contains("forearm") || s.Contains("clavicle")) return 0.09f;
-            if (s.Contains("hand") || s.Contains("finger")) return 0.07f;
-            return 0.10f;
+            if (string.IsNullOrEmpty(pName) || string.IsNullOrEmpty(bName)) return false;
+            string p = pName.ToLowerInvariant();
+            string b = bName.ToLowerInvariant();
+            // Legs: Thigh -> Calf, Calf -> Foot
+            if (p.Contains("thigh") && (b.Contains("calf") || b.Contains("knee") || b.Contains("shin"))) return true;
+            if ((p.Contains("calf") || p.Contains("knee") || p.Contains("shin")) && (b.Contains("foot") || b.Contains("toe") || b.Contains("ankle"))) return true;
+            // Arms: UpperArm -> Forearm, Forearm -> Hand
+            if (p.Contains("upperarm") && b.Contains("forearm")) return true;
+            if (p.Contains("forearm") && (b.Contains("hand") || b.Contains("finger"))) return true;
+            return false;
         }
 
-        // Analytical capsule collision: projects particle onto cylinder axis AB,
-        // and pushes radially outward if distance is less than capsule radius R.
+        // Tapered anatomical limb radii so cloth drapes naturally without ballooning like a hoop skirt.
+        private static float CapsuleRadiusFor(string boneName, float clearance = 0f)
+        {
+            if (string.IsNullOrEmpty(boneName)) return 0.06f + clearance;
+            string s = boneName.ToLowerInvariant();
+            // Thigh top (hip): 0.090m (fits cleanly between pelvis and legs without pushing hips out)
+            // Knee (Calf top): 0.115m (covers the bent knee skin ~0.085m with comfortable safety buffer)
+            // Ankle (Foot): 0.060m (tapers naturally to allow the hem to drape vertically with gravity)
+            if (s.Contains("thigh")) return 0.090f + clearance;
+            if (s.Contains("calf") || s.Contains("knee") || s.Contains("shin")) return 0.115f + clearance;
+            if (s.Contains("foot") || s.Contains("toe")) return 0.060f + clearance;
+            if (s.Contains("upperarm")) return 0.070f + clearance;
+            if (s.Contains("forearm") || s.Contains("clavicle")) return 0.060f + clearance;
+            if (s.Contains("hand") || s.Contains("finger")) return 0.045f + clearance;
+            return 0.060f + clearance;
+        }
+
+        // Analytical tapered capsule collision: projects particle onto cylinder axis AB,
+        // and pushes radially outward if distance is less than interpolated radius r(t).
+        // Also cancels inward velocity to prevent particles from rebounding inside the collider.
         private static void PushOutOfCapsules(LoadedMesh lm, List<ClothCapsule> caps)
         {
+            if (lm == null || lm.ClothPos == null || caps == null || caps.Count == 0) return;
             for (int v = 0; v < lm.ClothPos.Length; v++)
             {
                 if (lm.ClothPin != null && v < lm.ClothPin.Length && lm.ClothPin[v]) continue;
@@ -7390,11 +7745,23 @@ namespace UoFiddler.Plugin.Granny3D
                     Vector3 closest = caps[c].A + ab * t;
                     Vector3 d = p - closest;
                     float dist = d.Length;
-                    if (dist < caps[c].R)
+                    float r = caps[c].RA + (caps[c].RB - caps[c].RA) * t;
+                    if (dist < r)
                     {
                         if (dist < 1e-5f) d = new Vector3(0f, 1f, 0f);
                         else d /= dist;
-                        p = closest + d * caps[c].R;
+                        p = closest + d * r;
+
+                        // Cancel inward velocity in Verlet: ensures the cloth does not bounce backwards into the limb
+                        if (lm.ClothPrev != null && v < lm.ClothPrev.Length)
+                        {
+                            Vector3 disp = p - lm.ClothPrev[v];
+                            float inward = Vector3.Dot(disp, d);
+                            if (inward < 0f)
+                            {
+                                lm.ClothPrev[v] = p - (disp - d * inward);
+                            }
+                        }
                     }
                 }
                 lm.ClothPos[v] = p;
@@ -7539,6 +7906,9 @@ namespace UoFiddler.Plugin.Granny3D
             if (lm.ClothPin != null)
                 for (int p = 0; p < pc && p < lm.ClothPin.Length; p++)
                     if (lm.ClothPin[p]) lm.ClothPos[p] = ClothPinTarget(lm, p);
+
+            var caps = BuildBodyCapsules(lm);
+            if (caps.Count > 0) PushOutOfCapsules(lm, caps);
         }
 
         // XPBD / Velvet style sub-stepped cloth simulation: 3 sub-steps per frame,
@@ -7587,7 +7957,10 @@ namespace UoFiddler.Plugin.Granny3D
                 // 2. Constraints & smooth capsule SDF collisions
                 for (int it = 0; it < subIter; it++)
                 {
-                    // Distance constraints
+                    // Realistic cloth: resists stretching (high stiffness 0.90) to maintain fabric integrity,
+                    // but allows folding and buckling (low compression stiffness 0.10).
+                    // This allows the skirt to drape and fall naturally under gravity instead of holding
+                    // its 3D volume rigidly like a metal wire hoop skirt!
                     for (int e = 0; e < lm.ClothEdgeA.Length; e++)
                     {
                         int ia = lm.ClothEdgeA[e], ib = lm.ClothEdgeB[e];
@@ -7595,7 +7968,9 @@ namespace UoFiddler.Plugin.Granny3D
                         Vector3 d = pb - pa;
                         float len = d.Length;
                         if (len < 1e-6f) continue;
-                        float diff = (len - lm.ClothRest[e]) / len;
+                        float rawDiff = (len - lm.ClothRest[e]) / len;
+                        float diff = rawDiff > 0f ? (rawDiff * 0.90f) : (rawDiff * 0.10f);
+
                         bool fa = lm.ClothPin == null || ia >= lm.ClothPin.Length || !lm.ClothPin[ia];
                         bool fb = lm.ClothPin == null || ib >= lm.ClothPin.Length || !lm.ClothPin[ib];
                         if (fa && fb) { pa += d * (0.5f * diff); pb -= d * (0.5f * diff); }
@@ -7616,7 +7991,13 @@ namespace UoFiddler.Plugin.Granny3D
                         lm.ClothPos[v] = ClothPinTarget(lm, v);
                     }
                 }
+
+                // Push out of capsules at the end of each sub-step
+                if (caps.Count > 0) PushOutOfCapsules(lm, caps);
             }
+
+            // Final safety pass at the end of the frame to guarantee 0 penetration
+            if (caps.Count > 0) PushOutOfCapsules(lm, caps);
         }
 
         private void RefreshVertexBuffers(bool includeNormals, Vector3 riderOffset = default)
@@ -7644,7 +8025,7 @@ namespace UoFiddler.Plugin.Granny3D
                 bool hasRot = lm.AttachRotation != Vector3.Zero;
                 bool hasMirror = lm.MirrorX || lm.MirrorY || lm.MirrorZ;
                 bool hasOffset = lm.AttachOffset != Vector3.Zero;
-                bool hasTweak = scaleTweaked || hasRot || hasMirror || hasOffset;
+                bool hasTweak = scaleTweaked || hasRot || hasMirror || hasOffset || lm.MirrorArms;
 
                 Matrix4 rotMat = hasRot
                     ? Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
@@ -7684,21 +8065,7 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     if (!skinned)
                     {
-                        Vector3 pos = orig;
-                        if (hasTweak)
-                        {
-                            Vector3 r = pos - scalePivot;
-                            if (scaleTweaked)
-                                r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
-                            pos = scalePivot + r;
-
-                            Vector3 rRot = pos - rotPivot;
-                            if (hasMirror)
-                                rRot = new Vector3(rRot.X * (lm.MirrorX ? -1f : 1f), rRot.Y * (lm.MirrorY ? -1f : 1f), rRot.Z * (lm.MirrorZ ? -1f : 1f));
-                            if (hasRot)
-                                rRot = Vector3.TransformNormal(rRot, rotMat);
-                            pos = rotPivot + rRot + lm.AttachOffset;
-                        }
+                        Vector3 pos = hasTweak ? ApplyMeshTweak(lm, orig, false, default) : orig;
                         if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
                             pos += riderOffset;
                         lm.DeformedCache[v] = pos;
@@ -7711,21 +8078,7 @@ namespace UoFiddler.Plugin.Granny3D
                         : (v < lm.Skin.Length ? lm.Skin[v] : null);
                     if (influences == null || influences.Length == 0)
                     {
-                        Vector3 pos = orig;
-                        if (hasTweak)
-                        {
-                            Vector3 r = pos - scalePivot;
-                            if (scaleTweaked)
-                                r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
-                            pos = scalePivot + r;
-
-                            Vector3 rRot = pos - rotPivot;
-                            if (hasMirror)
-                                rRot = new Vector3(rRot.X * (lm.MirrorX ? -1f : 1f), rRot.Y * (lm.MirrorY ? -1f : 1f), rRot.Z * (lm.MirrorZ ? -1f : 1f));
-                            if (hasRot)
-                                rRot = Vector3.TransformNormal(rRot, rotMat);
-                            pos = rotPivot + rRot + lm.AttachOffset;
-                        }
+                        Vector3 pos = hasTweak ? ApplyMeshTweak(lm, orig, false, default) : orig;
                         if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
                             pos += riderOffset;
                         lm.DeformedCache[v] = pos;
@@ -7753,33 +8106,14 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     Vector3 skinnedPos = totalW > 0.0001f ? (Math.Abs(totalW - 1f) > 0.001f ? def / totalW : def) : orig;
 
-                    // Per-part tweak: scale about bind centroid, mirror and rotation about rotPivot + offset
+                    // Per-part tweak: apply full ApplyMeshTweak (bilateral sagittal mirror, scale, offset, rotation, thickness)
                     if (hasTweak)
                     {
-                        Vector3 r = skinnedPos - scalePivot;
-                        if (scaleTweaked)
-                            r = new Vector3(r.X * pscale.X, r.Y * pscale.Y, r.Z * pscale.Z);
-                        Vector3 pos = scalePivot + r;
-
-                        Vector3 rRot = pos - rotPivot;
-                        if (hasMirror)
-                            rRot = new Vector3(rRot.X * (lm.MirrorX ? -1f : 1f), rRot.Y * (lm.MirrorY ? -1f : 1f), rRot.Z * (lm.MirrorZ ? -1f : 1f));
-                        if (hasRot)
-                            rRot = Vector3.TransformNormal(rRot, rotMat);
-                        skinnedPos = rotPivot + rRot + lm.AttachOffset;
+                        skinnedPos = ApplyMeshTweak(lm, skinnedPos, thick, dnorm);
                     }
-
-                    // Thickness: push the piece outward along the (skinned) surface
-                    // normal so residual body/armor mismatches never poke through.
-                    if (thick)
+                    else if (thick && dnorm.LengthSquared > 1e-12f)
                     {
-                        if (hasMirror)
-                            dnorm = new Vector3(dnorm.X * (lm.MirrorX ? -1f : 1f), dnorm.Y * (lm.MirrorY ? -1f : 1f), dnorm.Z * (lm.MirrorZ ? -1f : 1f));
-                        if (hasRot)
-                            dnorm = Vector3.TransformNormal(dnorm, rotMat);
-                        if (dnorm.LengthSquared > 1e-12f) dnorm = Vector3.Normalize(dnorm);
-                        else dnorm = Vector3.Zero;
-                        skinnedPos += dnorm * lm.Thickness;
+                        skinnedPos += Vector3.Normalize(dnorm) * lm.Thickness;
                     }
                     lm.DeformedCache[v] = skinnedPos;
                 }
@@ -9417,6 +9751,7 @@ void main(){
             });
 
             glContextMenu.Items.Add("Réinitialiser la pose (Stop)", null, BtnStop_Click);
+            glContextMenu.Items.Add("T-Pose", null, BtnTPose_Click);
         }
 
         private void GlControl_MouseWheel(object sender, MouseEventArgs e)
