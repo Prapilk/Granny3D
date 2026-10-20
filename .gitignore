@@ -12,3 +12,7 @@ __pycache__/
 *.log
 debug.txt
 Granny3D_plugin.log
+
+# Vendored / data directories
+VD/
+UOFiddler-master/
