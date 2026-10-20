@@ -748,8 +748,8 @@ namespace UoFiddler.Plugin.Granny3D
                 candidates.Add(Path.Combine(basePath, "Humans", "H_Female_Lod2.grn"));
             }
 
-            candidates.Add(@"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\H_Male_Lod2.grn");
-            candidates.Add(@"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\H_Female_Lod2.grn");
+            candidates.Add(Path.Combine(Granny3DControl.BasePath, "Humans", "H_Male_Lod2.grn"));
+            candidates.Add(Path.Combine(Granny3DControl.BasePath, "Humans", "H_Female_Lod2.grn"));
 
             foreach (var cand in candidates)
             {

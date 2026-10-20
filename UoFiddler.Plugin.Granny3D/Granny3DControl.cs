@@ -48,6 +48,14 @@ namespace UoFiddler.Plugin.Granny3D
         public bool HasTexture = false;
         public Vector3 MeshColor = new Vector3(0.72f, 0.66f, 0.55f);
 
+        // Support de teinte (hues.mul)
+        public int BaseTextureId = -1;
+        public Bitmap BaseTextureBmp = null;
+        public Vector3 BaseMeshColor = new Vector3(0.72f, 0.66f, 0.55f);
+        public string TextureFilePath = string.Empty;
+        public int HueId = 0;
+        public bool PartialHue = true;
+
         public int[] BoneToAnimTrack;
         public Matrix4[] LocalMatrices;
         public Matrix4[] WorldMatrices;
@@ -272,8 +280,71 @@ namespace UoFiddler.Plugin.Granny3D
 
     public class Granny3DControl : UserControl
     {
-        public const string BasePath = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\";
-        private const string MapsPath = BasePath + "Maps";
+        public static string BasePath { get; set; } = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\";
+        public static string MapsPath => Path.Combine(BasePath, "Maps");
+
+        private static string SettingsFilePath
+        {
+            get
+            {
+                string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "UoFiddler");
+                return Path.Combine(appData, "Granny3D.ini");
+            }
+        }
+
+        public static void LoadSettings()
+        {
+            try
+            {
+                string file = SettingsFilePath;
+                if (!File.Exists(file))
+                {
+                    string localFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Granny3D.ini");
+                    if (File.Exists(localFile)) file = localFile;
+                }
+
+                if (File.Exists(file))
+                {
+                    foreach (var line in File.ReadAllLines(file))
+                    {
+                        var trim = line.Trim();
+                        if (trim.StartsWith("BasePath=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string path = trim.Substring(9).Trim();
+                            if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
+                            {
+                                BasePath = path;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (!Directory.Exists(BasePath))
+            {
+                string fallback1 = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Models");
+                if (Directory.Exists(fallback1))
+                    BasePath = fallback1;
+                else if (Directory.Exists(@"d:\Games\sphere\PROGRAMMES\3D_UO\Models\"))
+                    BasePath = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\";
+            }
+        }
+
+        public static void SaveSettings()
+        {
+            try
+            {
+                string file = SettingsFilePath;
+                string dir = Path.GetDirectoryName(file);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+
+                File.WriteAllLines(file, new[] { "BasePath=" + BasePath });
+            }
+            catch { }
+        }
 
         // Category folder -> display name
         private static readonly string[] CategoryFolders =
@@ -405,6 +476,22 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblDuration;
         private Label lblModelInfo;
 
+        // UI - BasePath selection
+        private Label lblBasePath;
+        private Button btnSelectBasePath;
+        private Button btnReloadBasePath;
+        private ToolTip _toolTip;
+
+        // UI - Hue selection (hues.mul)
+        private NumericUpDown nudHue;
+        private CheckBox chkPartialHue;
+        private Button btnPickHue;
+        private Button btnResetHue;
+        private Label lblHueName;
+        private ComboBox cmbHueTarget;
+        private PictureBox picHueBar;
+        private bool _suppressHueEvents;
+
         // UI - UO render bar
         private CheckBox chkUoView, chkUoFeet, chkUoRef;
         private ComboBox cmbUoMode, cmbUoDir;
@@ -494,6 +581,8 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void InitializeComponent()
         {
+            LoadSettings();
+            _toolTip = new ToolTip();
             SuspendLayout();
             Width = 1400;
             Height = 750;
@@ -816,7 +905,7 @@ namespace UoFiddler.Plugin.Granny3D
             glControl.ContextMenuStrip = glContextMenu;
 
             // ---- Playback panel (bottom of right column) ----
-            var pnlRightBottom = new Panel { Dock = DockStyle.Bottom, Height = 620, Padding = new Padding(0, 6, 0, 0) };
+            var pnlRightBottom = new Panel { Dock = DockStyle.Bottom, Height = 655, Padding = new Padding(0, 6, 0, 0) };
 
             var grpPlayback = new GroupBox
             {
@@ -910,20 +999,202 @@ namespace UoFiddler.Plugin.Granny3D
 
             grpPlayback.Controls.AddRange(new Control[] { btnPlay, btnPause, btnStop, btnExportVd, btnExportCutout, btnExportCutoutAcc, lblMount, cmbMount, lblMountPos, nudMountOffX, nudMountOffY, nudMountOffZ, nudMountScale, chkLoop, lblSpeed, trackSpeed, trackTime, lblTime, lblDuration });
 
+            var pnlBottomSplit = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                BackColor = Color.FromArgb(40, 40, 44),
+                Padding = new Padding(0)
+            };
+            pnlBottomSplit.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48f));
+            pnlBottomSplit.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52f));
+            pnlBottomSplit.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+
             var grpInfo = new GroupBox
             {
-                Text = "Model Info",
+                Text = "Informations Modèle & Répertoire",
                 Dock = DockStyle.Fill,
                 ForeColor = Color.Gainsboro,
-                Padding = new Padding(8)
+                Padding = new Padding(6)
             };
             lblModelInfo = new Label
             {
                 Text = "Bones: 0 | Tracks: 0 | Meshes: 0",
-                Dock = DockStyle.Fill,
+                Location = new Point(8, 20),
+                Size = new Size(420, 32),
                 ForeColor = Color.Gainsboro
             };
-            grpInfo.Controls.Add(lblModelInfo);
+            lblBasePath = new Label
+            {
+                Text = "UO 3D : " + BasePath,
+                Location = new Point(8, 54),
+                Size = new Size(330, 18),
+                ForeColor = Color.LightGray,
+                AutoEllipsis = true
+            };
+            _toolTip?.SetToolTip(lblBasePath, BasePath);
+
+            btnSelectBasePath = new Button
+            {
+                Text = "📁 Dossier UO 3D...",
+                Location = new Point(8, 76),
+                Width = 140,
+                Height = 24,
+                BackColor = Color.FromArgb(60, 60, 68),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnSelectBasePath.Click += (s, e) => ChangeBasePath();
+
+            btnReloadBasePath = new Button
+            {
+                Text = "🔄 Recharger",
+                Location = new Point(154, 76),
+                Width = 95,
+                Height = 24,
+                BackColor = Color.FromArgb(50, 60, 50),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnReloadBasePath.Click += (s, e) =>
+            {
+                LoadCategoryTree();
+                Log("Rechargement des modèles et animations terminé.");
+            };
+
+            grpInfo.Controls.AddRange(new Control[] { lblModelInfo, lblBasePath, btnSelectBasePath, btnReloadBasePath });
+
+            var grpHue = new GroupBox
+            {
+                Text = "Teintes & Couleurs (hues.mul)",
+                Dock = DockStyle.Fill,
+                ForeColor = Color.Gainsboro,
+                Padding = new Padding(6)
+            };
+
+            var lblHueLabel = new Label { Text = "Teinte :", Location = new Point(8, 22), AutoSize = true, ForeColor = Color.Gainsboro };
+
+            nudHue = new NumericUpDown
+            {
+                Location = new Point(54, 20),
+                Width = 65,
+                Minimum = 0,
+                Maximum = 2999,
+                Value = 0,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            btnPickHue = new Button
+            {
+                Text = "🎨 Palette...",
+                Location = new Point(125, 19),
+                Width = 80,
+                Height = 24,
+                BackColor = Color.FromArgb(60, 60, 68),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnPickHue.Click += (s, e) =>
+            {
+                try
+                {
+                    using var pop = new UoFiddler.Controls.Forms.HuePopUpForm(selectedHue =>
+                    {
+                        if (selectedHue >= 0 && selectedHue < 3000)
+                        {
+                            nudHue.Value = selectedHue;
+                        }
+                    }, (int)nudHue.Value);
+                    pop.ShowDialog(this);
+                }
+                catch (Exception ex)
+                {
+                    Log("Erreur ouverture HuePopUpForm: " + ex.Message);
+                }
+            };
+
+            chkPartialHue = new CheckBox
+            {
+                Text = "Partial Hue",
+                Location = new Point(212, 21),
+                Width = 92,
+                Checked = true,
+                ForeColor = Color.Gainsboro
+            };
+
+            btnResetHue = new Button
+            {
+                Text = "Réinitialiser",
+                Location = new Point(310, 19),
+                Width = 85,
+                Height = 24,
+                BackColor = Color.FromArgb(60, 60, 62),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnResetHue.Click += (s, e) =>
+            {
+                nudHue.Value = 0;
+            };
+
+            lblHueName = new Label
+            {
+                Text = "#0 (Original / Non teinté)",
+                Location = new Point(8, 48),
+                Size = new Size(390, 18),
+                ForeColor = Color.LightSkyBlue,
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
+                AutoEllipsis = true
+            };
+
+            var lblTargetLabel = new Label { Text = "Cible :", Location = new Point(8, 76), AutoSize = true, ForeColor = Color.Gainsboro };
+
+            cmbHueTarget = new ComboBox
+            {
+                Location = new Point(48, 73),
+                Width = 145,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(50, 50, 54),
+                ForeColor = Color.Gainsboro
+            };
+            cmbHueTarget.Items.AddRange(new object[] { "Mesh sélectionné", "Tous les équipements", "Tous les meshes" });
+            cmbHueTarget.SelectedIndex = 1;
+
+            picHueBar = new PictureBox
+            {
+                Location = new Point(200, 73),
+                Size = new Size(195, 23),
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(30, 30, 30)
+            };
+            picHueBar.Paint += PicHueBar_Paint;
+
+            nudHue.ValueChanged += (s, e) =>
+            {
+                if (_suppressHueEvents) return;
+                UpdateHueDisplay();
+                ApplyCurrentHue();
+            };
+
+            chkPartialHue.CheckedChanged += (s, e) =>
+            {
+                if (_suppressHueEvents) return;
+                ApplyCurrentHue();
+            };
+
+            cmbHueTarget.SelectedIndexChanged += (s, e) =>
+            {
+                if (_suppressHueEvents) return;
+                ApplyCurrentHue();
+            };
+
+            grpHue.Controls.AddRange(new Control[] { lblHueLabel, nudHue, btnPickHue, chkPartialHue, btnResetHue, lblHueName, lblTargetLabel, cmbHueTarget, picHueBar });
+
+            pnlBottomSplit.Controls.Add(grpInfo, 0, 0);
+            pnlBottomSplit.Controls.Add(grpHue, 1, 0);
 
             // ---- Equipment controller: mirror / rotation / offset for an attached item ----
             var grpEquip = new GroupBox
@@ -935,12 +1206,12 @@ namespace UoFiddler.Plugin.Granny3D
             };
             grpEquip.Controls.Add(new Label { Text = "Sélectionnez un mesh attaché dans « Meshes affiches »", Location = new Point(8, 20), Width = 380, ForeColor = Color.Gray });
 
-            NumericUpDown MakeNud(int x, int y, decimal min, decimal max, decimal inc, int dec)
+            NumericUpDown MakeNud(int x, int y, decimal min, decimal max, decimal inc, int dec, int width = 90)
             {
                 var n = new NumericUpDown
                 {
                     Location = new Point(x, y),
-                    Width = 90,
+                    Width = width,
                     Minimum = min,
                     Maximum = max,
                     Increment = inc,
@@ -1008,13 +1279,13 @@ namespace UoFiddler.Plugin.Granny3D
             grpEquip.Controls.Add(new Label { Text = "Échelle (globale)", Location = new Point(8, 200), Width = 120, ForeColor = Color.Gainsboro });
             nudScale = MakeNud(140, 197, 0.001m, 100m, 0.01m, 3);
 
-            grpEquip.Controls.Add(new Label { Text = "Échelle X/Y/Z", Location = new Point(8, 229), Width = 120, ForeColor = Color.Gainsboro });
-            nudScaleX = MakeNud(100, 226, 0.001m, 100m, 0.01m, 3);
-            nudScaleY = MakeNud(195, 226, 0.001m, 100m, 0.01m, 3);
-            nudScaleZ = MakeNud(290, 226, 0.001m, 100m, 0.01m, 3);
-            grpEquip.Controls.Add(new Label { Text = "X", Location = new Point(86, 229), Width = 14, ForeColor = Color.Gray });
-            grpEquip.Controls.Add(new Label { Text = "Y", Location = new Point(181, 229), Width = 14, ForeColor = Color.Gray });
-            grpEquip.Controls.Add(new Label { Text = "Z", Location = new Point(276, 229), Width = 14, ForeColor = Color.Gray });
+            grpEquip.Controls.Add(new Label { Text = "Échelle :", Location = new Point(8, 229), Width = 55, ForeColor = Color.Gainsboro });
+            nudScaleX = MakeNud(80, 226, 0.001m, 100m, 0.01m, 3, 68);
+            nudScaleY = MakeNud(168, 226, 0.001m, 100m, 0.01m, 3, 68);
+            nudScaleZ = MakeNud(256, 226, 0.001m, 100m, 0.01m, 3, 68);
+            grpEquip.Controls.Add(new Label { Text = "X", Location = new Point(66, 229), Width = 14, ForeColor = Color.Gray });
+            grpEquip.Controls.Add(new Label { Text = "Y", Location = new Point(154, 229), Width = 14, ForeColor = Color.Gray });
+            grpEquip.Controls.Add(new Label { Text = "Z", Location = new Point(242, 229), Width = 14, ForeColor = Color.Gray });
 
             // Thickness: push the piece outward along its normals (anti poke-through).
             grpEquip.Controls.Add(new Label { Text = "Épaisseur (normale)", Location = new Point(8, 258), Width = 130, ForeColor = Color.Gainsboro });
@@ -1216,7 +1487,7 @@ namespace UoFiddler.Plugin.Granny3D
             pnlPlayRow.Controls.Add(grpChar);       // Right
             pnlPlayRow.Controls.Add(grpPlayback);   // Left
 
-            pnlRightBottom.Controls.Add(grpInfo);     // Fill
+            pnlRightBottom.Controls.Add(pnlBottomSplit); // Fill
             pnlRightBottom.Controls.Add(pnlPlayRow);  // Top
 
             pnlRight.Controls.Add(pnlRightBottom);
@@ -2555,8 +2826,10 @@ namespace UoFiddler.Plugin.Granny3D
 
                     BuildCornerData(lm);
                     SetupMeshVBO(lm);
-                    lm.TextureId = !string.IsNullOrEmpty(part.TextureName) ? TryLoadTexture(path, part.TextureName) : -1;
+                    lm.TextureId = !string.IsNullOrEmpty(part.TextureName) ? TryLoadTexture(path, part.TextureName, out lm.TextureFilePath) : -1;
                     lm.HasTexture = lm.TextureId > 0;
+                    lm.BaseTextureId = lm.TextureId;
+                    lm.BaseMeshColor = lm.MeshColor;
                     _loadedMeshes.Add(lm);
                     addedChar++;
                 }
@@ -2643,8 +2916,10 @@ namespace UoFiddler.Plugin.Granny3D
 
                 BuildCornerData(lm);
                 SetupMeshVBO(lm);
-                lm.TextureId = TryLoadTexture(path, parser.TextureName);
+                lm.TextureId = TryLoadTexture(path, parser.TextureName, out lm.TextureFilePath);
                 lm.HasTexture = lm.TextureId > 0;
+                lm.BaseTextureId = lm.TextureId;
+                lm.BaseMeshColor = lm.MeshColor;
                 _loadedMeshes.Add(lm);
                 added++;
             }
@@ -2789,8 +3064,10 @@ namespace UoFiddler.Plugin.Granny3D
                 SetupMeshVBO(lm);
                 lm.SkinTexName = IsBodySkinTexture(parser.TextureName) ? parser.TextureName : null;
                 string texName = (lm.SkinTexName != null && !string.IsNullOrEmpty(_skinOverride)) ? _skinOverride : parser.TextureName;
-                lm.TextureId = TryLoadTexture(path, texName);
+                lm.TextureId = TryLoadTexture(path, texName, out lm.TextureFilePath);
                 lm.HasTexture = lm.TextureId > 0;
+                lm.BaseTextureId = lm.TextureId;
+                lm.BaseMeshColor = lm.MeshColor;
                 _loadedMeshes.Add(lm);
                 added++;
             }
@@ -3039,10 +3316,14 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (string.IsNullOrEmpty(lm.SkinTexName)) continue;
                 string name = _skinOverride ?? lm.SkinTexName;
-                int tex = TryLoadTexture(lm.SourcePath, name);
+                int tex = TryLoadTexture(lm.SourcePath, name, out string foundTexPath);
                 if (tex <= 0) continue;
-                if (lm.TextureId > 0) GL.DeleteTexture(lm.TextureId);
+                if (lm.TextureId > 0 && lm.TextureId != lm.BaseTextureId) GL.DeleteTexture(lm.TextureId);
                 lm.TextureId = tex;
+                lm.BaseTextureId = tex;
+                lm.TextureFilePath = foundTexPath;
+                if (lm.BaseTextureBmp != null) { lm.BaseTextureBmp.Dispose(); lm.BaseTextureBmp = null; }
+                lm.HueId = 0;
                 lm.HasTexture = true;
                 changed++;
             }
@@ -3990,8 +4271,10 @@ namespace UoFiddler.Plugin.Granny3D
 
                 BuildCornerData(lm);
                 SetupMeshVBO(lm);
-                lm.TextureId = TryLoadTexture(path, _modelParser.TextureName);
+                lm.TextureId = TryLoadTexture(path, _modelParser.TextureName, out lm.TextureFilePath);
                 lm.HasTexture = lm.TextureId > 0;
+                lm.BaseTextureId = lm.TextureId;
+                lm.BaseMeshColor = lm.MeshColor;
                 lm.Hidden = humanPlaceholder;   // keep the 43-bone skeleton as host, don't draw the box
                 if (!lm.Hidden) TryAutoAttachUnskinned(lm);
                 _loadedMeshes.Add(lm);
@@ -4080,8 +4363,10 @@ namespace UoFiddler.Plugin.Granny3D
 
                 BuildCornerData(lm);
                 SetupMeshVBO(lm);
-                lm.TextureId = !string.IsNullOrEmpty(part.TextureName) ? TryLoadTexture(path, part.TextureName) : -1;
+                lm.TextureId = !string.IsNullOrEmpty(part.TextureName) ? TryLoadTexture(path, part.TextureName, out lm.TextureFilePath) : -1;
                 lm.HasTexture = lm.TextureId > 0;
+                lm.BaseTextureId = lm.TextureId;
+                lm.BaseMeshColor = lm.MeshColor;
                 _loadedMeshes.Add(lm);
                 Log($"  built custom mesh vbo={lm.Vbo} vao={lm.Vao} verts={lm.BaseVertices.Length} corners={lm.Indices.Length} color={lm.MeshColor}");
             }
@@ -4455,7 +4740,21 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (lm.Vbo > 0) { GL.DeleteBuffer(lm.Vbo); lm.Vbo = 0; }
             if (lm.Vao > 0) { GL.DeleteVertexArray(lm.Vao); lm.Vao = 0; }
-            if (lm.TextureId > 0) { GL.DeleteTexture(lm.TextureId); lm.TextureId = -1; }
+            if (lm.TextureId > 0)
+            {
+                GL.DeleteTexture(lm.TextureId);
+                if (lm.BaseTextureId > 0 && lm.BaseTextureId != lm.TextureId)
+                {
+                    GL.DeleteTexture(lm.BaseTextureId);
+                }
+                lm.TextureId = -1;
+                lm.BaseTextureId = -1;
+            }
+            if (lm.BaseTextureBmp != null)
+            {
+                lm.BaseTextureBmp.Dispose();
+                lm.BaseTextureBmp = null;
+            }
         }
 
         private void TvLoaded_DoubleClick(object sender, EventArgs e)
@@ -4651,6 +4950,7 @@ namespace UoFiddler.Plugin.Granny3D
                 SelectBoneByName(null);
             }
             LoadEquipControlsFromMesh();
+            SyncHueFromSelectedMesh();
         }
 
         private bool _suppressTreeCheck;
@@ -4822,6 +5122,11 @@ namespace UoFiddler.Plugin.Granny3D
                     CutoutRole = src.CutoutRole,
                     TextureId = src.TextureId,
                     HasTexture = src.HasTexture,
+                    TextureFilePath = src.TextureFilePath,
+                    BaseTextureId = src.BaseTextureId,
+                    BaseMeshColor = src.BaseMeshColor,
+                    HueId = src.HueId,
+                    PartialHue = src.PartialHue,
                     PartScale = src.PartScale,
                     PartScaleVec = src.PartScaleVec,
                     Thickness = src.Thickness,
@@ -5106,8 +5411,6 @@ namespace UoFiddler.Plugin.Granny3D
                 string refFile = preferFemale ? "H_Female_Lod2.grn" : "H_Male_Lod2.grn";
                 string refPath = Path.Combine(BasePath, "Humans", refFile);
                 if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
-                if (!File.Exists(refPath)) refPath = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\" + refFile;
-                if (!File.Exists(refPath)) refPath = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\H_Male_Lod2.grn";
 
                 if (File.Exists(refPath))
                 {
@@ -6053,8 +6356,236 @@ namespace UoFiddler.Plugin.Granny3D
             Log($"RemoveMeshesAt count={sorted.Count} -> remaining={_loadedMeshes.Count}");
         }
 
-        private int TryLoadTexture(string modelPath, string embeddedName = null)
+        private void ChangeBasePath()
         {
+            using var fbd = new FolderBrowserDialog();
+            fbd.Description = "Sélectionnez le dossier où se trouvent les modèles UO 3D (Models) :";
+            if (Directory.Exists(BasePath)) fbd.SelectedPath = BasePath;
+            if (fbd.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(fbd.SelectedPath))
+            {
+                if (!Directory.Exists(fbd.SelectedPath)) return;
+                BasePath = fbd.SelectedPath;
+                SaveSettings();
+                if (lblBasePath != null)
+                {
+                    lblBasePath.Text = "UO 3D : " + BasePath;
+                    _toolTip?.SetToolTip(lblBasePath, BasePath);
+                }
+                LoadCategoryTree();
+                cmbMount.Items.Clear();
+                cmbMount.Items.Add("(aucune)");
+                try { foreach (var m in GatherMountModels()) cmbMount.Items.Add(Path.GetFileName(m)); } catch { }
+                cmbMount.SelectedIndex = 0;
+                Log($"Dossier UO 3D mis à jour : {BasePath}");
+            }
+        }
+
+        private void PicHueBar_Paint(object sender, PaintEventArgs e)
+        {
+            int hueId = nudHue != null ? (int)nudHue.Value : 0;
+            if (hueId <= 0 || hueId >= 3000)
+            {
+                e.Graphics.Clear(Color.FromArgb(40, 40, 40));
+                using var font = new Font("Segoe UI", 7.5f);
+                using var brush = new SolidBrush(Color.Gray);
+                e.Graphics.DrawString("Original / Non teinté", font, brush, 4, 3);
+                return;
+            }
+            var hue = Ultima.Hues.GetHue(hueId);
+            if (hue == null || hue.Colors == null || hue.Colors.Length == 0) return;
+
+            float stepW = (float)picHueBar.ClientSize.Width / 32f;
+            int h = picHueBar.ClientSize.Height;
+            for (int i = 0; i < 32; i++)
+            {
+                Color c = hue.GetColor(i);
+                using var brush = new SolidBrush(c);
+                e.Graphics.FillRectangle(brush, i * stepW, 0, stepW + 1, h);
+            }
+            e.Graphics.DrawRectangle(Pens.DarkGray, 0, 0, picHueBar.ClientSize.Width - 1, h - 1);
+        }
+
+        private void UpdateHueDisplay()
+        {
+            if (lblHueName == null || nudHue == null) return;
+            int hueId = (int)nudHue.Value;
+            if (hueId <= 0)
+            {
+                lblHueName.Text = "#0 (Original / Non teinté)";
+            }
+            else
+            {
+                var hue = Ultima.Hues.GetHue(hueId);
+                string name = hue != null && !string.IsNullOrWhiteSpace(hue.Name) && hue.Name != "Null" ? hue.Name : "(Sans nom)";
+                lblHueName.Text = $"#{hueId} (0x{hueId:X3}) - {name}";
+            }
+            picHueBar?.Invalidate();
+        }
+
+        private void SyncHueFromSelectedMesh()
+        {
+            if (_suppressHueEvents || nudHue == null || chkPartialHue == null) return;
+            var sel = GetSelectedMeshIndices();
+            if (sel.Count > 0 && sel[0] >= 0 && sel[0] < _loadedMeshes.Count)
+            {
+                var lm = _loadedMeshes[sel[0]];
+                _suppressHueEvents = true;
+                try
+                {
+                    nudHue.Value = Math.Max(nudHue.Minimum, Math.Min(nudHue.Maximum, lm.HueId));
+                    chkPartialHue.Checked = lm.PartialHue;
+                }
+                finally
+                {
+                    _suppressHueEvents = false;
+                }
+                UpdateHueDisplay();
+            }
+        }
+
+        private int UploadMeshTextureBitmap(Bitmap bmp)
+        {
+            BitmapData bd = bmp.LockBits(
+                new Rectangle(0, 0, bmp.Width, bmp.Height),
+                ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            int tex = GL.GenTexture();
+            GL.BindTexture(TextureTarget.Texture2D, tex);
+            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba,
+                bmp.Width, bmp.Height, 0, OpenTK.Graphics.OpenGL.PixelFormat.Bgra,
+                PixelType.UnsignedByte, bd.Scan0);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+            bmp.UnlockBits(bd);
+            return tex;
+        }
+
+        private void ApplyHueToMesh(LoadedMesh lm, int hueId, bool partialHue)
+        {
+            if (lm == null) return;
+
+            if (hueId <= 0)
+            {
+                // Reset to original
+                if (lm.TextureId > 0 && lm.TextureId != lm.BaseTextureId)
+                {
+                    GL.DeleteTexture(lm.TextureId);
+                }
+                lm.TextureId = lm.BaseTextureId;
+                lm.HasTexture = lm.TextureId > 0;
+                lm.MeshColor = lm.BaseMeshColor;
+                lm.HueId = 0;
+                lm.PartialHue = partialHue;
+                return;
+            }
+
+            var hue = Ultima.Hues.GetHue(hueId);
+            if (hue == null) return;
+
+            lm.HueId = hueId;
+            lm.PartialHue = partialHue;
+
+            if (lm.BaseTextureId > 0 || !string.IsNullOrEmpty(lm.TextureFilePath))
+            {
+                if (lm.BaseTextureBmp == null && !string.IsNullOrEmpty(lm.TextureFilePath) && File.Exists(lm.TextureFilePath))
+                {
+                    lm.BaseTextureBmp = LoadImageBitmap(lm.TextureFilePath);
+                }
+
+                if (lm.BaseTextureBmp != null)
+                {
+                    using var clone = new Bitmap(lm.BaseTextureBmp.Width, lm.BaseTextureBmp.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    using (var g = Graphics.FromImage(clone))
+                    {
+                        g.DrawImage(lm.BaseTextureBmp, 0, 0, lm.BaseTextureBmp.Width, lm.BaseTextureBmp.Height);
+                    }
+
+                    hue.ApplyTo(clone, partialHue);
+
+                    if (glControl != null && glControl.IsHandleCreated) glControl.MakeCurrent();
+                    int newTex = UploadMeshTextureBitmap(clone);
+                    if (newTex > 0)
+                    {
+                        if (lm.TextureId > 0 && lm.TextureId != lm.BaseTextureId)
+                        {
+                            GL.DeleteTexture(lm.TextureId);
+                        }
+                        lm.TextureId = newTex;
+                        lm.HasTexture = true;
+                    }
+                }
+                else
+                {
+                    var c = hue.GetColor(16);
+                    lm.MeshColor = new Vector3(c.R / 255f, c.G / 255f, c.B / 255f);
+                }
+            }
+            else
+            {
+                var c = hue.GetColor(16);
+                lm.MeshColor = new Vector3(c.R / 255f, c.G / 255f, c.B / 255f);
+            }
+        }
+
+        private void ApplyCurrentHue()
+        {
+            if (_loadedMeshes == null || _loadedMeshes.Count == 0 || nudHue == null) return;
+            int hueId = (int)nudHue.Value;
+            bool partial = chkPartialHue != null && chkPartialHue.Checked;
+            int targetMode = cmbHueTarget != null ? cmbHueTarget.SelectedIndex : 1;
+
+            if (glControl != null && glControl.IsHandleCreated) glControl.MakeCurrent();
+
+            if (targetMode == 0)
+            {
+                // Mesh sélectionné
+                var selIndices = GetSelectedMeshIndices();
+                if (selIndices.Count > 0)
+                {
+                    foreach (int idx in selIndices)
+                    {
+                        if (idx >= 0 && idx < _loadedMeshes.Count)
+                        {
+                            ApplyHueToMesh(_loadedMeshes[idx], hueId, partial);
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var lm in _loadedMeshes)
+                    {
+                        if (lm.CutoutRole == MeshCutoutRole.Accessory)
+                            ApplyHueToMesh(lm, hueId, partial);
+                    }
+                }
+            }
+            else if (targetMode == 1)
+            {
+                // Tous les équipements (Accessoires ou attachés)
+                foreach (var lm in _loadedMeshes)
+                {
+                    if (lm.CutoutRole == MeshCutoutRole.Accessory || !string.IsNullOrEmpty(lm.AttachBoneName))
+                    {
+                        ApplyHueToMesh(lm, hueId, partial);
+                    }
+                }
+            }
+            else
+            {
+                // Tous les meshes
+                foreach (var lm in _loadedMeshes)
+                {
+                    ApplyHueToMesh(lm, hueId, partial);
+                }
+            }
+
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+        }
+
+        private string ResolveTextureFile(string modelPath, string embeddedName = null)
+        {
+            if (string.IsNullOrEmpty(modelPath)) return null;
             string dir = Path.GetDirectoryName(modelPath);
             string baseName = Path.GetFileNameWithoutExtension(modelPath);
             string[] exts = { ".png", ".jpg", ".jpeg", ".bmp", ".tga" };
@@ -6087,21 +6618,21 @@ namespace UoFiddler.Plugin.Granny3D
                     if (!string.IsNullOrEmpty(dir))
                     {
                         string direct = Path.Combine(dir, emb);
-                        if (File.Exists(direct)) { int t = LoadTexture(direct); if (t > 0) return t; }
+                        if (File.Exists(direct)) return direct;
                         foreach (var ext in exts)
                         {
                             string p = Path.Combine(dir, emb + ext);
-                            if (File.Exists(p)) { int t = LoadTexture(p); if (t > 0) return t; }
+                            if (File.Exists(p)) return p;
                         }
                     }
                     if (Directory.Exists(MapsPath))
                     {
                         string mapDirect = Path.Combine(MapsPath, emb);
-                        if (File.Exists(mapDirect)) { int t = LoadTexture(mapDirect); if (t > 0) return t; }
+                        if (File.Exists(mapDirect)) return mapDirect;
                         foreach (var ext in exts)
                         {
                             string p = Path.Combine(MapsPath, emb + ext);
-                            if (File.Exists(p)) { int t = LoadTexture(p); if (t > 0) return t; }
+                            if (File.Exists(p)) return p;
                         }
 
                         try
@@ -6113,8 +6644,7 @@ namespace UoFiddler.Plugin.Granny3D
                                 if (fn.EndsWith("_m", StringComparison.OrdinalIgnoreCase)) continue;
                                 if (fn.Equals(emb, StringComparison.OrdinalIgnoreCase) || fn.StartsWith(emb + "_", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    int tex = LoadTexture(f);
-                                    if (tex > 0) return tex;
+                                    return f;
                                 }
                             }
                         }
@@ -6124,14 +6654,15 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             // 1) same folder, same base name (or _Lod0 variant)
-            foreach (var ext in exts)
+            if (!string.IsNullOrEmpty(dir))
             {
-                foreach (var candidate in new[] { baseName + ext, baseName.Replace("_Lod2", "_Lod0") + ext })
+                foreach (var ext in exts)
                 {
-                    string p = Path.Combine(dir, candidate);
-                    if (!File.Exists(p)) continue;
-                    int tex = LoadTexture(p);
-                    if (tex > 0) return tex;
+                    foreach (var candidate in new[] { baseName + ext, baseName.Replace("_Lod2", "_Lod0") + ext })
+                    {
+                        string p = Path.Combine(dir, candidate);
+                        if (File.Exists(p)) return p;
+                    }
                 }
             }
 
@@ -6151,9 +6682,7 @@ namespace UoFiddler.Plugin.Granny3D
                     foreach (var ext in exts)
                     {
                         string p = Path.Combine(MapsPath, cname + ext);
-                        if (!File.Exists(p)) continue;
-                        int tex = LoadTexture(p);
-                        if (tex > 0) return tex;
+                        if (File.Exists(p)) return p;
                     }
 
                     // Try human base skins
@@ -6166,9 +6695,7 @@ namespace UoFiddler.Plugin.Granny3D
                     })
                     {
                         string p = Path.Combine(MapsPath, cand + ".tga");
-                        if (!File.Exists(p)) continue;
-                        int tex = LoadTexture(p);
-                        if (tex > 0) return tex;
+                        if (File.Exists(p)) return p;
                     }
 
                     // First Map file starting with the creature name (skip _M normal maps)
@@ -6179,14 +6706,28 @@ namespace UoFiddler.Plugin.Granny3D
                             string fn = Path.GetFileName(f);
                             if (fn.EndsWith("_M.tga", StringComparison.OrdinalIgnoreCase)) continue;
                             if (!fn.EndsWith(".tga", StringComparison.OrdinalIgnoreCase)) continue;
-                            int tex = LoadTexture(f);
-                            if (tex > 0) return tex;
+                            return f;
                         }
                     }
                     catch { }
                 }
             }
 
+            return null;
+        }
+
+        private int TryLoadTexture(string modelPath, string embeddedName = null)
+        {
+            return TryLoadTexture(modelPath, embeddedName, out _);
+        }
+
+        private int TryLoadTexture(string modelPath, string embeddedName, out string foundTexturePath)
+        {
+            foundTexturePath = ResolveTextureFile(modelPath, embeddedName);
+            if (!string.IsNullOrEmpty(foundTexturePath))
+            {
+                return LoadTexture(foundTexturePath);
+            }
             return -1;
         }
 
@@ -6402,8 +6943,12 @@ namespace UoFiddler.Plugin.Granny3D
             int newTex = LoadTexture(destPath);
             if (newTex > 0)
             {
-                if (lm.TextureId > 0 && lm.TextureId != newTex) GL.DeleteTexture(lm.TextureId);
+                if (lm.TextureId > 0 && lm.TextureId != newTex && lm.TextureId != lm.BaseTextureId) GL.DeleteTexture(lm.TextureId);
                 lm.TextureId = newTex;
+                lm.BaseTextureId = newTex;
+                lm.TextureFilePath = destPath;
+                if (lm.BaseTextureBmp != null) { lm.BaseTextureBmp.Dispose(); lm.BaseTextureBmp = null; }
+                lm.HueId = 0;
                 lm.HasTexture = true;
             }
 
@@ -6431,7 +6976,12 @@ namespace UoFiddler.Plugin.Granny3D
             if (lm.TextureId > 0)
             {
                 GL.DeleteTexture(lm.TextureId);
+                if (lm.BaseTextureId > 0 && lm.BaseTextureId != lm.TextureId) GL.DeleteTexture(lm.BaseTextureId);
                 lm.TextureId = -1;
+                lm.BaseTextureId = -1;
+                lm.TextureFilePath = string.Empty;
+                if (lm.BaseTextureBmp != null) { lm.BaseTextureBmp.Dispose(); lm.BaseTextureBmp = null; }
+                lm.HueId = 0;
                 lm.HasTexture = false;
             }
 
@@ -6683,7 +7233,12 @@ namespace UoFiddler.Plugin.Granny3D
                 totalBones = Math.Max(totalBones, lm.Bones.Count);
 
             if (lblModelInfo != null)
-                lblModelInfo.Text = $"Bones: {totalBones}\nTracks: {trackCount}\nMeshes: {_loadedMeshes.Count}";
+                lblModelInfo.Text = $"Bones: {totalBones} | Tracks: {trackCount} | Meshes: {_loadedMeshes.Count}";
+            if (lblBasePath != null)
+            {
+                lblBasePath.Text = "UO 3D : " + BasePath;
+                _toolTip?.SetToolTip(lblBasePath, BasePath);
+            }
         }
 
         // ==================== ANIMATION ====================
@@ -9090,8 +9645,10 @@ namespace UoFiddler.Plugin.Granny3D
                 };
                 BuildCornerData(lm);
                 SetupMeshVBO(lm);
-                lm.TextureId = TryLoadTexture(path, parser.TextureName);
+                lm.TextureId = TryLoadTexture(path, parser.TextureName, out lm.TextureFilePath);
                 lm.HasTexture = lm.TextureId > 0;
+                lm.BaseTextureId = lm.TextureId;
+                lm.BaseMeshColor = lm.MeshColor;
                 _loadedMeshes.Add(lm);
                 if (first == null) first = lm;
             }

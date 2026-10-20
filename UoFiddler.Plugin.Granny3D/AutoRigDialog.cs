@@ -178,8 +178,8 @@ namespace UoFiddler.Plugin.Granny3D
 
             string maleRef = Path.Combine(_basePath, "Humans", "H_Male_Lod2.grn");
             string femaleRef = Path.Combine(_basePath, "Humans", "H_Female_Lod2.grn");
-            if (!File.Exists(maleRef)) maleRef = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\H_Male_Lod2.grn";
-            if (!File.Exists(femaleRef)) femaleRef = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\H_Female_Lod2.grn";
+            if (!File.Exists(maleRef)) maleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Male_Lod2.grn");
+            if (!File.Exists(femaleRef)) femaleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Female_Lod2.grn");
             _refPath = File.Exists(maleRef) ? maleRef : femaleRef;
 
             InitializeDefaultMarkers();
@@ -1329,8 +1329,8 @@ namespace UoFiddler.Plugin.Granny3D
         {
             string maleRef = Path.Combine(_basePath, "Humans", "H_Male_Lod2.grn");
             string femaleRef = Path.Combine(_basePath, "Humans", "H_Female_Lod2.grn");
-            if (!File.Exists(maleRef)) maleRef = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\H_Male_Lod2.grn";
-            if (!File.Exists(femaleRef)) femaleRef = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans\H_Female_Lod2.grn";
+            if (!File.Exists(maleRef)) maleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Male_Lod2.grn");
+            if (!File.Exists(femaleRef)) femaleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Female_Lod2.grn");
 
             _refPath = isFemale && File.Exists(femaleRef) ? femaleRef : maleRef;
             LoadReferenceBones();
