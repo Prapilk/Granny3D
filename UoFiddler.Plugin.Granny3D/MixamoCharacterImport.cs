@@ -236,6 +236,9 @@ namespace UoFiddler.Plugin.Granny3D
             if (refBones != null && refBones.Count > 0)
             {
                 int nb = refBones.Count;
+                for (int i = 0; i < nb; i++)
+                    uoBoneByName[refBones[i].Name] = i;
+
                 var fittedBones = new List<GrannyBone>(nb);
                 for (int i = 0; i < nb; i++)
                 {
@@ -277,21 +280,23 @@ namespace UoFiddler.Plugin.Granny3D
                     if (MixamoRetarget.TryGetBoneAlias(baseName, out string alias) && nameToNode.TryGetValue(alias, out idx))
                         return idx;
 
+                    int targetUo = uoBoneByName.TryGetValue(baseName, out int u) ? u : (MixamoRetarget.TryGetBoneAlias(baseName, out string uoA) && uoBoneByName.TryGetValue(uoA, out int u2) ? u2 : -1);
+
                     for (int nidx = 0; nidx < nn; nidx++)
                     {
                         if (nodes[nidx].Name.IndexOf("_$AssimpFbx$_", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                         int res = ResolveBoneToUo(nodes[nidx].Name, uoBoneByName, null, null, null);
-                        if (res >= 0 && refBones != null && res < refBones.Count &&
-                            string.Equals(refBones[res].Name, baseName, StringComparison.OrdinalIgnoreCase))
+                        if (res >= 0 && refBones != null && res < refBones.Count)
                         {
-                            return nidx;
+                            if (res == targetUo || string.Equals(refBones[res].Name, baseName, StringComparison.OrdinalIgnoreCase))
+                                return nidx;
                         }
                     }
 
                     return -1;
                 }
 
-                // Fitted world matrices:
+                // Pass 1: Determine initial fitted world positions
                 var fittedWorld = new Matrix4[nb];
                 for (int i = 0; i < nb; i++)
                 {
@@ -384,6 +389,53 @@ namespace UoFiddler.Plugin.Granny3D
                         {
                             var uoLocal = uoBindWorld[i] * Matrix4.Invert(uoBindWorld[p]);
                             fittedWorld[i] = uoLocal * fittedWorld[p];
+                        }
+                    }
+                }
+
+                // Pass 2: Aim directional bones towards their child joints
+                for (int i = 0; i < nb; i++)
+                {
+                    string uoName = refBones[i].Name;
+                    string? childName = GetAimChildBoneName(uoName);
+                    if (childName != null && uoBoneByName.TryGetValue(childName, out int childIdx))
+                    {
+                        Vector3 pSelfRef = uoBindWorld[i].Row3.Xyz;
+                        Vector3 pChildRef = uoBindWorld[childIdx].Row3.Xyz;
+                        Vector3 vRef = pChildRef - pSelfRef;
+
+                        Vector3 pSelfTgt = fittedWorld[i].Row3.Xyz;
+                        Vector3 pChildTgt = fittedWorld[childIdx].Row3.Xyz;
+                        Vector3 vTgt = pChildTgt - pSelfTgt;
+
+                        if (vRef.LengthSquared > 1e-4f && vTgt.LengthSquared > 1e-4f)
+                        {
+                            vRef.Normalize();
+                            vTgt.Normalize();
+                            Quaternion qAim = RotationBetweenVectors(vRef, vTgt);
+                            var rot = uoBindWorld[i].ExtractRotation();
+                            Matrix4 baseRot = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateFromQuaternion(qAim);
+                            fittedWorld[i] = baseRot * Matrix4.CreateTranslation(pSelfTgt);
+                        }
+                    }
+                }
+
+                // Pass 3: Distal bones without child joints inherit parent's rotation
+                for (int i = 0; i < nb; i++)
+                {
+                    string uoName = refBones[i].Name;
+                    bool hasDirectSource = (customJointPositions != null && customJointPositions.ContainsKey(uoName));
+                    if (!hasDirectSource)
+                    {
+                        string? childName = GetAimChildBoneName(uoName);
+                        if (childName == null)
+                        {
+                            int p = refBones[i].ParentId;
+                            if (p >= 0 && p < nb && p != i)
+                            {
+                                var uoLocal = uoBindWorld[i] * Matrix4.Invert(uoBindWorld[p]);
+                                fittedWorld[i] = uoLocal * fittedWorld[p];
+                            }
                         }
                     }
                 }
@@ -1455,6 +1507,58 @@ namespace UoFiddler.Plugin.Granny3D
             );
         }
 
+        public static Quaternion RotationBetweenVectors(Vector3 vFrom, Vector3 vTo)
+        {
+            float dot = Vector3.Dot(vFrom, vTo);
+            if (dot >= 0.999999f) return Quaternion.Identity;
+            if (dot <= -0.999999f)
+            {
+                Vector3 ortho = Vector3.Cross(Vector3.UnitZ, vFrom);
+                if (ortho.LengthSquared < 1e-4f)
+                    ortho = Vector3.Cross(Vector3.UnitY, vFrom);
+                ortho.Normalize();
+                return Quaternion.FromAxisAngle(ortho, MathF.PI);
+            }
+            Vector3 cross = Vector3.Cross(vFrom, vTo);
+            Quaternion q = new Quaternion(cross.X, cross.Y, cross.Z, 1.0f + dot);
+            q.Normalize();
+            return q;
+        }
+
+        public static string? GetAimChildBoneName(string boneName)
+        {
+            return boneName switch
+            {
+                "Bip01 L Clavicle" => "Bip01 L UpperArm",
+                "Bip01 L UpperArm" => "Bip01 L Forearm",
+                "Bip01 L Forearm" => "Bip01 L Hand",
+                "Bip01 L Hand" => "Bip01 L Finger1",
+                "Bip01 L Finger0" => "Bip01 L Finger01",
+                "Bip01 L Finger1" => "Bip01 L Finger11",
+
+                "Bip01 R Clavicle" => "Bip01 R UpperArm",
+                "Bip01 R UpperArm" => "Bip01 R Forearm",
+                "Bip01 R Forearm" => "Bip01 R Hand",
+                "Bip01 R Hand" => "Bip01 R Finger1",
+                "Bip01 R Finger0" => "Bip01 R Finger01",
+                "Bip01 R Finger1" => "Bip01 R Finger11",
+
+                "Bip01 L Thigh" => "Bip01 L Calf",
+                "Bip01 L Calf" => "Bip01 L Foot",
+                "Bip01 L Foot" => "Bip01 L Toe0",
+
+                "Bip01 R Thigh" => "Bip01 R Calf",
+                "Bip01 R Calf" => "Bip01 R Foot",
+                "Bip01 R Foot" => "Bip01 R Toe0",
+
+                "Bip01 Spine" => "Bip01 Spine1",
+                "Bip01 Spine1" => "Bip01 Spine2",
+                "Bip01 Spine2" => "Bip01 Neck",
+                "Bip01 Neck" => "Bip01 Head",
+                _ => null
+            };
+        }
+
         public static void ComputeVolumetricSkinning(GrannyModelPart part, List<GrannyBone> bones)
         {
             if (part == null || part.Vertices == null || part.Vertices.Length == 0 || bones == null || bones.Count == 0)
@@ -1575,24 +1679,19 @@ namespace UoFiddler.Plugin.Granny3D
                         if (segMidX > 0.01f && p.X < -0.015f) continue;
                     }
 
-                    bool isArm = bName.Contains("UpperArm") || bName.Contains("Forearm") || bName.Contains("Hand") || bName.Contains("Finger");
+                    bool isUpperArm = bName.Contains("UpperArm");
                     bool isClavicle = bName.Contains("Clavicle");
+                    bool isForearmOrHand = bName.Contains("Forearm") || bName.Contains("Hand") || bName.Contains("Finger");
                     bool isTorsoSpine = bName.Contains("Spine") || bName.Contains("Neck") || bName.Contains("Pelvis");
 
-                    // 1. Torso Protection: Prevent Arm bones from stealing vertices on the ribcage / torso wall
-                    if (isArm)
+                    // 1. Torso Protection: Prevent Clavicle / UpperArm bones from stealing vertices inside the ribcage envelope
+                    if (isUpperArm || isClavicle)
                     {
-                        // Any vertex below the shoulder joint that is medial to the armpit (inside the torso envelope)
-                        // belongs exclusively to the ribcage/torso and must NEVER be moved by UpperArm!
-                        if (p.Z < shoulderZ - 0.01f && absX < shoulderWidth * 0.82f)
+                        // Any vertex below the shoulder joint that is medial to the ribcage radius
+                        // belongs exclusively to the ribcage/torso and must NEVER be moved by UpperArm/Clavicle!
+                        if (p.Z < shoulderZ - 0.02f && absX < ribcageRadiusX)
                         {
-                            continue; // 100% shielded: arm bone cannot influence this ribcage vertex
-                        }
-
-                        // For vertices strictly below the chest (abdomen / hips), arm bones cannot reach
-                        if (p.Z < spine2Pos.Z - 0.12f && absX < shoulderWidth * 1.1f)
-                        {
-                            continue;
+                            continue; // 100% shielded: upper arm/clavicle bone cannot influence this ribcage vertex
                         }
                     }
 
@@ -1616,11 +1715,11 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         dist = DistanceToSegment(p, seg.P0, seg.P1);
 
-                        // If near the armpit fold on the torso side, add a distance penalty to the arm bone
+                        // If near the armpit fold on the torso side, add a distance penalty to the UpperArm bone
                         // to ensure the ribcage stays firmly anchored and doesn't get pulled inward
-                        if (isArm && p.Z < shoulderZ && absX < shoulderWidth)
+                        if (isUpperArm && p.Z < shoulderZ && absX < ribcageRadiusX)
                         {
-                            float pinchPen = (shoulderWidth - absX) * 3.0f;
+                            float pinchPen = (ribcageRadiusX - absX) * 3.0f;
                             dist += pinchPen;
                         }
                     }

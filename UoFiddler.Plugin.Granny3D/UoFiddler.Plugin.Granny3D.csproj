@@ -38,11 +38,17 @@
 		<PackageReference Include="AssimpNet" Version="4.1.0" GeneratePathProperty="true" />
 	</ItemGroup>
 
-	<!-- AssimpNet charge sa DLL native par P/Invoke : .NET ne probe pas les
-	     dossiers runtimes/ pour un plugin chargé via LoadFrom, on la copie
-	     donc à plat dans le dossier de sortie. -->
-	<ItemGroup>
-		<None Include="$(PkgAssimpNet)\runtimes\win-x64\native\assimp.dll" Visible="false" CopyToOutputDirectory="PreserveNewest" Link="assimp.dll" />
-	</ItemGroup>
+	<!-- AssimpNet et OpenTK (GLFW) chargent leurs DLL natives par P/Invoke :
+	     pour un plugin chargé via LoadFrom, le runtime ne probe que la racine
+	     de l'application (UoFiddler\bin\...\), pas les sous-dossiers runtimes/.
+	     On copie donc glfw3.dll + assimp.dll à la racine, comme la version
+	     Granny3DPlugin qui fonctionne déjà ailleurs. -->
+	<Target Name="CopyNativeDlls" AfterTargets="Build">
+		<ItemGroup>
+			<NativeLibs Include="$(OutDir)runtimes\win-x64\native\glfw3.dll" />
+			<NativeLibs Include="$(PkgAssimpNet)\runtimes\win-x64\native\assimp.dll" />
+		</ItemGroup>
+		<Copy SourceFiles="@(NativeLibs)" DestinationFolder="..\UoFiddler\bin\$(Configuration)\" />
+	</Target>
 
 </Project>

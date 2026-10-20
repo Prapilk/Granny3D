@@ -1881,6 +1881,43 @@ namespace UoFiddler.Plugin.Granny3D
 
                     var rot = uoBindWorld[rotSourceIdx].ExtractRotation();
                     Matrix4 baseRot = Matrix4.CreateFromQuaternion(rot);
+
+                    string aimChildName = MixamoCharacterImport.GetAimChildBoneName(name);
+                    if (!string.IsNullOrEmpty(aimChildName))
+                    {
+                        var childMarker = _markers.FirstOrDefault(m => string.Equals(m.BoneName, aimChildName, StringComparison.OrdinalIgnoreCase));
+
+                        int childRefIdx = -1;
+                        if (rotSourceIdx != idx)
+                        {
+                            string symChildName = aimChildName.Contains(" L ") ? aimChildName.Replace(" L ", " R ") : (aimChildName.Contains(" R ") ? aimChildName.Replace(" R ", " L ") : aimChildName);
+                            childRefIdx = FindMatchingBoneIndex(_refBones, symChildName);
+                        }
+                        else
+                        {
+                            childRefIdx = FindMatchingBoneIndex(_refBones, aimChildName);
+                        }
+
+                        if (childMarker != null && childRefIdx >= 0 && childRefIdx < nb)
+                        {
+                            Vector3 pSelfRef = uoBindWorld[rotSourceIdx].Row3.Xyz;
+                            Vector3 pChildRef = uoBindWorld[childRefIdx].Row3.Xyz;
+                            Vector3 vRef = pChildRef - pSelfRef;
+
+                            Vector3 pSelfTgt = marker.Position;
+                            Vector3 pChildTgt = childMarker.Position;
+                            Vector3 vTgt = pChildTgt - pSelfTgt;
+
+                            if (vRef.LengthSquared > 1e-4f && vTgt.LengthSquared > 1e-4f)
+                            {
+                                vRef.Normalize();
+                                vTgt.Normalize();
+                                OpenTK.Mathematics.Quaternion qAim = MixamoCharacterImport.RotationBetweenVectors(vRef, vTgt);
+                                baseRot = baseRot * Matrix4.CreateFromQuaternion(qAim);
+                            }
+                        }
+                    }
+
                     if (marker.RotationDegrees != Vector3.Zero)
                     {
                         Matrix4 localRot = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(marker.RotationDegrees.X)) *
@@ -2888,7 +2925,7 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 bool hasBones = scene.Meshes.Any(m => m.HasBones && m.BoneCount > 0);
-                if (ext == ".fbx" && hasBones)
+                if (ext == ".fbx")
                 {
                     if (MixamoCharacterImport.TryImport(filePath, _outFolder, _refPath, out var importedModel, out string importErr) && importedModel != null && importedModel.Parts.Count > 0)
                     {
@@ -2924,13 +2961,18 @@ namespace UoFiddler.Plugin.Granny3D
 
                         lblModelInfo.Text = $"Fichier : {fn}\n" +
                                             $"Meshs ({_rawParts.Count}) : {partNames}\n" +
-                                            $"Sommets : {totalVerts:N0} | Faces : {totalFaces:N0} (FBX Rigged)";
+                                            $"Sommets : {totalVerts:N0} | Faces : {totalFaces:N0} {(hasBones ? "(FBX Rigged)" : "(FBX Mesh)")}";
 
                         RebakeModelTransform();
-                        if (importedModel.Bones != null && importedModel.Bones.Count > 0)
+                        if (hasBones && importedModel.Bones != null && importedModel.Bones.Count > 0)
                         {
                             _liveOriginalBones = new List<GrannyBone>(importedModel.Bones);
                             InitMarkersFromLiveBones(importedModel.Bones);
+                        }
+                        else
+                        {
+                            _liveOriginalBones = null;
+                            AutoPlaceMixamoLandmarks();
                         }
                         EnsurePreviewModel();
                         PopulateTestAnimations();
@@ -2939,18 +2981,55 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
 
+                var nodes = new List<Node>();
+                var nodeParent = new List<int>();
+                void Collect(Node n, int par)
+                {
+                    int idx = nodes.Count;
+                    nodes.Add(n);
+                    nodeParent.Add(par);
+                    foreach (var c in n.Children) Collect(c, idx);
+                }
+                Collect(scene.RootNode, -1);
+                int nn = nodes.Count;
+                var localMix = new Matrix4[nn];
+                for (int i = 0; i < nn; i++)
+                {
+                    nodes[i].Transform.Decompose(out var sc, out var qq, out var tt);
+                    localMix[i] = Matrix4.CreateScale(sc.X, sc.Y, sc.Z) *
+                                  Matrix4.CreateFromQuaternion(new OpenTK.Mathematics.Quaternion(qq.X, qq.Y, qq.Z, qq.W)) *
+                                  Matrix4.CreateTranslation(tt.X, tt.Y, tt.Z);
+                }
+                var wMix = new Matrix4[nn];
+                for (int i = 0; i < nn; i++)
+                {
+                    int p = nodeParent[i];
+                    wMix[i] = (p >= 0 && p < nn && p != i) ? localMix[i] * wMix[p] : localMix[i];
+                }
+
                 _rawParts.Clear();
                 int totalVertsStatic = 0;
                 int totalFacesStatic = 0;
 
-                var bboxMin = new Assimp.Vector3D(float.MaxValue, float.MaxValue, float.MaxValue);
-                var bboxMax = new Assimp.Vector3D(float.MinValue, float.MinValue, float.MinValue);
-                foreach (var m in scene.Meshes)
+                var bboxMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                var bboxMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                for (int mi = 0; mi < scene.MeshCount; mi++)
                 {
+                    var m = scene.Meshes[mi];
+                    Matrix4 mMat = Matrix4.Identity;
+                    for (int ni = 0; ni < nn; ni++)
+                    {
+                        if (nodes[ni].MeshIndices != null && nodes[ni].MeshIndices.Contains(mi))
+                        {
+                            mMat = wMix[ni];
+                            break;
+                        }
+                    }
                     foreach (var v in m.Vertices)
                     {
-                        bboxMin.X = Math.Min(bboxMin.X, v.X); bboxMin.Y = Math.Min(bboxMin.Y, v.Y); bboxMin.Z = Math.Min(bboxMin.Z, v.Z);
-                        bboxMax.X = Math.Max(bboxMax.X, v.X); bboxMax.Y = Math.Max(bboxMax.Y, v.Y); bboxMax.Z = Math.Max(bboxMax.Z, v.Z);
+                        var wv = new Vector4(v.X, v.Y, v.Z, 1.0f) * mMat;
+                        bboxMin.X = Math.Min(bboxMin.X, wv.X); bboxMin.Y = Math.Min(bboxMin.Y, wv.Y); bboxMin.Z = Math.Min(bboxMin.Z, wv.Z);
+                        bboxMax.X = Math.Max(bboxMax.X, wv.X); bboxMax.Y = Math.Max(bboxMax.Y, wv.Y); bboxMax.Z = Math.Max(bboxMax.Z, wv.Z);
                     }
                 }
 
@@ -2969,6 +3048,16 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     var mesh = scene.Meshes[mi];
                     if (mesh.VertexCount == 0 || mesh.FaceCount == 0) continue;
+
+                    Matrix4 meshMat = Matrix4.Identity;
+                    for (int ni = 0; ni < nn; ni++)
+                    {
+                        if (nodes[ni].MeshIndices != null && nodes[ni].MeshIndices.Contains(mi))
+                        {
+                            meshMat = wMix[ni];
+                            break;
+                        }
+                    }
 
                     string mName = !string.IsNullOrEmpty(mesh.Name) ? mesh.Name : $"Mesh_{mi + 1}";
                     string texName = string.Empty;
@@ -2993,13 +3082,29 @@ namespace UoFiddler.Plugin.Granny3D
                     for (int i = 0; i < mesh.VertexCount; i++)
                     {
                         var v = mesh.Vertices[i];
-                        pVerts[i] = new Vector3(v.X * initialScale, v.Y * initialScale, v.Z * initialScale);
-                        if (mesh.HasNormals)
+                        var vWorld = new Vector4(v.X, v.Y, v.Z, 1.0f) * meshMat;
+                        if (isZUp)
                         {
-                            var n = mesh.Normals[i];
-                            pNorms[i] = new Vector3(n.X, n.Y, n.Z).Normalized();
+                            pVerts[i] = new Vector3(vWorld.X * initialScale, vWorld.Y * initialScale, vWorld.Z * initialScale);
+                            if (mesh.HasNormals)
+                            {
+                                var n = mesh.Normals[i];
+                                var nw = new Vector4(n.X, n.Y, n.Z, 0.0f) * meshMat;
+                                pNorms[i] = new Vector3(nw.X, nw.Y, nw.Z).Normalized();
+                            }
+                            else pNorms[i] = Vector3.UnitZ;
                         }
-                        else pNorms[i] = Vector3.UnitZ;
+                        else
+                        {
+                            pVerts[i] = new Vector3(vWorld.X * initialScale, -vWorld.Z * initialScale, vWorld.Y * initialScale);
+                            if (mesh.HasNormals)
+                            {
+                                var n = mesh.Normals[i];
+                                var nw = new Vector4(n.X, n.Y, n.Z, 0.0f) * meshMat;
+                                pNorms[i] = new Vector3(nw.X, -nw.Z, nw.Y).Normalized();
+                            }
+                            else pNorms[i] = Vector3.UnitZ;
+                        }
 
                         if (mesh.HasTextureCoords(0))
                         {
