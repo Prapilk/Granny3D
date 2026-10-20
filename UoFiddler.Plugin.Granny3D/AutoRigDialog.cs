@@ -2403,10 +2403,10 @@ namespace UoFiddler.Plugin.Granny3D
                     if (bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
                     {
                         var refBip = _refBones?.FirstOrDefault(b => string.Equals(b.Name, "Bip01", StringComparison.OrdinalIgnoreCase));
-                        Vector3 refBindPos = refBip != null ? refBip.LocalPosition : new Vector3(0f, 0.026f, 0.937f);
+                        float refBindZ = refBip != null ? refBip.LocalPosition.Z : 0.937f;
                         var animPos = track.EvaluatePos(time);
-                        var animDelta = animPos - refBindPos;
-                        pos = bone.LocalPosition + animDelta;
+                        float deltaZ = animPos.Z - refBindZ;
+                        pos = new Vector3(bone.LocalPosition.X, bone.LocalPosition.Y, bone.LocalPosition.Z + deltaZ);
                     }
                     else
                     {

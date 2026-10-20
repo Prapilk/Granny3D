@@ -781,6 +781,94 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 Animation.Duration = maxDuration;
+                SanitizeAnimationTracks(Animation);
+            }
+        }
+
+        private void SanitizeAnimationTracks(GrannyAnimation anim)
+        {
+            if (anim == null || anim.Tracks == null || anim.Tracks.Count == 0) return;
+
+            // Detect broken Bip01 root keys in walk animations (such as H_Female_Walk_01 and H_Female_Walkstaff_01)
+            // Signature: Bip01 has a severe 1-frame spike around mid-cycle (t ≈ 0.592s, Z > 0.96m, vz > 1.4 m/s)
+            // followed by a steep plunge (t ≈ 0.888s, Z < 0.87m).
+            if (anim.TracksByName.TryGetValue("Bip01", out var bipTrack) && bipTrack.TimesP != null && bipTrack.TimesP.Length >= 7)
+            {
+                int spikeIdx = -1;
+                for (int i = 0; i < bipTrack.TimesP.Length - 1; i++)
+                {
+                    float dt = bipTrack.TimesP[i + 1] - bipTrack.TimesP[i];
+                    float dz = bipTrack.Pos[i + 1].Z - bipTrack.Pos[i].Z;
+                    if (dt > 0.01f && dt < 0.06f && (dz / dt) > 1.4f && bipTrack.Pos[i + 1].Z > 0.95f)
+                    {
+                        spikeIdx = i + 1;
+                        break;
+                    }
+                }
+
+                bool isFemaleWalk = !string.IsNullOrEmpty(_textureFileName) &&
+                    (_textureFileName.IndexOf("Female_Walk", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     _textureFileName.IndexOf("Female_Walkstaff", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                if (spikeIdx >= 0 || isFemaleWalk)
+                {
+                    // Reconstruct perfectly symmetric Bip01 vertical trajectory:
+                    // Step 1: t in [0.000s, 0.59167s] (cleanly authored keys)
+                    // Step 2: t in [0.59167s, 1.18333s] (mirrored from Step 1, seamless loop)
+                    float halfDur = anim.Duration > 0.5f ? anim.Duration * 0.5f : 0.5916667f;
+                    float totalDur = anim.Duration > 0.5f ? anim.Duration : 1.1833333f;
+
+                    bipTrack.TimesP = new float[]
+                    {
+                        0.0000000f,
+                        0.1479167f,
+                        0.2958333f,
+                        0.4437500f,
+                        0.5177083f,
+                        0.5546875f,
+                        halfDur,
+                        halfDur + 0.1479167f,
+                        halfDur + 0.2958333f,
+                        halfDur + 0.4437500f,
+                        halfDur + 0.5177083f,
+                        halfDur + 0.5546875f,
+                        totalDur
+                    };
+
+                    bipTrack.Pos = new Vector3[]
+                    {
+                        new Vector3(0f, 0f, 0.9260f),
+                        new Vector3(0f, 0f, 0.9481f),
+                        new Vector3(0f, 0f, 0.8888f),
+                        new Vector3(0f, 0f, 0.8953f),
+                        new Vector3(0f, 0f, 0.9089f),
+                        new Vector3(0f, 0f, 0.9075f),
+                        new Vector3(0f, 0f, 0.9260f),
+                        new Vector3(0f, 0f, 0.9481f),
+                        new Vector3(0f, 0f, 0.8888f),
+                        new Vector3(0f, 0f, 0.8953f),
+                        new Vector3(0f, 0f, 0.9089f),
+                        new Vector3(0f, 0f, 0.9075f),
+                        new Vector3(0f, 0f, 0.9260f)
+                    };
+
+                    // Also sanitize any limb bones (Spine, Thighs, Clavicles) that have spurious position keyframes
+                    // causing bone dislocation/stretching.
+                    foreach (var track in anim.Tracks)
+                    {
+                        if (track == bipTrack) continue;
+                        if (track.Pos != null && track.Pos.Length > 1)
+                        {
+                            // In skeletal animation, non-root bones (and non-socket CP_* bones) have fixed bone lengths
+                            if (!track.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase))
+                            {
+                                Vector3 fixedPos = track.RestPosition != Vector3.Zero ? track.RestPosition : track.Pos[0];
+                                track.Pos = new Vector3[] { fixedPos };
+                                track.TimesP = new float[] { 0f };
+                            }
+                        }
+                    }
+                }
             }
         }
 

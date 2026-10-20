@@ -7453,10 +7453,22 @@ namespace UoFiddler.Plugin.Granny3D
                             // Custom imported models (e.g. Mixamo characters with custom limb/finger lengths):
                             // Root/pelvis (Bip01), attachment sockets (CP_*), and bones with actual position animation
                             // evaluate their animated track, while static limb bones preserve the custom model's local bone lengths.
-                            bool useAnimPos = isRoot ||
-                                              b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
-                                              TrackPositionVaries(tr, 0.002f);
-                            pos = useAnimPos ? tr.EvaluatePos(meshT) : b.LocalPosition;
+                            if (b.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
+                            {
+                                float refBindZ = 0.937f;
+                                if (anim.SkeletonByName.TryGetValue("Bip01", out var skelBip))
+                                    refBindZ = skelBip.LocalPosition.Z;
+                                Vector3 trPos = tr.EvaluatePos(meshT);
+                                float deltaZ = trPos.Z - refBindZ;
+                                pos = new Vector3(b.LocalPosition.X, b.LocalPosition.Y, b.LocalPosition.Z + deltaZ);
+                            }
+                            else
+                            {
+                                bool useAnimPos = isRoot ||
+                                                  b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
+                                                  TrackPositionVaries(tr, 0.002f);
+                                pos = useAnimPos ? tr.EvaluatePos(meshT) : b.LocalPosition;
+                            }
                         }
 
                         lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(meshT)) * Matrix4.CreateTranslation(pos);
