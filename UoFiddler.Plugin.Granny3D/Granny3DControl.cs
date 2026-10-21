@@ -249,18 +249,34 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
-        private Vector3 EyePosition()
+        public void OnMouseWheel(MouseEventArgs e)
+        {
+            Distance = MathHelper.Clamp(Distance * (1f - e.Delta * 0.001f), MinDistance, MaxDistance);
+        }
+
+        // ---- Standard orthographic-style views (3ds Max-style presets) ----
+        // The character faces +Y (its "front"), so the Front camera sits at +Y.
+        public void SetViewDegrees(float yawDeg, float pitchDeg)
+        {
+            Yaw = MathHelper.DegreesToRadians(yawDeg);
+            Pitch = MathHelper.Clamp(MathHelper.DegreesToRadians(pitchDeg),
+                -MathHelper.PiOver2 + 0.01f, MathHelper.PiOver2 - 0.01f);
+        }
+        public void ViewFront()  { SetViewDegrees(180f, 0f); }
+        public void ViewBack()   { SetViewDegrees(0f, 0f); }
+        public void ViewLeft()   { SetViewDegrees(-90f, 0f); }
+        public void ViewRight()  { SetViewDegrees(90f, 0f); }
+        public void ViewTop()    { SetViewDegrees(180f, 89.5f); }
+        public void ViewBottom() { SetViewDegrees(180f, -89.5f); }
+        public void ViewIso()    { SetViewDegrees(135f, 35f); }
+
+        public Vector3 EyePosition()
         {
             Vector3 offset = new Vector3(
                 (float)(Distance * Math.Cos(Pitch) * Math.Sin(Yaw)),
                 (float)(-Distance * Math.Cos(Pitch) * Math.Cos(Yaw)),
                 (float)(Distance * Math.Sin(Pitch)));
             return Target + offset;
-        }
-
-        public void OnMouseWheel(MouseEventArgs e)
-        {
-            Distance = MathHelper.Clamp(Distance * (1f - e.Delta * 0.001f), MinDistance, MaxDistance);
         }
     }
 
@@ -282,6 +298,8 @@ namespace UoFiddler.Plugin.Granny3D
     {
         public static string BasePath { get; set; } = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\";
         public static string MapsPath => Path.Combine(BasePath, "Maps");
+        // Saved pose files (pose studio) shown in the "Poses" category of the animations tree.
+        public static string PosesFolder => Path.Combine(BasePath, "Poses");
 
         private static string SettingsFilePath
         {
@@ -382,6 +400,10 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblAnimations;
         private TreeView tvLoaded;
         private GroupBox grpLoaded;
+        // Ctrl/Shift multi-selection for the "Meshes affichés" tree (the WinForms
+        // TreeView has no built-in multi-select, and CheckBoxes suppress it further).
+        private readonly HashSet<TreeNode> _treeMultiSel = new HashSet<TreeNode>();
+        private TreeNode _treeSelAnchor;
         private ContextMenuStrip tvMenu;
         private ContextMenuStrip tvAnimMenu;
         private ContextMenuStrip lstLoadedMenu;
@@ -438,6 +460,56 @@ namespace UoFiddler.Plugin.Granny3D
         private CheckBox chkCloth;
         private NumericUpDown nudBakeFps, nudLoopBlend;
         private bool _suppressEquip;
+        // ---- Pose studio ("Personnage (déplacement / pose)" tab) ----
+        // Additive pose layer over the current animation / bind pose: extra local
+        // rotation + translation per bone (keyed by name), plus a global root
+        // displacement so the character can be aligned against a fixed equipment
+        // mesh imported in a non T-pose. The mesh itself is never modified.
+        private class BonePoseOffset
+        {
+            public Vector3 RotDeg;   // extra local rotation (Euler degrees)
+            public Vector3 Pos;      // extra local translation
+        }
+        private readonly Dictionary<string, BonePoseOffset> _poseOffsets =
+            new Dictionary<string, BonePoseOffset>(StringComparer.OrdinalIgnoreCase);
+        // Absolute pose layer loaded from a v2 .pose file: per bone name, the exact
+        // local transform to force (replaces the animated/bind local matrix) so a
+        // reloaded pose reproduces the preview on screen. When non-empty it takes
+        // precedence over _poseOffsets for the target meshes.
+        private class BonePoseAbs
+        {
+            public Quaternion Rot;       // captured local pose rotation
+            public Vector3 Pos;          // captured local pose translation
+            public Quaternion BindRot;   // base local the pose was captured against (v3)
+            public Vector3 BindPos;
+            public bool HasBind;         // false for v2 files (absolute replacement)
+        }
+        private readonly Dictionary<string, BonePoseAbs> _poseAbsolute =
+            new Dictionary<string, BonePoseAbs>(StringComparer.OrdinalIgnoreCase);
+        private bool _poseHasAbsolute;   // true once a v2 pose is loaded
+        private Vector3 _poseGlobalOffset;
+        private float _poseGlobalYaw;
+        private bool _poseGlobalBodyOnly = true;  // move only the character body, not free meshes
+        private bool _suppressPose;
+        // Pose target: when non-empty, the pose (bones + global) only affects the
+        // meshes chosen here (indices into _loadedMeshes, matched from the "Meshes
+        // affichés" selection/checkboxes). Empty = auto (character body only).
+        private readonly HashSet<int> _poseTargets = new HashSet<int>();
+        private int _poseTargetMode;              // 0 = auto (corps), 1 = sélection « Meshes affichés »
+        private ComboBox cbPoseTarget;
+        private TabControl tabEquip;
+        private ComboBox cbPoseBones;
+        private CheckBox chkPoseMirror, chkPoseBodyOnly;
+        private NumericUpDown nudPoseRotX, nudPoseRotY, nudPoseRotZ;
+        private NumericUpDown nudPoseOffX, nudPoseOffY, nudPoseOffZ;
+        private NumericUpDown nudPoseGlobX, nudPoseGlobY, nudPoseGlobZ, nudPoseGlobYaw;
+        private Label lblPoseInfo;
+        private Label lblPoseTargetInfo;
+        private Button btnPoseResetBone, btnPoseResetAll, btnPoseSave;
+        // ---- 3ds Max-style view cube (drawn in the top-left corner of the editor view) ----
+        private int _viewCubeVao, _viewCubeVbo, _viewCubeTex;
+        private const int ViewCubePx = 88;
+        private const int ViewCubeMargin = 12;
         // UI - multipart character menu (Visage / Coiffure / Barbe / Torse)
         private GroupBox grpChar;
         private GroupBox grpCamera;
@@ -715,6 +787,10 @@ namespace UoFiddler.Plugin.Granny3D
             tvLoaded.DoubleClick += TvLoaded_DoubleClick;
             tvLoaded.AfterSelect += (s, e) => TvLoaded_AfterSelect(s, e);
             tvLoaded.AfterCheck += (s, e) => TvLoaded_AfterCheck(s, e);
+            tvLoaded.NodeMouseClick += TvLoaded_NodeMouseClick;
+            tvLoaded.KeyDown += TvLoaded_KeyDown;
+            tvLoaded.DrawMode = TreeViewDrawMode.OwnerDrawText;
+            tvLoaded.DrawNode += TvLoaded_DrawNode;
 
             var pnlAttach = new Panel { Dock = DockStyle.Bottom, Height = 52 };
             lblBone = new Label
@@ -1359,6 +1435,293 @@ namespace UoFiddler.Plugin.Granny3D
 
             grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, cbMirrorArms, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnDuplicateMirror, btnSubdiv, nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole, btnBakeModifs });
 
+            // ---- Split the old "Équipement" panel into two tabs: equipment placement
+            // | character pose/displacement (pose studio for non T-pose imports) ----
+            tabEquip = new TabControl { Dock = DockStyle.Fill };
+            var tabEquipment = new TabPage("Équipement (attache)") { BackColor = Color.FromArgb(45, 45, 48) };
+            var tabPose = new TabPage("Personnage (déplacement / pose)") { BackColor = Color.FromArgb(45, 45, 48), AutoScroll = true };
+            tabEquipment.Controls.Add(grpEquip);   // grpEquip already Dock=Fill
+
+            // ============================================================================
+            // POSE STUDIO — styled like the AutoRigDialog / "Convert/create rig" panels:
+            // accent-titled GroupBoxes stacked top-down inside a scrollable dark panel,
+            // with flat tinted buttons, (22,22,24) NUDs, small bold section fonts.
+            // ============================================================================
+            var grpPose = new Panel
+            {
+                Dock = DockStyle.Fill,
+                AutoScroll = true,
+                BackColor = Color.FromArgb(30, 30, 32),
+                Padding = new Padding(12)
+            };
+
+            Color cTextOn = Color.White;
+            var fontSection = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+            var fontBody = new Font("Segoe UI", 8.75f, FontStyle.Regular);
+            var fontSmall = new Font("Segoe UI", 8f, FontStyle.Regular);
+
+            // Section container: accent-titled GroupBox, Dock=Top, fixed height.
+            GroupBox MakePoseSection(string title, Color accent, int height)
+            {
+                return new GroupBox
+                {
+                    Text = title,
+                    Dock = DockStyle.Top,
+                    Height = height,
+                    ForeColor = accent,
+                    Font = fontSection,
+                    Padding = new Padding(10)
+                };
+            }
+            // Row panel with absolute placement (label then control).
+            Panel PoseRow(int h)
+            {
+                return new Panel { Dock = DockStyle.Top, Height = h, Padding = new Padding(0, 2, 0, 2) };
+            }
+            // Styled NUD (matches AutoRigDialog: (22,22,24)/White).
+            NumericUpDown MakePoseNud(decimal min, decimal max, decimal inc, int dec, EventHandler onChanged, int width = 84, Color? fore = null)
+            {
+                var n = new NumericUpDown
+                {
+                    Width = width,
+                    Minimum = min,
+                    Maximum = max,
+                    Increment = inc,
+                    DecimalPlaces = dec,
+                    BackColor = Color.FromArgb(22, 22, 24),
+                    ForeColor = fore ?? cTextOn,
+                    TextAlign = HorizontalAlignment.Right,
+                    Font = fontBody
+                };
+                n.ValueChanged += onChanged;
+                return n;
+            }
+            // Flat tinted button (matches AutoRigDialog CreateTBtn).
+            Button MakePoseBtn(string txt, Color back, EventHandler onClick, Font f = null, int h = 26, int w = 0)
+            {
+                var b = new Button
+                {
+                    Text = txt, Height = h, AutoSize = w <= 0, Width = w > 0 ? w : 0,
+                    BackColor = back, ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat, Font = f ?? fontBody,
+                    Margin = new Padding(3, 3, 3, 3)
+                };
+                b.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 75);
+                b.Click += onClick;
+                return b;
+            }
+            // Small axis stepper button.
+            Button MakeAxisBtn(string txt, NumericUpDown target, decimal delta)
+            {
+                var b = new Button
+                {
+                    Text = txt, Size = new Size(44, 25),
+                    BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat, Font = fontSmall,
+                    Margin = new Padding(2, 2, 2, 2)
+                };
+                b.FlatAppearance.BorderColor = Color.FromArgb(65, 65, 70);
+                b.Click += (s, e) => target.Value = Math.Max(target.Minimum, Math.Min(target.Maximum, target.Value + delta));
+                return b;
+            }
+
+            // ---- Header / intro banner ----
+            var pnlIntro = new Panel { Dock = DockStyle.Top, Height = 46, BackColor = Color.FromArgb(38, 40, 46) };
+            pnlIntro.Controls.Add(new Label
+            {
+                Text = "🦴  Pose du rig — alignez le personnage sur un équipement importé.",
+                Location = new Point(10, 6), AutoSize = true,
+                ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+            });
+            pnlIntro.Controls.Add(new Label
+            {
+                Text = "Le mesh n'est jamais modifié : seul le squelette bouge (skinning intact).",
+                Location = new Point(10, 25), AutoSize = true,
+                ForeColor = Color.Gray, Font = fontSmall
+            });
+
+            // ================= Section 1 — CIBLE =================
+            var secTarget = MakePoseSection("1.  Cible de la pose (meshes affectés)", Color.DeepSkyBlue, 96);
+            var p1a = PoseRow(30);
+            p1a.Controls.Add(new Label { Text = "Meshes affectés", Location = new Point(2, 6), AutoSize = true, ForeColor = Color.Gainsboro, Font = fontBody });
+            cbPoseTarget = new ComboBox
+            {
+                Location = new Point(120, 3), Width = 430,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(22, 22, 24), ForeColor = cTextOn, Font = fontBody
+            };
+            cbPoseTarget.Items.AddRange(new object[]
+            {
+                "Auto — le personnage seulement (corps + sa peau)",
+                "Sélection « Meshes affichés » — cochez les meshes à poser"
+            });
+            cbPoseTarget.SelectedIndex = 0;
+            cbPoseTarget.SelectedIndexChanged += (s, e) =>
+            {
+                _poseTargetMode = cbPoseTarget.SelectedIndex;
+                SyncPoseTargetsFromTree();
+                Repose();
+            };
+            p1a.Controls.Add(cbPoseTarget);
+            var p1b = PoseRow(24);
+            lblPoseTargetInfo = new Label
+            {
+                Text = "Cible : (auto)", Location = new Point(122, 3), Width = 430, Height = 16,
+                ForeColor = Color.LightSkyBlue, Font = fontSmall
+            };
+            p1b.Controls.Add(lblPoseTargetInfo);
+            secTarget.Controls.Add(p1b);
+            secTarget.Controls.Add(p1a);
+
+            // ================= Section 2 — OS =================
+            var secBone = MakePoseSection("2.  Os à poser + miroir", Color.LimeGreen, 92);
+            var p2a = PoseRow(32);
+            p2a.Controls.Add(new Label { Text = "Os", Location = new Point(2, 7), AutoSize = true, ForeColor = Color.Gainsboro, Font = fontBody });
+            cbPoseBones = new ComboBox
+            {
+                Location = new Point(40, 4), Width = 340,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                DropDownWidth = 380, MaxDropDownItems = 20,
+                BackColor = Color.FromArgb(22, 22, 24), ForeColor = cTextOn, Font = fontBody
+            };
+            cbPoseBones.SelectedIndexChanged += CbPoseBones_Changed;
+            p2a.Controls.Add(cbPoseBones);
+            chkPoseMirror = new CheckBox
+            {
+                Text = "Miroir L/R",
+                Location = new Point(392, 6), Width = 110,
+                ForeColor = Color.LightYellow,
+                Font = new Font("Segoe UI", 8.75f, FontStyle.Bold)
+            };
+            p2a.Controls.Add(chkPoseMirror);
+            var p2b = PoseRow(22);
+            p2b.Controls.Add(new Label
+            {
+                Text = "Le miroir applique le même réglage à l'os opposé (ex. L UpperArm ↔ R UpperArm).",
+                Location = new Point(40, 2), AutoSize = true,
+                ForeColor = Color.Gray, Font = fontSmall
+            });
+            secBone.Controls.Add(p2b);
+            secBone.Controls.Add(p2a);
+
+            // ================= Section 3 — ROTATION =================
+            var secRot = MakePoseSection("3.  Rotation locale de l'os (°)", Color.Orange, 168);
+            nudPoseRotX = MakePoseNud(-360, 360, 1, 1, OnPoseRotChanged, 84, Color.Gold);
+            nudPoseRotY = MakePoseNud(-360, 360, 1, 1, OnPoseRotChanged, 84);
+            nudPoseRotZ = MakePoseNud(-360, 360, 1, 1, OnPoseRotChanged, 84);
+            var rotNuds = new[] { nudPoseRotX, nudPoseRotY, nudPoseRotZ };
+            var rotAxis = new[] { "X", "Y", "Z" };
+            var rotSteps = new (string t, decimal d)[] { ("-90", -90), ("-15", -15), ("-5", -5), ("+5", 5), ("+15", 15), ("+90", 90) };
+            for (int a = 0; a < 3; a++)   // X,Y,Z top to bottom (first Dock=Top stays on top)
+            {
+                var row = PoseRow(34);
+                row.Controls.Add(new Label { Text = rotAxis[a], Location = new Point(2, 6), Width = 18, Height = 18, ForeColor = Color.Gainsboro, Font = fontBody });
+                rotNuds[a].Location = new Point(22, 3);
+                row.Controls.Add(rotNuds[a]);
+                var flow = new FlowLayoutPanel { Location = new Point(114, 2), Size = new Size(300, 30), FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+                foreach (var st in rotSteps)
+                    flow.Controls.Add(MakeAxisBtn(st.t, rotNuds[a], st.d));
+                row.Controls.Add(flow);
+                secRot.Controls.Add(row);
+            }
+
+            // ================= Section 4 — TRANSLATION =================
+            var secTr = MakePoseSection("4.  Translation locale de l'os", Color.MediumOrchid, 138);
+            nudPoseOffX = MakePoseNud(-5m, 5m, 0.005m, 3, OnPoseOffChanged, 110, Color.Gold);
+            nudPoseOffY = MakePoseNud(-5m, 5m, 0.005m, 3, OnPoseOffChanged, 110);
+            nudPoseOffZ = MakePoseNud(-5m, 5m, 0.005m, 3, OnPoseOffChanged, 110);
+            var offNuds = new[] { nudPoseOffX, nudPoseOffY, nudPoseOffZ };
+            for (int a = 0; a < 3; a++)   // X,Y,Z top to bottom
+            {
+                var row = PoseRow(32);
+                row.Controls.Add(new Label { Text = rotAxis[a], Location = new Point(2, 6), Width = 18, Height = 18, ForeColor = Color.Gainsboro, Font = fontBody });
+                offNuds[a].Location = new Point(22, 3);
+                row.Controls.Add(offNuds[a]);
+                if (a == 0)
+                    row.Controls.Add(new Label { Text = "unités monde — déplacements fins", Location = new Point(140, 6), AutoSize = true, ForeColor = Color.Gray, Font = fontSmall });
+                secTr.Controls.Add(row);
+            }
+
+            // ================= Section 5 — DÉPLACEMENT GLOBAL =================
+            var secGlob = MakePoseSection("5.  Déplacement global du corps (racine)", Color.DeepSkyBlue, 150);
+            nudPoseGlobX = MakePoseNud(-20m, 20m, 0.01m, 3, OnPoseGlobalChanged, 90, Color.Gold);
+            nudPoseGlobY = MakePoseNud(-20m, 20m, 0.01m, 3, OnPoseGlobalChanged, 90);
+            nudPoseGlobZ = MakePoseNud(-20m, 20m, 0.01m, 3, OnPoseGlobalChanged, 90);
+            var globNuds = new[] { nudPoseGlobX, nudPoseGlobY, nudPoseGlobZ };
+            for (int a = 0; a < 3; a++)   // X,Y,Z top to bottom
+            {
+                var row = PoseRow(32);
+                row.Controls.Add(new Label { Text = rotAxis[a], Location = new Point(2, 6), Width = 18, Height = 18, ForeColor = Color.Gainsboro, Font = fontBody });
+                globNuds[a].Location = new Point(22, 3);
+                row.Controls.Add(globNuds[a]);
+                if (a == 0)
+                {
+                    row.Controls.Add(new Label { Text = "Lacet (°)", Location = new Point(150, 6), AutoSize = true, ForeColor = Color.Gainsboro, Font = fontBody });
+                    nudPoseGlobYaw = MakePoseNud(-180m, 180m, 1m, 1, OnPoseGlobalChanged, 90, Color.Gold);
+                    nudPoseGlobYaw.Location = new Point(210, 3);
+                    row.Controls.Add(nudPoseGlobYaw);
+                }
+                secGlob.Controls.Add(row);
+            }
+            var pGlobChk = PoseRow(26);
+            chkPoseBodyOnly = new CheckBox
+            {
+                Text = "Corps seulement (l'équipement libre reste en place)",
+                Location = new Point(4, 4), Width = 430, Checked = true,
+                ForeColor = Color.LightYellow, Font = fontBody
+            };
+            chkPoseBodyOnly.CheckedChanged += OnPoseGlobalChanged;
+            pGlobChk.Controls.Add(chkPoseBodyOnly);
+            secGlob.Controls.Add(pGlobChk);
+
+            // ================= Section 6 — ACTIONS / SAUVEGARDE =================
+            var secAct = MakePoseSection("6.  Enregistrement de la pose", Color.White, 132);
+            var flowAct = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 34, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+            btnPoseResetBone = MakePoseBtn("↺  Réinitialiser l'os", Color.FromArgb(120, 70, 20), BtnPoseResetBone_Click);
+            btnPoseResetAll = MakePoseBtn("⟲  Tout réinitialiser", Color.FromArgb(120, 50, 45), BtnPoseResetAll_Click);
+            flowAct.Controls.Add(btnPoseResetBone);
+            flowAct.Controls.Add(btnPoseResetAll);
+            btnPoseSave = new Button
+            {
+                Text = "💾  Sauvegarder la pose sous...  (fichier .pose)",
+                Dock = DockStyle.Bottom, Height = 40,
+                BackColor = Color.FromArgb(24, 120, 56), ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 10f, FontStyle.Bold)
+            };
+            btnPoseSave.FlatAppearance.BorderColor = Color.FromArgb(60, 170, 90);
+            btnPoseSave.Click += BtnPoseSave_Click;
+            var lblSaveHint = new Label
+            {
+                Dock = DockStyle.Bottom, Height = 34,
+                Text = "La pose COMPLÈTE (tous les os + déplacement) est enregistrée dans Animations → « Poses ». Un clic la recharge à l'identique.",
+                ForeColor = Color.Gray, Font = fontSmall
+            };
+            secAct.Controls.Add(lblSaveHint);
+            secAct.Controls.Add(btnPoseSave);
+            secAct.Controls.Add(flowAct);
+
+            // Stack sections top-down. Dock=Top lays out in reverse z-order, so we add
+            // them all then explicitly SendToBack from the BOTTOM section upward: the last
+            // one sent to back ends up at the very top.
+            grpPose.Controls.Add(secAct);
+            grpPose.Controls.Add(secGlob);
+            grpPose.Controls.Add(secTr);
+            grpPose.Controls.Add(secRot);
+            grpPose.Controls.Add(secBone);
+            grpPose.Controls.Add(secTarget);
+            grpPose.Controls.Add(pnlIntro);
+            secAct.BringToFront();       // ensure final stacking is deterministic
+            secGlob.BringToFront();
+            secTr.BringToFront();
+            secRot.BringToFront();
+            secBone.BringToFront();
+            secTarget.BringToFront();
+            pnlIntro.BringToFront();
+
+            tabPose.Controls.Add(grpPose);
+            tabEquip.TabPages.Add(tabEquipment);
+            tabEquip.TabPages.Add(tabPose);
+
             // ---- Multipart character menu (H_Male / H_Female parts) ----
             grpChar = new GroupBox
             {
@@ -1482,7 +1845,7 @@ namespace UoFiddler.Plugin.Granny3D
             grpCamera.Controls.AddRange(new Control[] { chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert, nudUoBright, chkUoFeet, nudUoOffX, nudUoOffY, chkUoRef, nudUoRefAction, nudUoRefFrame, nudUoRefScale, nudUoRefOpacity, nudUoYaw, nudUoGlobal });
 
             var pnlPlayRow = new Panel { Dock = DockStyle.Top, Height = 540 };
-            pnlPlayRow.Controls.Add(grpEquip);      // Fill
+            pnlPlayRow.Controls.Add(tabEquip);     // Fill (tabs : Équipement | Personnage)
             pnlPlayRow.Controls.Add(grpCamera);     // Right (docked first -> further right)
             pnlPlayRow.Controls.Add(grpChar);       // Right
             pnlPlayRow.Controls.Add(grpPlayback);   // Left
@@ -3351,6 +3714,7 @@ namespace UoFiddler.Plugin.Granny3D
                 AddAnimCat("SeaCreatures", new AnimCat { Label = "SeaCreatures", Folder = Path.Combine(BasePath, "SeaCreatures") });
                 AddAnimCat("Equipment", new AnimCat { Label = "Equipment", Folder = Path.Combine(BasePath, "Others") });
                 AddAnimCat("Importés (Mixamo)", new AnimCat { Label = "Importés (Mixamo)", Folder = Path.Combine(BasePath, "Others"), Pattern = "*.anim" });
+                AddAnimCat("Poses", new AnimCat { Label = "Poses", Folder = PosesFolder, Pattern = "*.pose" });
             }
             finally
             {
@@ -3460,14 +3824,20 @@ namespace UoFiddler.Plugin.Granny3D
                 return;
             }
 
-            tvAnimMenu.Items.Add("Lire l'animation", null, (s, a) => PlayAnimationFile(animPath));
+            bool isPose = PoseFile.IsPoseFile(animPath);
+            if (isPose)
+                tvAnimMenu.Items.Add("Appliquer cette pose", null, (s, a) => ApplyPoseFile(animPath));
+            else
+                tvAnimMenu.Items.Add("Lire l'animation", null, (s, a) => PlayAnimationFile(animPath));
             tvAnimMenu.Items.Add(new ToolStripSeparator());
             var applyMixamoClip = new ToolStripMenuItem("⚡ Convert/create rig to UO (Importer une animation FBX)...", null, (s, a) => BtnImportAnim_Click(s, a));
             applyMixamoClip.Font = new Font(tvAnimMenu.Font, FontStyle.Bold);
             tvAnimMenu.Items.Add(applyMixamoClip);
 
             bool isCustomAnim = animPath.EndsWith(".anim", StringComparison.OrdinalIgnoreCase) ||
-                                (node.Parent?.Tag as AnimCat)?.Pattern == "*.anim";
+                                animPath.EndsWith(".pose", StringComparison.OrdinalIgnoreCase) ||
+                                (node.Parent?.Tag as AnimCat)?.Pattern == "*.anim" ||
+                                (node.Parent?.Tag as AnimCat)?.Pattern == "*.pose";
 
             if (isCustomAnim)
             {
@@ -3548,7 +3918,12 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (_suppressAnimSelect) return;
             if (e.Node?.Tag is string path)
-                PlayAnimationFile(path);
+            {
+                if (PoseFile.IsPoseFile(path))
+                    ApplyPoseFile(path);
+                else
+                    PlayAnimationFile(path);
+            }
         }
 
         private void BtnTPose_Click(object sender, EventArgs e)
@@ -3594,12 +3969,501 @@ namespace UoFiddler.Plugin.Granny3D
                 ClearClothBake(lm);
             }
 
+            // Drop the pose-studio layer too: it is applied independently of the
+            // animation, so leaving it set would make "T-Pose" show the last saved
+            // pose instead of the rest pose. The tree selection is cleared above, so
+            // no pose node re-applies itself on the next refresh.
+            ClearPoseLayer();
+
             ApplyAnimationPose(0f);
             ResetAllCloth();
             RefreshVertexBuffers(true);
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
             UpdateModelInfo();
             Log("Pose : T-Pose rétablie (Rest Pose).");
+        }
+
+        // ==================== POSE STUDIO ====================
+        // Additive per-bone pose layer + global character displacement, saved as
+        // .pose files in BasePath\Poses (tree category "Poses").
+
+        // The most complete skeleton currently loaded (the posing host).
+        private List<GrannyBone> PoseHostBones()
+        {
+            List<GrannyBone> bones = null;
+            foreach (var lm in _loadedMeshes)
+            {
+                if (lm.Bones != null && lm.Bones.Count > 0 &&
+                    (bones == null || lm.Bones.Count > bones.Count))
+                    bones = lm.Bones;
+            }
+            return bones;
+        }
+
+        // Drop every pose layer (additive offsets, absolute pose, global displacement)
+        // and refresh the pose UI. Used by "T-Pose" and when an animation is loaded, so
+        // neither a loaded pose nor a stale L/R offset can leak into another view.
+        private void ClearPoseLayer()
+        {
+            _poseOffsets.Clear();
+            _poseAbsolute.Clear();
+            _poseHasAbsolute = false;
+            _poseGlobalOffset = Vector3.Zero;
+            _poseGlobalYaw = 0f;
+            UpdatePoseNudForBone(SelectedPoseBone());
+            UpdatePoseGlobalNuds();
+        }
+
+        private void PopulatePoseBones()
+        {
+            if (cbPoseBones == null) return;
+            string prev = cbPoseBones.SelectedItem as string;
+            var bones = PoseHostBones();
+
+            cbPoseBones.BeginUpdate();
+            cbPoseBones.Items.Clear();
+            cbPoseBones.Items.Add("(choisir un os)");
+            if (bones != null)
+            {
+                foreach (var b in bones)
+                    if (!string.IsNullOrEmpty(b.Name)) cbPoseBones.Items.Add(b.Name);
+            }
+            cbPoseBones.EndUpdate();
+
+            if (!string.IsNullOrEmpty(prev) && cbPoseBones.Items.Contains(prev))
+                cbPoseBones.SelectedItem = prev;
+            else
+                cbPoseBones.SelectedIndex = 0;
+        }
+
+        private string SelectedPoseBone()
+        {
+            if (cbPoseBones == null || cbPoseBones.SelectedIndex <= 0) return null;
+            return cbPoseBones.SelectedItem as string;
+        }
+
+        private void CbPoseBones_Changed(object sender, EventArgs e)
+        {
+            if (_suppressPose) return;
+            UpdatePoseNudForBone(SelectedPoseBone());
+        }
+
+        private void UpdatePoseNudForBone(string name)
+        {
+            if (nudPoseRotX == null) return;
+            _suppressPose = true;
+            try
+            {
+                BonePoseOffset po = null;
+                if (!string.IsNullOrEmpty(name)) _poseOffsets.TryGetValue(name, out po);
+                nudPoseRotX.Value = ClampNud(nudPoseRotX, po?.RotDeg.X ?? 0f);
+                nudPoseRotY.Value = ClampNud(nudPoseRotY, po?.RotDeg.Y ?? 0f);
+                nudPoseRotZ.Value = ClampNud(nudPoseRotZ, po?.RotDeg.Z ?? 0f);
+                nudPoseOffX.Value = ClampNud(nudPoseOffX, po?.Pos.X ?? 0f);
+                nudPoseOffY.Value = ClampNud(nudPoseOffY, po?.Pos.Y ?? 0f);
+                nudPoseOffZ.Value = ClampNud(nudPoseOffZ, po?.Pos.Z ?? 0f);
+            }
+            finally { _suppressPose = false; }
+        }
+
+        private static decimal ClampNud(NumericUpDown nud, float v)
+        {
+            decimal d = (decimal)v;
+            if (d < nud.Minimum) return nud.Minimum;
+            if (d > nud.Maximum) return nud.Maximum;
+            return d;
+        }
+
+        private void UpdatePoseGlobalNuds()
+        {
+            if (nudPoseGlobX == null) return;
+            _suppressPose = true;
+            try
+            {
+                nudPoseGlobX.Value = ClampNud(nudPoseGlobX, _poseGlobalOffset.X);
+                nudPoseGlobY.Value = ClampNud(nudPoseGlobY, _poseGlobalOffset.Y);
+                nudPoseGlobZ.Value = ClampNud(nudPoseGlobZ, _poseGlobalOffset.Z);
+                nudPoseGlobYaw.Value = ClampNud(nudPoseGlobYaw, _poseGlobalYaw);
+            }
+            finally { _suppressPose = false; }
+        }
+
+        private BonePoseOffset GetOrCreatePoseOffset(string name)
+        {
+            if (!_poseOffsets.TryGetValue(name, out var po))
+            {
+                po = new BonePoseOffset();
+                _poseOffsets[name] = po;
+            }
+            return po;
+        }
+
+        private void OnPoseRotChanged(object sender, EventArgs e)
+        {
+            if (_suppressPose) return;
+            string name = SelectedPoseBone();
+            if (name == null) return;
+
+            var po = GetOrCreatePoseOffset(name);
+            po.RotDeg = new Vector3((float)nudPoseRotX.Value, (float)nudPoseRotY.Value, (float)nudPoseRotZ.Value);
+
+            if (chkPoseMirror != null && chkPoseMirror.Checked)
+            {
+                string pair = MirrorBoneName(name);
+                var bones = PoseHostBones();
+                if (pair != null && bones != null && bones.Exists(b => string.Equals(b.Name, pair, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var m = GetOrCreatePoseOffset(pair);
+                    // Sagittal mirror (X = midline): (rx, ry, rz) -> (rx, -ry, -rz).
+                    m.RotDeg = new Vector3(po.RotDeg.X, -po.RotDeg.Y, -po.RotDeg.Z);
+                    m.Pos = new Vector3(-po.Pos.X, po.Pos.Y, po.Pos.Z);
+                }
+            }
+
+            CleanupEmptyPoseOffsets();
+            Repose();
+        }
+
+        private void OnPoseOffChanged(object sender, EventArgs e)
+        {
+            if (_suppressPose) return;
+            string name = SelectedPoseBone();
+            if (name == null) return;
+
+            var po = GetOrCreatePoseOffset(name);
+            po.Pos = new Vector3((float)nudPoseOffX.Value, (float)nudPoseOffY.Value, (float)nudPoseOffZ.Value);
+
+            if (chkPoseMirror != null && chkPoseMirror.Checked)
+            {
+                string pair = MirrorBoneName(name);
+                var bones = PoseHostBones();
+                if (pair != null && bones != null && bones.Exists(b => string.Equals(b.Name, pair, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var m = GetOrCreatePoseOffset(pair);
+                    m.RotDeg = new Vector3(po.RotDeg.X, -po.RotDeg.Y, -po.RotDeg.Z);
+                    m.Pos = new Vector3(-po.Pos.X, po.Pos.Y, po.Pos.Z);
+                }
+            }
+
+            CleanupEmptyPoseOffsets();
+            Repose();
+        }
+
+        private void OnPoseGlobalChanged(object sender, EventArgs e)
+        {
+            if (_suppressPose) return;
+            if (nudPoseGlobX == null) return;
+            _poseGlobalOffset = new Vector3((float)nudPoseGlobX.Value, (float)nudPoseGlobY.Value, (float)nudPoseGlobZ.Value);
+            _poseGlobalYaw = (float)nudPoseGlobYaw.Value;
+            _poseGlobalBodyOnly = chkPoseBodyOnly.Checked;
+            Repose();
+        }
+
+        private void CleanupEmptyPoseOffsets()
+        {
+            var empty = _poseOffsets
+                .Where(kv => kv.Value.RotDeg == Vector3.Zero && kv.Value.Pos == Vector3.Zero)
+                .Select(kv => kv.Key)
+                .ToList();
+            foreach (var k in empty) _poseOffsets.Remove(k);
+        }
+
+        // "L" <-> " R " token swap ("Bip01 L UpperArm" <-> "Bip01 R UpperArm",
+        // "CP_Grasp_L_01" <-> "CP_Grasp_R_01"). Null when the bone has no side.
+        private static string MirrorBoneName(string n)
+        {
+            if (string.IsNullOrEmpty(n)) return null;
+            int i = n.IndexOf(" L ", StringComparison.OrdinalIgnoreCase);
+            if (i >= 0) return n.Substring(0, i) + (char.IsUpper(n[i + 1]) ? " R " : " r ") + n.Substring(i + 3);
+            i = n.IndexOf(" R ", StringComparison.OrdinalIgnoreCase);
+            if (i >= 0) return n.Substring(0, i) + (char.IsUpper(n[i + 1]) ? " L " : " l ") + n.Substring(i + 3);
+            i = n.IndexOf("_L_", StringComparison.OrdinalIgnoreCase);
+            if (i >= 0) return n.Substring(0, i + 1) + (char.IsUpper(n[i + 1]) ? "R" : "r") + n.Substring(i + 2);
+            i = n.IndexOf("_R_", StringComparison.OrdinalIgnoreCase);
+            if (i >= 0) return n.Substring(0, i + 1) + (char.IsUpper(n[i + 1]) ? "L" : "l") + n.Substring(i + 2);
+            return null;
+        }
+
+        private void BtnPoseResetBone_Click(object sender, EventArgs e)
+        {
+            string name = SelectedPoseBone();
+            if (name == null) return;
+            _poseOffsets.Remove(name);
+            string pair = MirrorBoneName(name);
+            if (pair != null) _poseOffsets.Remove(pair);
+            UpdatePoseNudForBone(name);
+            Repose();
+        }
+
+        private void BtnPoseResetAll_Click(object sender, EventArgs e)
+        {
+            _poseOffsets.Clear();
+            _poseAbsolute.Clear();
+            _poseHasAbsolute = false;
+            _poseGlobalOffset = Vector3.Zero;
+            _poseGlobalYaw = 0f;
+            UpdatePoseNudForBone(SelectedPoseBone());
+            UpdatePoseGlobalNuds();
+            Repose();
+            Log("Pose studio : tous les offsets ont été réinitialisés.");
+        }
+
+        // Re-pose the whole scene with the current pose layer (over the current
+        // animation time or the bind pose) and refresh the viewport.
+        private void Repose()
+        {
+            if (_loadedMeshes.Count == 0) return;
+            if (!_glReady || glControl == null || !glControl.IsHandleCreated) return;
+            ApplyAnimationPose(_currentTime);
+            glControl.Invalidate();
+        }
+
+        private void BtnPoseSave_Click(object sender, EventArgs e)
+        {
+            var host = PoseHostBones();
+            if (host == null || host.Count == 0)
+            {
+                MessageBox.Show("Aucun squelette à sauvegarder : chargez d'abord un personnage (H_Male / H_Female).",
+                    "Pose vide", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string name = PromptFileName("Nom de la pose", "Pose_001");
+            if (string.IsNullOrEmpty(name)) return;
+
+            foreach (char c in Path.GetInvalidFileNameChars())
+                name = name.Replace(c, '_');
+
+            try
+            {
+                if (!Directory.Exists(PosesFolder)) Directory.CreateDirectory(PosesFolder);
+                string path = Path.Combine(PosesFolder, name + PoseFile.Extension);
+
+                // Save the FULL current local pose of every posed skeleton, exactly as
+                // it is displayed right now (the pose layers are already composited into
+                // lm.LocalMatrices by the render loop, so nothing is re-evaluated and the
+                // on-screen pose is never altered by saving). Stored as absolute locals
+                // (version 2) so reloading reproduces the same screen on the same
+                // character, independently of any animation. Keyed by bone name; the
+                // first mesh that owns a name wins (matches the apply lookup).
+                // Write the live pose layer verbatim: the additive Euler-degree deltas
+                // the user actually edited (_poseOffsets). This is exactly the v1 format
+                // and the exact data the live editor applies, so reloading reproduces the
+                // preview by construction (no matrix round-trip, no per-mesh scrambling).
+                var pf = new PoseFile { StoredVersion = 1, RootOffset = _poseGlobalOffset, RootYaw = _poseGlobalYaw };
+                foreach (var kv in _poseOffsets)
+                {
+                    if (string.IsNullOrEmpty(kv.Key)) continue;
+                    var po = kv.Value;
+                    if (po == null) continue;
+                    pf.Bones[kv.Key] = new PoseFile.PoseBone
+                    {
+                        Legacy = true,
+                        LegacyRotDeg = po.RotDeg,
+                        LegacyPos = po.Pos
+                    };
+                }
+                if (pf.Bones.Count == 0)
+                {
+                    MessageBox.Show("Aucune pose à sauvegarder (aucun os).", "Pose vide",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (!PoseFile.Save(pf, path))
+                {
+                    MessageBox.Show("Écriture impossible : " + path, "Erreur Sauvegarde", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                BuildAnimCategories();
+                Log($"Pose sauvegardée : {path} bones={pf.Bones.Count} rootOff={_poseGlobalOffset} yaw={_poseGlobalYaw}");
+                // Reveal (highlight) the new node WITHOUT selecting it through the
+                // AfterSelect handler: selecting would re-apply the just-saved pose
+                // and can alter the on-screen pose. Saving must never change the view.
+                _suppressAnimSelect = true;
+                try { RevealAnimFile(path); }
+                finally { _suppressAnimSelect = false; }
+                MessageBox.Show($"Pose '{name}' sauvegardée ({pf.Bones.Count} os) dans :\n{PosesFolder}\n\nElle est disponible dans l'arbre Animations → « Poses ».",
+                    "Pose Sauvegardée", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erreur lors de la sauvegarde de la pose : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // Load a .pose file and apply it as the current pose layer.
+        private void ApplyPoseFile(string path)
+        {
+            try
+            {
+                if (!PoseFile.Load(path, out var pf, out string err) || pf == null)
+                {
+                    MessageBox.Show("Chargement de pose impossible : " + (err ?? "raison inconnue"), "Erreur Pose", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                _poseOffsets.Clear();
+                _poseAbsolute.Clear();
+                _poseHasAbsolute = false;
+                bool anyLegacy = false;
+                foreach (var kv in pf.Bones)
+                {
+                    if (kv.Value.Legacy)
+                    {
+                        anyLegacy = true;
+                        _poseOffsets[kv.Key] = new BonePoseOffset { RotDeg = kv.Value.LegacyRotDeg, Pos = kv.Value.LegacyPos };
+                    }
+                    else
+                    {
+                        _poseAbsolute[kv.Key] = new BonePoseAbs
+                        {
+                            Rot = kv.Value.Rot, Pos = kv.Value.Pos,
+                            BindRot = kv.Value.BindRot, BindPos = kv.Value.BindPos, HasBind = kv.Value.HasBind
+                        };
+                    }
+                }
+                _poseHasAbsolute = _poseAbsolute.Count > 0;
+                _poseGlobalOffset = pf.RootOffset;
+                _poseGlobalYaw = pf.RootYaw;
+
+                UpdatePoseNudForBone(SelectedPoseBone());
+                UpdatePoseGlobalNuds();
+
+                // A pose is an alternative to an animation: stop and detach any clip so
+                // the pose is shown on its own (mirror of LoadAnimationCore clearing the
+                // pose layer).
+                _playing = false;
+                _currentAnimation = null;
+                _animParser = null;
+                _currentAnimPath = null;
+                _currentTime = 0f;
+                if (trackTime != null) { trackTime.Value = 0; trackTime.Maximum = 1; }
+                if (lblTime != null) lblTime.Text = "Time: 0.00s";
+                if (lblDuration != null) lblDuration.Text = "/ 0.00s";
+                if (btnPlay != null) btnPlay.Enabled = false;
+                if (btnPause != null) btnPause.Enabled = false;
+                if (btnStop != null) btnStop.Enabled = false;
+                int posedBones = _poseHasAbsolute ? _poseAbsolute.Count : _poseOffsets.Count;
+                if (lblAnimHeader != null)
+                    lblAnimHeader.Text = $"Pose : {Path.GetFileNameWithoutExtension(path)}   ({posedBones} os{(anyLegacy ? ", format v1" : "")})";
+
+                // Diagnostics: how many of the stored bone names actually exist on the
+                // loaded skeleton(s)? If this is 0 the pose cannot show up (T-pose).
+                try
+                {
+                    var host = PoseHostBones();
+                    int matched = 0;
+                    if (host != null)
+                    {
+                        var hostNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var b in host) if (!string.IsNullOrEmpty(b.Name)) hostNames.Add(b.Name);
+                        foreach (var k in (_poseHasAbsolute ? (IEnumerable<string>)_poseAbsolute.Keys : _poseOffsets.Keys))
+                            if (hostNames.Contains(k)) matched++;
+                    }
+                    Log($"Pose match : {matched}/{posedBones} os reconnus sur le squelette chargé (host={(host != null ? host.Count : 0)} os). Cible mode={_poseTargetMode} cibles={_poseTargets.Count}.");
+                    if (matched == 0 && posedBones > 0)
+                        Log("Pose : AUCUN os reconnu — le squelette chargé ne porte pas les mêmes noms d'os que la pose. Rechargez le même personnage (H_Male/H_Female) que celui posé.");
+                }
+                catch { }
+
+                ApplyAnimationPose(0f);
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+                Log($"Pose appliquée : {path} bones={posedBones} abs={_poseHasAbsolute} rootOff={_poseGlobalOffset} yaw={_poseGlobalYaw}");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erreur lors du chargement de la pose : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Log($"Pose load error: {ex.Message}\n{ex}");
+            }
+        }
+
+        // Does the global displacement apply to this mesh? By default only the
+        // character body moves (multipart parts + placeholder skeleton, or the
+        // fullest skeleton for a custom character), so a free imported equipment
+        // mesh stays in place and the character can be aligned against it.
+        private bool IsPoseGlobalTarget(LoadedMesh lm)
+        {
+            if (!PoseAppliesTo(lm)) return false;
+            if (!_poseGlobalBodyOnly) return true;
+            if (!string.IsNullOrEmpty(lm.CharSlot)) return true;
+            if (!string.IsNullOrEmpty(lm.SourcePath) && IsHumanPlaceholder(lm.SourcePath, out _)) return true;
+
+            bool anyChar = _loadedMeshes.Exists(m =>
+                !string.IsNullOrEmpty(m.CharSlot) ||
+                (!string.IsNullOrEmpty(m.SourcePath) && IsHumanPlaceholder(m.SourcePath, out _)));
+            if (anyChar) return false;
+
+            int maxB = 0;
+            foreach (var m in _loadedMeshes)
+                if (m.Bones != null && m.Bones.Count > maxB) maxB = m.Bones.Count;
+            return lm.Bones != null && lm.Bones.Count == maxB;
+        }
+
+        // Does the pose layer (bones + global displacement) affect this mesh at all?
+        // In "Sélection Meshes affichés" mode only the checked/selected meshes are
+        // posed, so the character can be aligned onto a specific imported equipment
+        // mesh while other custom meshes stay frozen. In auto mode everything is
+        // eligible and the body-only rule narrows the global displacement.
+        private bool PoseAppliesTo(LoadedMesh lm)
+        {
+            if (_poseTargetMode == 0) return true;
+            int idx = _loadedMeshes.IndexOf(lm);
+            return idx >= 0 && _poseTargets.Contains(idx);
+        }
+
+        // Rebuild the pose-target set from the current "Meshes affichés" selection
+        // (checked nodes first, else the selected node).
+        private void SyncPoseTargetsFromTree()
+        {
+            _poseTargets.Clear();
+            if (_poseTargetMode == 0)
+            {
+                if (lblPoseTargetInfo != null)
+                    lblPoseTargetInfo.Text = "Cible : auto — le personnage (corps + peau) uniquement.";
+                return;
+            }
+
+            foreach (int i in GetSelectedMeshIndices())
+                if (i >= 0 && i < _loadedMeshes.Count)
+                    _poseTargets.Add(i);
+
+            if (lblPoseTargetInfo != null)
+            {
+                if (_poseTargets.Count == 0)
+                    lblPoseTargetInfo.Text = "Cible : cochez/choisissez des meshes dans « Meshes affichés » (aucun pour l'instant).";
+                else
+                {
+                    var names = new List<string>();
+                    foreach (int i in _poseTargets)
+                        names.Add(_loadedMeshes[i].Name);
+                    lblPoseTargetInfo.Text = $"Cible ({_poseTargets.Count}) : " + string.Join(", ", names);
+                }
+            }
+        }
+
+        private static string PromptFileName(string title, string defaultName)
+        {
+            using var f = new Form
+            {
+                Text = title,
+                Width = 360,
+                Height = 150,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                BackColor = Color.FromArgb(45, 45, 48)
+            };
+            var lbl = new Label { Text = "Nom :", Location = new Point(12, 15), Width = 60, ForeColor = Color.Gainsboro };
+            var txt = new TextBox { Location = new Point(75, 12), Width = 255, Text = defaultName };
+            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(175, 75), Width = 75, BackColor = Color.FromArgb(60, 60, 62), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            var cancel = new Button { Text = "Annuler", DialogResult = DialogResult.Cancel, Location = new Point(255, 75), Width = 75, BackColor = Color.FromArgb(60, 60, 62), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            f.Controls.AddRange(new Control[] { lbl, txt, ok, cancel });
+            f.AcceptButton = ok;
+            f.CancelButton = cancel;
+            return f.ShowDialog() == DialogResult.OK ? txt.Text.Trim() : null;
         }
 
         // Import a Mixamo FBX: retarget it onto the UO Biped skeleton, write a
@@ -4019,11 +4883,12 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (tvAnims != null)
             {
+                string ext = Path.GetExtension(path);
                 foreach (TreeNode catNode in tvAnims.Nodes)
                 {
                     var cat = catNode.Tag as AnimCat;
                     if (cat == null || cat.IsAll) continue;
-                    if (!string.Equals(cat.Pattern, "*.anim", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!string.Equals(cat.Pattern, "*" + ext, StringComparison.OrdinalIgnoreCase)) continue;
 
                     catNode.Expand();
                     foreach (TreeNode child in catNode.Nodes)
@@ -4037,7 +4902,8 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
             }
-            PlayAnimationFile(path);
+            if (!PoseFile.IsPoseFile(path))
+                PlayAnimationFile(path);
         }
 
         // Picking an animation loads the creature it belongs to (if needed) and plays it.
@@ -4810,6 +5676,9 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 cbBones.SelectedIndex = 0;
             }
+
+            // Keep the pose studio's bone list in sync with the loaded skeleton.
+            PopulatePoseBones();
         }
 
         // Select a bone in the (DropDownList) combo by name.
@@ -4838,26 +5707,90 @@ namespace UoFiddler.Plugin.Granny3D
             tvLoaded.BeginUpdate();
             try
             {
+                // Node references are invalidated by the rebuild below.
+                _treeMultiSel.Clear();
+                _treeSelAnchor = null;
+
                 object prevSelectedTag = tvLoaded.SelectedNode?.Tag;
                 var expandedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (TreeNode root in tvLoaded.Nodes)
                 {
                     if (root.IsExpanded && root.Name != null)
                         expandedKeys.Add(root.Name);
+                    foreach (TreeNode sub in root.Nodes)
+                        if (sub.IsExpanded && sub.Name != null)
+                            expandedKeys.Add(sub.Name);
                 }
 
                 tvLoaded.Nodes.Clear();
 
-                var groups = new List<(string key, string title, List<int> indices)>();
-                var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                TreeNode nodeToSelect = null;
 
+                // ---- Character body: one root ("H_Female"/"H_Male") whose "+"
+                // expands the full part arborescence, grouped by slot. ----
+                var slotOrder = new List<string>();
+                var slotMeshes = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+                var loose = new List<int>();
                 for (int i = 0; i < _loadedMeshes.Count; i++)
                 {
-                    var lm = _loadedMeshes[i];
-                    string key = !string.IsNullOrEmpty(lm.SourcePath)
-                        ? lm.SourcePath
-                        : (!string.IsNullOrEmpty(lm.CharSlot) ? "Personnage" : lm.Name);
+                    // Hidden meshes are internal skeleton hosts (the H_Male/H_Female
+                    // placeholder box, skin-wrap reference host): never drawn and never
+                    // user-facing, so they are not listed in the tree at all.
+                    if (_loadedMeshes[i].Hidden) continue;
+                    string slot = _loadedMeshes[i].CharSlot;
+                    if (string.IsNullOrEmpty(slot)) { loose.Add(i); continue; }
+                    if (!slotMeshes.TryGetValue(slot, out var lst))
+                    {
+                        lst = new List<int>();
+                        slotMeshes[slot] = lst;
+                        slotOrder.Add(slot);
+                    }
+                    lst.Add(i);
+                }
 
+                if (slotOrder.Count > 0)
+                {
+                    string charName = _charGender == 2 ? "H_Female" : (_charGender == 1 ? "H_Male" : "Personnage");
+                    int charTotal = 0;
+                    foreach (var s in slotOrder) charTotal += slotMeshes[s].Count;
+                    var charRoot = new TreeNode($"{charName} ({charTotal} parties)") { Name = "char:" + charName, Tag = (object)null };
+
+                    // Order slots in the canonical body layout, extras afterwards.
+                    var ordered = new List<string>();
+                    foreach (var known in new[] { "pelvis", "torso", "torsoupper", "neck", "head", "face", "ears", "uarms", "farms", "hands", "ulegs", "llegs", "feet" })
+                        if (slotMeshes.ContainsKey(known)) ordered.Add(known);
+                    foreach (var s in slotOrder)
+                        if (!ordered.Contains(s)) ordered.Add(s);
+
+                    foreach (var slot in ordered)
+                    {
+                        var indices = slotMeshes[slot];
+                        string key = "char:" + charName + "/" + slot;
+                        var slotNode = new TreeNode($"{SlotDisplayName(slot)} ({indices.Count})") { Name = key, Tag = indices.Count == 1 ? (object)indices[0] : (object)indices };
+                        foreach (int i in indices)
+                        {
+                            var lm = _loadedMeshes[i];
+                            string childText = string.IsNullOrEmpty(lm.AttachBoneName)
+                                ? lm.Name
+                                : $"{lm.Name}  →  {lm.AttachBoneName}";
+                            var childNode = new TreeNode(childText) { Tag = i, Name = key + "#" + i };
+                            slotNode.Nodes.Add(childNode);
+                            if (prevSelectedTag is int prevI && prevI == i) nodeToSelect = childNode;
+                        }
+                        slotNode.Expand();
+                        charRoot.Nodes.Add(slotNode);
+                    }
+                    charRoot.Expand();
+                    tvLoaded.Nodes.Add(charRoot);
+                }
+
+                // ---- Standalone meshes (equipment / custom), grouped by source file. ----
+                var groups = new List<(string key, string title, List<int> indices)>();
+                var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (int i in loose)
+                {
+                    var lm = _loadedMeshes[i];
+                    string key = !string.IsNullOrEmpty(lm.SourcePath) ? lm.SourcePath : lm.Name;
                     if (!map.TryGetValue(key, out int gIndex))
                     {
                         gIndex = groups.Count;
@@ -4869,8 +5802,6 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     groups[gIndex].indices.Add(i);
                 }
-
-                TreeNode nodeToSelect = null;
 
                 foreach (var grp in groups)
                 {
@@ -4936,6 +5867,29 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        private static string SlotDisplayName(string slot)
+        {
+            switch ((slot ?? "").ToLowerInvariant())
+            {
+                case "pelvis": return "Bassin";
+                case "torso": return "Torse";
+                case "torsoupper": return "Torse haut";
+                case "neck": return "Cou";
+                case "head": return "Tête";
+                case "face": return "Visage";
+                case "ears": return "Oreilles";
+                case "hair": return "Cheveux";
+                case "beard": return "Barbe";
+                case "uarms": return "Bras sup.";
+                case "farms": return "Avant-bras";
+                case "hands": return "Mains";
+                case "ulegs": return "Cuisses";
+                case "llegs": return "Jambes";
+                case "feet": return "Pieds";
+                default: return slot;
+            }
+        }
+
         private void TvLoaded_AfterSelect(object sender, TreeViewEventArgs e)
         {
             if (e.Node == null) return;
@@ -4951,6 +5905,99 @@ namespace UoFiddler.Plugin.Granny3D
             }
             LoadEquipControlsFromMesh();
             SyncHueFromSelectedMesh();
+            if (_poseTargetMode == 1) { SyncPoseTargetsFromTree(); Repose(); }
+        }
+
+        // Recover the flat list of mesh indices a node stands for (int = one mesh,
+        // List<int> = a group/part, other/null = character root -> all part children).
+        private static void CollectNodeIndices(TreeNode n, List<int> outList, int meshCount)
+        {
+            if (n == null) return;
+            switch (n.Tag)
+            {
+                case int idx:
+                    if (idx >= 0 && idx < meshCount && !outList.Contains(idx)) outList.Add(idx);
+                    break;
+                case List<int> lst:
+                    foreach (int i in lst)
+                        if (i >= 0 && i < meshCount && !outList.Contains(i)) outList.Add(i);
+                    break;
+                default:
+                    foreach (TreeNode c in n.Nodes) CollectNodeIndices(c, outList, meshCount);
+                    break;
+            }
+        }
+
+        private void TvLoaded_NodeMouseClick(object sender, TreeNodeMouseClickEventArgs e)
+        {
+            if (e.Node == null || e.Button != MouseButtons.Left) return;
+            // Only rebuild the multi-selection when clicking outside the checkbox glyph
+            // (17px on the left) so toggling a checkbox keeps working normally.
+            bool onCheck = e.X < e.Node.Bounds.Left + 16;
+            var mods = Control.ModifierKeys;
+
+            if (onCheck || (mods & (Keys.Control | Keys.Shift)) == 0)
+            {
+                _treeMultiSel.Clear();
+                _treeMultiSel.Add(e.Node);
+                _treeSelAnchor = e.Node;
+                if (onCheck) { tvLoaded.Invalidate(); return; }
+                return;
+            }
+
+            if ((mods & Keys.Shift) != 0 && _treeSelAnchor != null)
+            {
+                var flat = new List<TreeNode>();
+                FlattenVisible(tvLoaded.Nodes, flat);
+                int a = flat.IndexOf(_treeSelAnchor), b = flat.IndexOf(e.Node);
+                if (a >= 0 && b >= 0)
+                {
+                    _treeMultiSel.Clear();
+                    int lo = Math.Min(a, b), hi = Math.Max(a, b);
+                    for (int i = lo; i <= hi; i++) _treeMultiSel.Add(flat[i]);
+                }
+            }
+            else // Ctrl
+            {
+                if (!_treeMultiSel.Remove(e.Node)) _treeMultiSel.Add(e.Node);
+                _treeSelAnchor = e.Node;
+            }
+            tvLoaded.Invalidate();
+            if (_poseTargetMode == 1) { SyncPoseTargetsFromTree(); Repose(); }
+        }
+
+        private void TvLoaded_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Escape && _treeMultiSel.Count > 0)
+            {
+                _treeMultiSel.Clear();
+                tvLoaded.Invalidate();
+                e.Handled = true;
+            }
+        }
+
+        private static void FlattenVisible(TreeNodeCollection nodes, List<TreeNode> outList)
+        {
+            foreach (TreeNode n in nodes)
+            {
+                outList.Add(n);
+                if (n.IsExpanded && n.Nodes.Count > 0) FlattenVisible(n.Nodes, outList);
+            }
+        }
+
+        private void TvLoaded_DrawNode(object sender, DrawTreeNodeEventArgs e)
+        {
+            bool selected = _treeMultiSel.Contains(e.Node);
+            if (!selected)
+            {
+                e.DrawDefault = true;
+                return;
+            }
+            var bounds = new Rectangle(e.Bounds.X - 2, e.Bounds.Y - 1, e.Bounds.Width + 4, e.Bounds.Height + 2);
+            using (var b = new SolidBrush(Color.FromArgb(70, 110, 170)))
+                e.Graphics.FillRectangle(b, bounds);
+            TextRenderer.DrawText(e.Graphics, e.Node.Text, tvLoaded.Font,
+                new Point(e.Bounds.X, e.Bounds.Y), Color.White);
         }
 
         private bool _suppressTreeCheck;
@@ -4960,45 +6007,46 @@ namespace UoFiddler.Plugin.Granny3D
             _suppressTreeCheck = true;
             try
             {
-                if (e.Node.Nodes.Count > 0)
-                {
-                    foreach (TreeNode child in e.Node.Nodes)
-                        child.Checked = e.Node.Checked;
-                }
+                SetCheckedRecursive(e.Node, e.Node.Checked);
             }
             finally { _suppressTreeCheck = false; }
             LoadEquipControlsFromMesh();
+            if (_poseTargetMode == 1) { SyncPoseTargetsFromTree(); Repose(); }
         }
 
-        // Indices of the meshes currently selected or checked in the "Meshes affichés" TreeView
-        // (supports checking parent or individual nodes for batch operations).
+        private void SetCheckedRecursive(TreeNode node, bool value)
+        {
+            foreach (TreeNode child in node.Nodes)
+            {
+                child.Checked = value;
+                SetCheckedRecursive(child, value);
+            }
+        }
+
+        // Indices of the meshes currently selected or checked in the "Meshes affichés"
+        // TreeView (supports Ctrl/Shift multi-selection, checking parent or individual
+        // nodes for batch operations).
         private List<int> GetSelectedMeshIndices()
         {
             var list = new List<int>();
             if (tvLoaded == null) return list;
 
-            // 1. If any nodes have checkboxes checked, use checked items
+            // 1. Ctrl/Shift multi-selection (highest priority)
+            if (_treeMultiSel.Count > 0)
+            {
+                foreach (var n in _treeMultiSel)
+                    CollectNodeIndices(n, list, _loadedMeshes.Count);
+                if (list.Count > 0) return list;
+            }
+
+            // 2. Otherwise, any nodes with checkboxes checked
             Action<TreeNodeCollection> collectChecked = null;
             collectChecked = (nodes) =>
             {
                 foreach (TreeNode n in nodes)
                 {
                     if (n.Checked)
-                    {
-                        if (n.Tag is int idx)
-                        {
-                            if (idx >= 0 && idx < _loadedMeshes.Count && !list.Contains(idx))
-                                list.Add(idx);
-                        }
-                        else if (n.Tag is List<int> grpList)
-                        {
-                            foreach (int gi in grpList)
-                            {
-                                if (gi >= 0 && gi < _loadedMeshes.Count && !list.Contains(gi))
-                                    list.Add(gi);
-                            }
-                        }
-                    }
+                        CollectNodeIndices(n, list, _loadedMeshes.Count);
                     if (n.Nodes.Count > 0)
                         collectChecked(n.Nodes);
                 }
@@ -5007,25 +6055,8 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (list.Count > 0) return list;
 
-            // 2. Otherwise use the currently selected node
-            var sel = tvLoaded.SelectedNode;
-            if (sel != null)
-            {
-                if (sel.Tag is int singleIdx)
-                {
-                    if (singleIdx >= 0 && singleIdx < _loadedMeshes.Count)
-                        list.Add(singleIdx);
-                }
-                else if (sel.Tag is List<int> grpIndices)
-                {
-                    foreach (int idx in grpIndices)
-                    {
-                        if (idx >= 0 && idx < _loadedMeshes.Count && !list.Contains(idx))
-                            list.Add(idx);
-                    }
-                }
-            }
-
+            // 3. Otherwise use the currently selected node
+            CollectNodeIndices(tvLoaded.SelectedNode, list, _loadedMeshes.Count);
             return list;
         }
 
@@ -7133,6 +8164,12 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (!File.Exists(path)) return;
 
+            // Loading an animation replaces any pose: a pose is an alternative to an
+            // animation, never an additive layer riding on top of every clip. Clearing
+            // the pose layer here (single choke point for native + custom clips) is what
+            // stops a loaded pose from "contaminating" all animations.
+            ClearPoseLayer();
+
             if (GrannyAnimFile.IsAnimFile(path))
             {
                 _animParser = null;
@@ -7366,17 +8403,6 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             RefreshVertexBuffers(!_playing);
-
-            try {
-                foreach (var lm in _loadedMeshes) {
-                    if (lm.DeformedCache == null) continue;
-                    float mnX=float.MaxValue,mnY=float.MaxValue,mnZ=float.MaxValue,mxX=float.MinValue,mxY=float.MinValue,mxZ=float.MinValue; int moved=0;
-                    for (int v=0; v<lm.DeformedCache.Length; v++){ var d=lm.DeformedCache[v]; var o=lm.BaseVertices[v];
-                        if ((d-o).Length>0.01f) moved++;
-                        mnX=Math.Min(mnX,d.X);mxX=Math.Max(mxX,d.X);mnY=Math.Min(mnY,d.Y);mxY=Math.Max(mxY,d.Y);mnZ=Math.Min(mnZ,d.Z);mxZ=Math.Max(mxZ,d.Z); }
-                    Log($"Pose t={t:F2} defBounds x({mnX:F3}~{mxX:F3}) y({mnY:F3}~{mxY:F3}) z({mnZ:F3}~{mxZ:F3}) moved={moved}/{lm.DeformedCache.Length}");
-                }
-            } catch { }
         }
 
         private static bool TrackPositionVaries(GrannyTrack tr, float eps = 0.002f)
@@ -7478,6 +8504,62 @@ namespace UoFiddler.Plugin.Granny3D
                         var b = lm.Bones[i];
                         lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(b.LocalRotation) * Matrix4.CreateTranslation(b.LocalPosition);
                     }
+
+                    // Pose studio layer. Two modes, both only affect the meshes chosen
+                    // as pose targets (so a free imported equipment mesh you align
+                    // against stays frozen):
+                    //  * absolute (_poseAbsolute, from a loaded .pose): the stored local
+                    //    transform REPLACES the animated/bind one, so reloading the pose
+                    //    reproduces exactly what was on screen;
+                    //  * additive (_poseOffsets, live editing): extra local rotation +
+                    //    translation layered over whatever base is active.
+                    if (PoseAppliesTo(lm))
+                    {
+                        if (_poseHasAbsolute && _poseAbsolute.Count > 0)
+                        {
+                            string abn = lm.Bones[i].Name;
+                            if (!string.IsNullOrEmpty(abn) && _poseAbsolute.TryGetValue(abn, out var pa))
+                            {
+                                if (pa.HasBind)
+                                {
+                                    // v3: the pose is stored as (posed, bind). Row-vector
+                                    // convention: display = delta * base, where the live
+                                    // editor layers the offset on the LEFT of the base
+                                    // (pq * local_base). So delta = posed * bind^-1 and the
+                                    // pose is re-applied as delta * currentBase, making it
+                                    // independent of the target mesh's rest orientation.
+                                    var mPosed = Matrix4.CreateFromQuaternion(pa.Rot) * Matrix4.CreateTranslation(pa.Pos);
+                                    var mBind = Matrix4.CreateFromQuaternion(pa.BindRot) * Matrix4.CreateTranslation(pa.BindPos);
+                                    var mDelta = mPosed * mBind.Inverted();   // posed * bind^-1
+                                    var bb = lm.Bones[i];
+                                    var mBase = Matrix4.CreateFromQuaternion(bb.LocalRotation) * Matrix4.CreateTranslation(bb.LocalPosition);
+                                    lm.LocalMatrices[i] = mDelta * mBase;
+                                }
+                                else
+                                {
+                                    // v2: absolute replacement (legacy behavior).
+                                    lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(pa.Rot) * Matrix4.CreateTranslation(pa.Pos);
+                                }
+                            }
+                        }
+                        if (_poseOffsets.Count > 0)
+                        {
+                            string bn = lm.Bones[i].Name;
+                            if (!string.IsNullOrEmpty(bn) && _poseOffsets.TryGetValue(bn, out var po))
+                            {
+                                if (po.RotDeg != Vector3.Zero)
+                                {
+                                    var pq = Quaternion.FromEulerAngles(
+                                        MathHelper.DegreesToRadians(po.RotDeg.X),
+                                        MathHelper.DegreesToRadians(po.RotDeg.Y),
+                                        MathHelper.DegreesToRadians(po.RotDeg.Z));
+                                    lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(pq) * lm.LocalMatrices[i];
+                                }
+                                if (po.Pos != Vector3.Zero)
+                                    lm.LocalMatrices[i] = Matrix4.CreateTranslation(po.Pos) * lm.LocalMatrices[i];
+                            }
+                        }
+                    }
                 }
 
                 ComputeWorldMatrices(lm);
@@ -7505,6 +8587,22 @@ namespace UoFiddler.Plugin.Granny3D
                         bool isRoot = p < 0 || p >= boneCount || p == i;
                         if (!isRoot) continue;
                         lm.LocalMatrices[i] = lm.LocalMatrices[i] * Matrix4.CreateTranslation(riderOffset);
+                    }
+                    ComputeWorldMatrices(lm);
+                }
+
+                // Pose studio: global displacement of the character body (root bones)
+                // so it can be slid / rotated against a fixed imported equipment mesh.
+                if ((_poseGlobalOffset != Vector3.Zero || Math.Abs(_poseGlobalYaw) > 1e-4f) && IsPoseGlobalTarget(lm))
+                {
+                    Matrix4 g = Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(_poseGlobalYaw))
+                              * Matrix4.CreateTranslation(_poseGlobalOffset);
+                    for (int i = 0; i < boneCount; i++)
+                    {
+                        int p = lm.Bones[i].ParentId;
+                        bool isRoot = p < 0 || p >= boneCount || p == i;
+                        if (!isRoot) continue;
+                        lm.LocalMatrices[i] = lm.LocalMatrices[i] * g;
                     }
                     ComputeWorldMatrices(lm);
                 }
@@ -8936,6 +10034,279 @@ namespace UoFiddler.Plugin.Granny3D
             Matrix4 view = _camera.GetViewMatrix();
             Matrix4 mvp = view * proj;
             DrawMeshSet(mvp, unlit: false, alphaCut: 0.15f);
+
+            // 3ds Max-style view cube, top-left corner of the editor view.
+            DrawViewCube();
+        }
+
+        // Editor view rectangle in GL viewport pixel space (bottom-left origin),
+        // matching the glControl client area. Used by the view cube so it stays
+        // anchored in the corner of the visible editor even when the GLControl is
+        // positioned with an offset inside its parent panel.
+        private void GetEditorViewportRect(out int x, out int y, out int w, out int h)
+        {
+            w = Math.Max(1, glControl.Width);
+            h = Math.Max(1, glControl.Height);
+            x = 0;
+            y = 0;
+            int splitX = UoSplitX();
+            if (_uoView && splitX > 1 && splitX < w - 1) w = splitX;
+        }
+
+        // ==================== VIEW CUBE (standard camera presets) ====================
+        // A small clickable cube fixed in the corner of the editor view that rotates
+        // with the camera. Clicking a face snaps the camera to that standard view:
+        // the character faces +Y, so +Y = DEVANT, -X = GAUCHE, +Z = HAUT, etc.
+
+        private static readonly Vector3[] ViewCubeFaceNormals =
+        {
+            new Vector3(0, 1, 0),    // 0 DEVANT
+            new Vector3(0, -1, 0),   // 1 DERR
+            new Vector3(-1, 0, 0),   // 2 GAUCHE
+            new Vector3(1, 0, 0),    // 3 DROIT
+            new Vector3(0, 0, 1),    // 4 HAUT
+            new Vector3(0, 0, -1)    // 5 BAS
+        };
+        private static readonly string[] ViewCubeFaceLabels = { "DEVANT", "DERR", "GAUCHE", "DROIT", "HAUT", "BAS" };
+
+        // Screen-space (u = right, v = up) basis for each cube face, chosen so that
+        // looking at the face from OUTSIDE reads the label upright, and u x v == n
+        // (right-handed, viewed from outside). The vertical faces keep +Z as "up".
+        private static void ViewCubeFaceTangents(int f, out Vector3 u, out Vector3 v)
+        {
+            switch (f)
+            {
+                case 0: u = new Vector3(-1, 0, 0); v = new Vector3(0, 0, 1); break;  // +Y DEVANT
+                case 1: u = new Vector3(1, 0, 0); v = new Vector3(0, 0, 1); break;   // -Y DERR
+                case 2: u = new Vector3(0, -1, 0); v = new Vector3(0, 0, 1); break;  // -X GAUCHE
+                case 3: u = new Vector3(0, 1, 0); v = new Vector3(0, 0, 1); break;   // +X DROIT
+                case 4: u = new Vector3(1, 0, 0); v = new Vector3(0, 1, 0); break;   // +Z HAUT
+                default: u = new Vector3(1, 0, 0); v = new Vector3(0, -1, 0); break; // -Z BAS
+            }
+        }
+
+        private void EnsureViewCube()
+        {
+            if (_viewCubeVao != 0 && _viewCubeTex != 0) return;
+
+            var data = new List<float>(6 * 6 * 8);
+            for (int f = 0; f < 6; f++)
+            {
+                var n = ViewCubeFaceNormals[f];
+                ViewCubeFaceTangents(f, out var u, out var v);
+                float col = f % 3, row = f / 3;
+                float uL = col / 3f, uR = (col + 1f) / 3f;
+                // No bitmap flip on upload -> bitmap row 0 sits at v=0. Screen-TOP face
+                // vertices (n + u + v, since v is the "up" tangent) sample the SMALL v so
+                // labels read upright.
+                float vTop = row * 0.5f, vBot = (row + 1) * 0.5f;
+                var ps = new[] { n - u - v, n + u - v, n + u + v, n - u + v };
+                // Labels were mirroring left/right, so map the small-u vertex to the large U.
+                var uu = new[] { uR, uL, uL, uR };
+                var vv = new[] { vBot, vBot, vTop, vTop };
+                int[] tri = { 0, 1, 2, 0, 2, 3 };
+                foreach (int i in tri)
+                {
+                    data.Add(ps[i].X); data.Add(ps[i].Y); data.Add(ps[i].Z);
+                    data.Add(n.X); data.Add(n.Y); data.Add(n.Z);
+                    data.Add(uu[i]); data.Add(vv[i]);
+                }
+            }
+
+            _viewCubeVao = GL.GenVertexArray();
+            GL.BindVertexArray(_viewCubeVao);
+            _viewCubeVbo = GL.GenBuffer();
+            GL.BindBuffer(BufferTarget.ArrayBuffer, _viewCubeVbo);
+            GL.BufferData(BufferTarget.ArrayBuffer, data.Count * sizeof(float), data.ToArray(), BufferUsageHint.StaticDraw);
+            int stride = 8 * sizeof(float);
+            GL.EnableVertexAttribArray(0);
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, 0);
+            GL.EnableVertexAttribArray(1);
+            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, 3 * sizeof(float));
+            GL.EnableVertexAttribArray(2);
+            GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, 6 * sizeof(float));
+            GL.BindVertexArray(0);
+
+            _viewCubeTex = BuildViewCubeTexture();
+        }
+
+        private int BuildViewCubeTexture()
+        {
+            const int tile = 128;
+            using var bmp = new Bitmap(tile * 3, tile * 2);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.FromArgb(40, 44, 52));
+                var bgs = new[]
+                {
+                    Color.FromArgb(70, 110, 160),   // DEVANT
+                    Color.FromArgb(50, 70, 110),    // DERR
+                    Color.FromArgb(70, 130, 80),    // GAUCHE
+                    Color.FromArgb(160, 90, 60),    // DROIT
+                    Color.FromArgb(180, 160, 60),   // HAUT
+                    Color.FromArgb(120, 80, 150)    // BAS
+                };
+                using var font = new Font("Segoe UI", 15f, FontStyle.Bold);
+                using var border = new Pen(Color.FromArgb(20, 22, 28), 3f);
+                for (int i = 0; i < 6; i++)
+                {
+                    int x = (i % 3) * tile, y = (i / 3) * tile;
+                    using var br = new SolidBrush(bgs[i]);
+                    g.FillRectangle(br, x, y, tile, tile);
+                    g.DrawRectangle(border, x + 1.5f, y + 1.5f, tile - 3, tile - 3);
+                    var sz = g.MeasureString(ViewCubeFaceLabels[i], font);
+                    g.DrawString(ViewCubeFaceLabels[i], font, Brushes.White,
+                        x + (tile - sz.Width) / 2f, y + (tile - sz.Height) / 2f);
+                }
+            }
+            // NOTE: no RotateFlip here. UploadBitmap forwards bitmap row 0 to GL texture
+            // row 0, and v=0 samples that row, so bitmap-top maps to small v. The cube UVs
+            // (EnsureViewCube) therefore put the screen-TOP face vertices at the SMALL v.
+            return UploadBitmap(bmp);
+        }
+
+        private void DrawViewCube()
+        {
+            if (_shaderProg == 0) return;
+            GetEditorViewportRect(out int vx, out int vy, out int vw, out int vh);
+            if (vw < ViewCubePx + 24 || vh < ViewCubePx + 24) return;
+            EnsureViewCube();
+            if (_viewCubeVao == 0 || _viewCubeTex == 0) return;
+
+            Matrix4 mvp = ViewCubeMvp(vx, vy, vw, vh);
+
+            // Draw the cube in its own little window: clear depth there (scissored, so
+            // the scene is untouched) then enable depth test so only the front faces
+            // show, giving a solid 3D cube instead of superimposed faces.
+            int cx = vx + ViewCubeMargin;
+            int cy = vy + vh - ViewCubePx - ViewCubeMargin;
+            GL.Enable(EnableCap.ScissorTest);
+            GL.Scissor(cx, cy, ViewCubePx, ViewCubePx);
+            GL.Clear(ClearBufferMask.DepthBufferBit);
+            // Restore the editor scissor so nothing else leaks out of the editor half.
+            GL.Scissor(vx, vy, vw, vh);
+            GL.Enable(EnableCap.DepthTest);
+            GL.UseProgram(_shaderProg);
+
+            // The cube itself: per-face shading (uUnlit=0 + a light dir) so the three
+            // visible sides have distinct brightness and read as a real 3D cube. The
+            // per-face texture already paints a dark border + label.
+            GL.UniformMatrix4(_uMvp, false, ref mvp);
+            GL.Uniform1(_uTex, 0);
+            GL.Uniform1(_uHasTex, 1);
+            GL.Uniform1(_uUnlit, 0);
+            GL.Uniform3(_uLightDir, 0.35f, 0.35f, 0.9f);
+            GL.Uniform1(_uAlphaCut, 0.2f);
+            GL.Uniform1(_uOpacity, 1f);
+            GL.Uniform1(_uBrightness, 1.15f);
+            GL.Uniform3(_uColor, 1f, 1f, 1f);
+            GL.ActiveTexture(TextureUnit.Texture0);
+            GL.BindTexture(TextureTarget.Texture2D, _viewCubeTex);
+            GL.BindVertexArray(_viewCubeVao);
+            GL.DrawArrays(PrimitiveType.Triangles, 0, 36);
+            GL.BindVertexArray(0);
+            GL.UseProgram(0);
+        }
+
+        // Cube MVP: world-axis-aligned unit cube, rotated by the camera (rotation
+        // only, so it stays fixed in the corner while orbiting), scaled to ViewCubePx
+        // and placed at the TOP-LEFT corner of the editor viewport. Pixel coordinates
+        // are mapped to NDC over the whole viewport so the cube keeps its real size.
+        private Matrix4 ViewCubeMvp(int vx, int vy, int vw, int vh)
+        {
+            int cornerX = vx + ViewCubeMargin;
+            int cornerY = vy + vh - ViewCubePx - ViewCubeMargin;   // top edge of bottom-left box
+            float half = ViewCubePx / 2f;
+            // Shrink so the cube floats inside its box (its rotated silhouette is wider
+            // than its side: a unit cube's diagonal is ~1.73x a side).
+            float cubeHalf = half * 0.62f;
+
+            Matrix4 rot = _camera.GetViewMatrix();
+            rot.Row3 = new Vector4(0, 0, 0, 1);   // keep rotation only
+            Matrix4 s = Matrix4.CreateScale(cubeHalf, cubeHalf, cubeHalf);
+            // Place the cube center in PIXEL coordinates, then map pixels -> NDC over
+            // the whole viewport (px 0 -> -1, px w -> +1). XY keep the real pixel size.
+            // Z is compressed separately: the scale above gives z in pixels (±cubeHalf);
+            // the 1/(2*cubeHalf) factor maps it to ±0.5 in NDC so all faces stay inside
+            // the [-1,1] depth range while keeping distinct depths for the depth test.
+            Matrix4 t = Matrix4.CreateTranslation(cornerX + half, cornerY + half, 0f);
+            Matrix4 pixelToNdc = Matrix4.CreateScale(2f / vw, 2f / vh, 1f / (2f * cubeHalf))
+                               * Matrix4.CreateTranslation(-1f, -1f, 0f);
+            return rot * s * t * pixelToNdc;
+        }
+
+        private bool TryViewCubeClick(MouseEventArgs e)
+        {
+            GetEditorViewportRect(out int vx, out int vy, out int vw, out int vh);
+            if (vw < ViewCubePx + 24 || vh < ViewCubePx + 24) return false;
+
+            float mx = e.X;
+            float my = glControl.Height - e.Y;   // GL space (origin bottom-left)
+            int cornerX = vx + ViewCubeMargin;
+            int cornerY = vy + vh - ViewCubePx - ViewCubeMargin;
+            if (mx < cornerX || mx > cornerX + ViewCubePx || my < cornerY || my > cornerY + ViewCubePx)
+                return false;
+
+            Matrix4 rot = _camera.GetViewMatrix();
+            rot.Row3 = new Vector4(0, 0, 0, 1);
+            float half = ViewCubePx / 2f;
+            float cubeHalf = half * 0.62f;   // must match ViewCubeMvp
+            Vector3 eye = _camera.EyePosition();
+
+            // Front-facing face under the cursor wins.
+            for (int f = 0; f < 6; f++)
+            {
+                var n = ViewCubeFaceNormals[f];
+                if (Vector3.Dot(n, eye - n) <= 0f) continue;   // face center = n (half-size 1)
+                ViewCubeFaceTangents(f, out var u, out var v);
+                var pts = new Vector3[4];
+                var signs = new[] { (-1, -1), (1, -1), (1, 1), (-1, 1) };
+                for (int k = 0; k < 4; k++)
+                {
+                    Vector3 p = Vector3.TransformPosition(n + signs[k].Item1 * u + signs[k].Item2 * v, rot);
+                    pts[k] = new Vector3(
+                        cornerX + half + p.X * cubeHalf,
+                        cornerY + half + p.Y * cubeHalf,
+                        0f);
+                }
+                if (PointInConvexQuad(mx, my, pts))
+                {
+                    ApplyViewCubeFace(f);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool PointInConvexQuad(float x, float y, Vector3[] q)
+        {
+            bool? sign = null;
+            for (int i = 0; i < 4; i++)
+            {
+                var a = q[i];
+                var b = q[(i + 1) % 4];
+                float cross = (b.X - a.X) * (y - a.Y) - (b.Y - a.Y) * (x - a.X);
+                if (Math.Abs(cross) < 1e-6f) continue;
+                bool s = cross > 0f;
+                if (sign == null) sign = s;
+                else if (sign.Value != s) return false;
+            }
+            return sign != null;
+        }
+
+        private void ApplyViewCubeFace(int f)
+        {
+            switch (f)
+            {
+                case 0: _camera.ViewFront(); break;
+                case 1: _camera.ViewBack(); break;
+                case 2: _camera.ViewLeft(); break;
+                case 3: _camera.ViewRight(); break;
+                case 4: _camera.ViewTop(); break;
+                case 5: _camera.ViewBottom(); break;
+            }
+            Log($"ViewCube : vue standard n°{f} ({(f < ViewCubeFaceLabels.Length ? ViewCubeFaceLabels[f] : "?")})");
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
 
         private void DrawUoView(int x, int w, int h)
@@ -10247,6 +11618,8 @@ void main(){
                 if (Math.Abs(e.X - sx) <= 5) { _uoDragSplit = true; return; }
                 if (e.X > sx) return;   // right (UO) half: no orbit
             }
+            // View cube click (standard view presets) takes priority over orbiting.
+            if (e.Button == MouseButtons.Left && TryViewCubeClick(e)) return;
             _camera.OnMouseDown(e);
         }
 
@@ -10318,6 +11691,16 @@ void main(){
                 _camera.Pitch = -0.35f;
                 glControl.Invalidate();
             });
+
+            var vuesMenu = new ToolStripMenuItem("Vues standard");
+            vuesMenu.DropDownItems.Add("Devant", null, (s, a) => { _camera.ViewFront(); glControl.Invalidate(); });
+            vuesMenu.DropDownItems.Add("Derrière", null, (s, a) => { _camera.ViewBack(); glControl.Invalidate(); });
+            vuesMenu.DropDownItems.Add("Gauche", null, (s, a) => { _camera.ViewLeft(); glControl.Invalidate(); });
+            vuesMenu.DropDownItems.Add("Droite", null, (s, a) => { _camera.ViewRight(); glControl.Invalidate(); });
+            vuesMenu.DropDownItems.Add("Dessus", null, (s, a) => { _camera.ViewTop(); glControl.Invalidate(); });
+            vuesMenu.DropDownItems.Add("Dessous", null, (s, a) => { _camera.ViewBottom(); glControl.Invalidate(); });
+            vuesMenu.DropDownItems.Add("Isométrique", null, (s, a) => { _camera.ViewIso(); glControl.Invalidate(); });
+            glContextMenu.Items.Add(vuesMenu);
 
             glContextMenu.Items.Add("Réinitialiser la pose (Stop)", null, BtnStop_Click);
             glContextMenu.Items.Add("T-Pose", null, BtnTPose_Click);
