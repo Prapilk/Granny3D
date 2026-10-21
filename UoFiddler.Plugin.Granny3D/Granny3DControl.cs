@@ -174,6 +174,18 @@ namespace UoFiddler.Plugin.Granny3D
         public LoadedMesh WrapSource;
         public VertexInfluence[][] WrapSkin;
 
+        // Non-destructive preview of the advanced skin-wrap panel: while a preview is
+        // active the live WrapSkin/WrapSource above are the PREVIEW values and the
+        // committed ones are saved here. "Appliquer" drops the backup, "Annuler"
+        // restores it.
+        public LoadedMesh PreviewSavedWrapSource;
+        public VertexInfluence[][] PreviewSavedWrapSkin;
+        public bool PreviewActive;
+
+        // DEBUG/test: render straight from BaseVertices, bypassing skin/wrap, to tell
+        // whether a visible pose lives in the raw geometry or in the skinning step.
+        public bool ForceBaseDisplay;
+
         // Backup of original skeleton, skin weights and attachment state before Skin Wrap,
         // restored when the mesh is detached so it doesn't distort or explode.
         public List<GrannyBone> OriginalBones;
@@ -330,10 +342,19 @@ namespace UoFiddler.Plugin.Granny3D
                         {
                             string path = trim.Substring(9).Trim();
                             if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
-                            {
                                 BasePath = path;
-                                return;
-                            }
+                        }
+                        else if (trim.StartsWith("MainSplit=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (int.TryParse(trim.Substring(10).Trim(), out int v)) LayoutMainSplit = v;
+                        }
+                        else if (trim.StartsWith("LeftSplit=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (int.TryParse(trim.Substring(10).Trim(), out int v)) LayoutLeftSplit = v;
+                        }
+                        else if (trim.StartsWith("AnimSplit=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (int.TryParse(trim.Substring(10).Trim(), out int v)) LayoutAnimSplit = v;
                         }
                     }
                 }
@@ -359,10 +380,21 @@ namespace UoFiddler.Plugin.Granny3D
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                     Directory.CreateDirectory(dir);
 
-                File.WriteAllLines(file, new[] { "BasePath=" + BasePath });
+                File.WriteAllLines(file, new[]
+                {
+                    "BasePath=" + BasePath,
+                    "MainSplit=" + LayoutMainSplit,
+                    "LeftSplit=" + LayoutLeftSplit,
+                    "AnimSplit=" + LayoutAnimSplit
+                });
             }
             catch { }
         }
+
+        // Persisted panel layout (splitter distances). -1 = not set yet (use defaults).
+        public static int LayoutMainSplit = -1;
+        public static int LayoutLeftSplit = -1;
+        public static int LayoutAnimSplit = -1;
 
         // Category folder -> display name
         private static readonly string[] CategoryFolders =
@@ -400,6 +432,9 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblAnimations;
         private TreeView tvLoaded;
         private GroupBox grpLoaded;
+        // Left/right layout splitters, kept as fields so their positions can be
+        // saved and restored (the panels are resized by the user at runtime).
+        private SplitContainer _mainSplit, _leftSplit, _animSplit;
         // Ctrl/Shift multi-selection for the "Meshes affichés" tree (the WinForms
         // TreeView has no built-in multi-select, and CheckBoxes suppress it further).
         private readonly HashSet<TreeNode> _treeMultiSel = new HashSet<TreeNode>();
@@ -457,6 +492,14 @@ namespace UoFiddler.Plugin.Granny3D
         private CheckBox cbMirrorX, cbMirrorY, cbMirrorZ, cbMirrorArms;
         private NumericUpDown nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, nudClothGrav;
         private Button btnEquipReset, btnDuplicateMirror, btnSkinWrap, btnSubdiv, btnClothBake, btnBakeModifs;
+        // Advanced skin-wrap panel
+        private ComboBox cmbWrapSource, cmbWrapAlgo, cmbWrapFalloff;
+        private NumericUpDown nudWrapK, nudWrapRadius, nudWrapMaxBones;
+        private CheckBox chkWrapAnatomical, chkWrapLive;
+        private Button btnWrapPreview, btnWrapApply, btnWrapCancel;
+        private Button btnForceBase;
+        private Label lblWrapInfo;
+        private bool _wrapPreviewBusy;
         private CheckBox chkCloth;
         private NumericUpDown nudBakeFps, nudLoopBlend;
         private bool _suppressEquip;
@@ -945,7 +988,7 @@ namespace UoFiddler.Plugin.Granny3D
             grpAnimations.Dock = DockStyle.Fill;
             grpLoaded.Dock = DockStyle.Fill;
 
-            var animSplit = new SplitContainer
+            var animSplit = _animSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal
@@ -953,7 +996,7 @@ namespace UoFiddler.Plugin.Granny3D
             animSplit.Panel1.Controls.Add(grpAnimations);
             animSplit.Panel2.Controls.Add(grpLoaded);
 
-            var leftSplit = new SplitContainer
+            var leftSplit = _leftSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal
@@ -1376,9 +1419,76 @@ namespace UoFiddler.Plugin.Granny3D
             nudClothGrav = MakeNud(230, 281, 0m, 30m, 0.5m, 2);
             nudClothGrav.Value = 9.8m;
 
-            btnSkinWrap = new Button { Text = "Skin wrap (copier la peau du corps)", Location = new Point(30, 312), Width = 250, Height = 24, BackColor = Color.FromArgb(70, 70, 90), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            // ---- Advanced Skin Wrap panel (moved to the free space right of the mirror
+            //      checkbox, where the old "Recaler" button was). "Skin wrap" applies the
+            //      committed wrap; the options below build a LIVE preview (non-destructive)
+            //      over 3 algorithms, so the best fit can be chosen visually. ----
+            btnSkinWrap = new Button { Text = "Skin wrap (copier la peau du corps)", Location = new Point(440, 44), Width = 320, Height = 40, BackColor = Color.FromArgb(70, 70, 90), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
             btnSkinWrap.Click += (s, e) => SkinWrapSelected();
             grpEquip.Controls.Add(btnSkinWrap);
+
+            grpEquip.Controls.Add(new Label { Text = "Portée :", Location = new Point(440, 92), Width = 70, ForeColor = Color.Gainsboro });
+            cmbWrapSource = new ComboBox { Location = new Point(510, 89), Width = 250, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            cmbWrapSource.Items.AddRange(new object[] { "Corps entier (auto)", "Parties proches du mesh", "Meshes cochés comme source" });
+            cmbWrapSource.SelectedIndex = 0;
+            cmbWrapSource.SelectedIndexChanged += (s, e) => RebuildWrapPreview();
+            grpEquip.Controls.Add(cmbWrapSource);
+
+            grpEquip.Controls.Add(new Label { Text = "Algorithme :", Location = new Point(440, 120), Width = 80, ForeColor = Color.Gainsboro });
+            cmbWrapAlgo = new ComboBox { Location = new Point(520, 117), Width = 240, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            cmbWrapAlgo.Items.AddRange(new object[] { "Voisins (sommets)", "Os (capsules)", "Projection surface" });
+            cmbWrapAlgo.SelectedIndex = 0;
+            cmbWrapAlgo.SelectedIndexChanged += (s, e) => RebuildWrapPreview();
+            grpEquip.Controls.Add(cmbWrapAlgo);
+
+            grpEquip.Controls.Add(new Label { Text = "Voisins K", Location = new Point(440, 148), Width = 62, ForeColor = Color.Gray });
+            nudWrapK = MakeNud(504, 145, 1m, 8m, 1m, 0, 46);
+            nudWrapK.Value = 4m;
+            nudWrapK.ValueChanged += (s, e) => RebuildWrapPreview();
+            grpEquip.Controls.Add(nudWrapK);
+            grpEquip.Controls.Add(new Label { Text = "Rayon", Location = new Point(560, 148), Width = 42, ForeColor = Color.Gray });
+            nudWrapRadius = MakeNud(604, 145, 0m, 50m, 0.01m, 2, 56);
+            nudWrapRadius.Value = 0m;
+            nudWrapRadius.ValueChanged += (s, e) => RebuildWrapPreview();
+            grpEquip.Controls.Add(nudWrapRadius);
+            grpEquip.Controls.Add(new Label { Text = "Max os", Location = new Point(668, 148), Width = 48, ForeColor = Color.Gray });
+            nudWrapMaxBones = MakeNud(716, 145, 1m, 8m, 1m, 0, 44);
+            nudWrapMaxBones.Value = 4m;
+            nudWrapMaxBones.ValueChanged += (s, e) => RebuildWrapPreview();
+            grpEquip.Controls.Add(nudWrapMaxBones);
+
+            grpEquip.Controls.Add(new Label { Text = "Pondération :", Location = new Point(440, 176), Width = 84, ForeColor = Color.Gainsboro });
+            cmbWrapFalloff = new ComboBox { Location = new Point(524, 173), Width = 236, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 54), ForeColor = Color.Gainsboro };
+            cmbWrapFalloff.Items.AddRange(new object[] { "Inverse distance", "Uniforme", "Gaussien", "Distance au carré" });
+            cmbWrapFalloff.SelectedIndex = 0;
+            cmbWrapFalloff.SelectedIndexChanged += (s, e) => RebuildWrapPreview();
+            grpEquip.Controls.Add(cmbWrapFalloff);
+
+            chkWrapAnatomical = new CheckBox { Text = "Filtre anatomique (jambes/bras D-G)", Location = new Point(440, 201), Width = 300, ForeColor = Color.Gainsboro };
+            chkWrapAnatomical.Checked = true;
+            chkWrapAnatomical.CheckedChanged += (s, e) => RebuildWrapPreview();
+            grpEquip.Controls.Add(chkWrapAnatomical);
+
+            chkWrapLive = new CheckBox { Text = "Aperçu temps réel", Location = new Point(440, 225), Width = 160, ForeColor = Color.LightGreen };
+            chkWrapLive.Checked = true;
+            grpEquip.Controls.Add(chkWrapLive);
+
+            btnWrapPreview = new Button { Text = "Aperçu", Location = new Point(600, 223), Width = 52, Height = 24, BackColor = Color.FromArgb(60, 70, 90), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            btnWrapPreview.Click += (s, e) => RebuildWrapPreview(true);
+            grpEquip.Controls.Add(btnWrapPreview);
+            btnWrapApply = new Button { Text = "Appliquer", Location = new Point(656, 223), Width = 52, Height = 24, BackColor = Color.FromArgb(45, 95, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnWrapApply.Click += (s, e) => ApplyWrapPreview();
+            grpEquip.Controls.Add(btnWrapApply);
+            btnWrapCancel = new Button { Text = "Annuler", Location = new Point(712, 223), Width = 48, Height = 24, BackColor = Color.FromArgb(90, 55, 55), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            btnWrapCancel.Click += (s, e) => CancelWrapPreview();
+            grpEquip.Controls.Add(btnWrapCancel);
+
+            lblWrapInfo = new Label { Text = "Aperçu : aucun", Location = new Point(440, 252), Width = 320, Height = 40, ForeColor = Color.LightSkyBlue, Font = new Font("Segoe UI", 7.5f) };
+            grpEquip.Controls.Add(lblWrapInfo);
+
+            btnForceBase = new Button { Text = "Afficher la géométrie brute (base, sans peau)", Location = new Point(440, 296), Width = 320, Height = 26, BackColor = Color.FromArgb(90, 70, 50), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            btnForceBase.Click += (s, e) => ToggleForceBaseDisplay();
+            grpEquip.Controls.Add(btnForceBase);
 
             btnEquipReset = new Button { Text = "Réinitialiser", Location = new Point(30, 342), Width = 115, Height = 24, BackColor = Color.FromArgb(60, 60, 62), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
             btnEquipReset.Click += (s, e) => ResetEquipControls();
@@ -1433,7 +1543,10 @@ namespace UoFiddler.Plugin.Granny3D
             btnBakeModifs.Click += (s, e) => BakeAndSaveSelectedMesh();
             grpEquip.Controls.Add(btnBakeModifs);
 
-            grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, cbMirrorArms, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY, nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnDuplicateMirror, btnSubdiv, nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole, btnBakeModifs });
+            grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, cbMirrorArms, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY,            nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnDuplicateMirror, btnSubdiv, 
+           nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole, btnBakeModifs,
+           cmbWrapSource, cmbWrapAlgo, cmbWrapFalloff, nudWrapK, nudWrapRadius, nudWrapMaxBones,
+           chkWrapAnatomical, chkWrapLive, btnWrapPreview, btnWrapApply, btnWrapCancel, lblWrapInfo });
 
             // ---- Split the old "Équipement" panel into two tabs: equipment placement
             // | character pose/displacement (pose studio for non T-pose imports) ----
@@ -1862,7 +1975,7 @@ namespace UoFiddler.Plugin.Granny3D
             LayoutViewport(pnlRight, pnlRightBottom);
 
             // ===== MAIN SPLIT: left tree | right viewport+playback =====
-            var mainSplit = new SplitContainer
+            var mainSplit = _mainSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 FixedPanel = FixedPanel.Panel1,
@@ -1875,11 +1988,16 @@ namespace UoFiddler.Plugin.Granny3D
             Controls.Add(mainSplit);
             ResumeLayout(false);
 
-            // Initial splitter positions: models column doubled (360 -> 720), and the
-            // animations / meshes zones get a resizable share of the left column.
-            SetSplitterDistance(mainSplit, 720);
-            SetSplitterDistance(leftSplit, 430);
-            SetSplitterDistance(animSplit, 190);
+            // Initial splitter positions: restore the user's last layout if saved,
+            // otherwise sensible defaults (models column doubled 360 -> 720, etc.).
+            SetSplitterDistance(mainSplit, LayoutMainSplit > 0 ? LayoutMainSplit : 720);
+            SetSplitterDistance(leftSplit, LayoutLeftSplit > 0 ? LayoutLeftSplit : 430);
+            SetSplitterDistance(animSplit, LayoutAnimSplit > 0 ? LayoutAnimSplit : 190);
+
+            // Remember the layout when the user drags a splitter, and persist on close.
+            mainSplit.SplitterMoved += (s, e) => LayoutMainSplit = mainSplit.SplitterDistance;
+            leftSplit.SplitterMoved += (s, e) => LayoutLeftSplit = leftSplit.SplitterDistance;
+            animSplit.SplitterMoved += (s, e) => LayoutAnimSplit = animSplit.SplitterDistance;
 
             LoadCategoryTree();
         }
@@ -6301,6 +6419,7 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         // Skin-wrap: bind the selected accessory to the SURFACE of the entire body (all body parts:
+        // ============================================================================
         // Torso, UArms, FArms, Hands, Pelvis, ULegs, LLegs, Feet, Head, Neck...) by copying, for each
         // accessory vertex, the skin weights of the nearest body vertices across the full body model,
         // remapping all influences into the master host skeleton (e.g. 43-bone human).
@@ -6834,6 +6953,691 @@ namespace UoFiddler.Plugin.Granny3D
             if (lblModelInfo != null)
                 lblModelInfo.Text = $"Skin wrap réussi : {totalWrappedMeshes} mesh(es) lié(s) sur {sources.Count} pièces du corps ({masterHost.Bones.Count} os)";
         }
+
+        // ============================================================================
+        // ADVANCED SKIN WRAP — parametrized engine + non-destructive live preview.
+        //
+        // Three binding algorithms share one source/host setup:
+        //   0 "Voisins (sommets)"   : copy the weights of the K nearest body VERTICES
+        //                             (blended by distance / uniform / gaussian).
+        //   1 "Os (capsules)"       : distribute weights by distance to the body BONE
+        //                             SEGMENTS (capsules) - robust where surface is sparse.
+        //   2 "Projection surface"  : project each vertex onto the nearest body TRIANGLE
+        //                             and interpolate the 3 corner weights (barycentric).
+        // Preview writes the result into WrapSkin/WrapSource (live) keeping the
+        // committed values in PreviewSaved*; "Appliquer" drops the backup, "Annuler"
+        // restores it. Nothing else in the scene is touched.
+        // ============================================================================
+        private struct WrapSettings
+        {
+            public int Source;      // 0 auto body, 1 nearby parts, 2 checked sources
+            public int Algo;        // 0 nearest, 1 capsule, 2 surface
+            public int K;           // neighbours
+            public float Radius;    // 0 = unlimited
+            public int Falloff;     // 0 inv-dist, 1 uniform, 2 gaussian, 3 inv-dist²
+            public int MaxBones;    // bones kept per vertex
+            public bool Anatomical; // leg/arm D-G separation filters
+        }
+
+        private WrapSettings ReadWrapSettings()
+        {
+            return new WrapSettings
+            {
+                Source = cmbWrapSource != null ? Math.Max(0, cmbWrapSource.SelectedIndex) : 0,
+                Algo = cmbWrapAlgo != null ? Math.Max(0, cmbWrapAlgo.SelectedIndex) : 0,
+                K = nudWrapK != null ? (int)nudWrapK.Value : 4,
+                Radius = nudWrapRadius != null ? (float)nudWrapRadius.Value : 0f,
+                Falloff = cmbWrapFalloff != null ? Math.Max(0, cmbWrapFalloff.SelectedIndex) : 0,
+                MaxBones = nudWrapMaxBones != null ? (int)nudWrapMaxBones.Value : 4,
+                Anatomical = chkWrapAnatomical == null || chkWrapAnatomical.Checked
+            };
+        }
+
+        private float WrapWeight(float dist, int falloff)
+        {
+            switch (falloff)
+            {
+                case 1: return 1f;                                  // uniform
+                case 2: return (float)Math.Exp(-dist * dist * 25f); // gaussian
+                case 3: return 1f / (dist * dist + 0.0001f);        // inverse distance²
+                default: return 1f / (dist + 0.001f);               // inverse distance
+            }
+        }
+
+        // Collect body source meshes + the master host skeleton (same logic as the
+        // classic SkinWrapSelected, so results are consistent).
+        private void GatherWrapContext(List<int> targets, WrapSettings set,
+            out List<LoadedMesh> sources, out LoadedMesh masterHost)
+        {
+            var targetSet = new HashSet<int>(targets);
+            sources = new List<LoadedMesh>();
+
+            bool wantChecked = set.Source == 2;
+            foreach (var m in _loadedMeshes)
+            {
+                int mIdx = _loadedMeshes.IndexOf(m);
+                if (targetSet.Contains(mIdx)) continue;
+                if (m.Hidden) continue;
+                if (m.WrapSource != null) continue;
+                if (m.Skin == null || m.Skin.Length == 0) continue;
+                if (m.Bones == null || m.Bones.Count == 0) continue;
+                if (m.BaseVertices == null || m.BaseVertices.Length == 0) continue;
+                if (wantChecked && !_poseTargets.Contains(mIdx)) continue;
+                if (m.CutoutRole == MeshCutoutRole.Body || !string.IsNullOrEmpty(m.CharSlot))
+                    sources.Add(m);
+            }
+            if (sources.Count == 0)
+            {
+                foreach (var m in _loadedMeshes)
+                {
+                    int mIdx = _loadedMeshes.IndexOf(m);
+                    if (targetSet.Contains(mIdx)) continue;
+                    if (m.Hidden) continue;
+                    if (m.WrapSource != null) continue;
+                    if (m.Skin == null || m.Skin.Length == 0) continue;
+                    if (m.Bones == null || m.Bones.Count == 0) continue;
+                    if (m.BaseVertices == null || m.BaseVertices.Length == 0) continue;
+                    if (wantChecked && !_poseTargets.Contains(mIdx)) continue;
+                    sources.Add(m);
+                }
+            }
+
+            masterHost = null;
+            int maxBones = -1;
+            foreach (var m in _loadedMeshes)
+                if (m.Bones != null && m.Bones.Count > maxBones) { maxBones = m.Bones.Count; masterHost = m; }
+
+            if (masterHost == null || maxBones < 40)
+            {
+                bool preferFemale = _charGender == 2;
+                foreach (var s in sources)
+                    if (s.Name != null && s.Name.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0) { preferFemale = true; break; }
+                string refFile = preferFemale ? "H_Female_Lod2.grn" : "H_Male_Lod2.grn";
+                string refPath = Path.Combine(BasePath, "Humans", refFile);
+                if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
+                if (File.Exists(refPath))
+                {
+                    var parser = new GrannyFormatParser();
+                    if (parser.Load(refPath) && parser.Bones.Count >= 40)
+                    {
+                        var host = new LoadedMesh
+                        {
+                            Name = $"[Host Skeleton] {Path.GetFileNameWithoutExtension(refPath)}",
+                            SourcePath = refPath,
+                            Bones = new List<GrannyBone>(parser.Bones),
+                            BaseVertices = parser.Meshes.Count > 0 ? parser.Meshes[0].Vertices.ToArray() : new Vector3[0],
+                            Indices = parser.Meshes.Count > 0 ? parser.Meshes[0].Indices.ToArray() : new int[0],
+                            CutoutRole = MeshCutoutRole.Body,
+                            Hidden = true
+                        };
+                        _loadedMeshes.Add(host);
+                        masterHost = host;
+                    }
+                }
+            }
+
+            if (_currentAnimation != null)
+                EnsureAnimationBindings(_currentAnimation);
+            if (masterHost != null && (masterHost.SkinMatrices == null || masterHost.SkinMatrices.Length != masterHost.Bones.Count))
+                ApplyAnimationPose(_currentTime);
+
+            // Compute the master host's REST world matrices (needed by capsule mode).
+        }
+
+        // Shared per-run context: source bone->host bone maps, pooled body samples,
+        // and pooled body triangles (for the surface algorithm).
+        private class WrapCtx
+        {
+            public List<LoadedMesh> Sources;
+            public LoadedMesh Host;
+            public int[][] SourceBoneMaps;
+            public List<(Vector3 pos, int srcIdx, int localVertIdx)> Samples = new();
+            public List<(int a, int b, int c, int srcIdx)> Tris = new();
+            public bool[] SrcIsULegs;
+            public bool[] SrcIsLLegs;
+            public int RCalf, LCalf, RThigh, LThigh, RHand, LHand;
+        }
+
+        private WrapCtx BuildWrapCtx(List<LoadedMesh> sources, LoadedMesh host)
+        {
+            var ctx = new WrapCtx { Sources = sources, Host = host };
+            ctx.SourceBoneMaps = new int[sources.Count][];
+            for (int s = 0; s < sources.Count; s++)
+            {
+                var src = sources[s];
+                var map = new int[src.Bones.Count];
+                for (int b = 0; b < src.Bones.Count; b++)
+                {
+                    string bName = src.Bones[b].Name;
+                    int mi = host.Bones.FindIndex(mb => string.Equals(mb.Name, bName, StringComparison.OrdinalIgnoreCase));
+                    map[b] = mi >= 0 ? mi : 0;
+                }
+                ctx.SourceBoneMaps[s] = map;
+
+                var sv = src.BaseVertices;
+                var sk = src.Skin;
+                for (int k = 0; k < sv.Length; k++)
+                    if (k < sk.Length && sk[k] != null && sk[k].Length > 0)
+                        ctx.Samples.Add((sv[k], s, k));
+
+                var idx = src.Indices;
+                if (idx != null && idx.Length >= 3)
+                    for (int t = 0; t + 2 < idx.Length; t += 3)
+                        ctx.Tris.Add((idx[t], idx[t + 1], idx[t + 2], s));
+            }
+
+            ctx.RCalf = host.Bones.FindIndex(b => b.Name.IndexOf("R Calf", StringComparison.OrdinalIgnoreCase) >= 0);
+            ctx.LCalf = host.Bones.FindIndex(b => b.Name.IndexOf("L Calf", StringComparison.OrdinalIgnoreCase) >= 0);
+            ctx.RThigh = host.Bones.FindIndex(b => b.Name.IndexOf("R Thigh", StringComparison.OrdinalIgnoreCase) >= 0);
+            ctx.LThigh = host.Bones.FindIndex(b => b.Name.IndexOf("L Thigh", StringComparison.OrdinalIgnoreCase) >= 0);
+            ctx.RHand = host.Bones.FindIndex(b => b.Name.IndexOf("R Hand", StringComparison.OrdinalIgnoreCase) >= 0);
+            ctx.LHand = host.Bones.FindIndex(b => b.Name.IndexOf("L Hand", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            ctx.SrcIsULegs = new bool[sources.Count];
+            ctx.SrcIsLLegs = new bool[sources.Count];
+            for (int s = 0; s < sources.Count; s++)
+            {
+                string sName = sources[s].Name ?? "";
+                ctx.SrcIsULegs[s] = sName.IndexOf("ULegs", StringComparison.OrdinalIgnoreCase) >= 0;
+                ctx.SrcIsLLegs[s] = sName.IndexOf("LLegs", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            return ctx;
+        }
+
+        // Anatomical re-filter + remap of one influence set, then keep top-MaxBones.
+        private VertexInfluence[] FinalizeInfluences(Dictionary<int, float> acc, Vector3 p, WrapCtx ctx, WrapSettings set)
+        {
+            if (acc.Count == 0) return null;
+            var list = new List<KeyValuePair<int, float>>(acc);
+            list.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+            if (set.Anatomical)
+            {
+                for (int m = 0; m < list.Count; m++)
+                {
+                    int bid = list[m].Key;
+                    if (bid < 0 || bid >= ctx.Host.Bones.Count) continue;
+                    string nm = ctx.Host.Bones[bid].Name;
+                    bool left = nm.IndexOf(" L ", StringComparison.OrdinalIgnoreCase) >= 0 || p.X > 0f;
+
+                    if (nm.IndexOf("Foot", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        nm.IndexOf("Toe", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        int calf = left ? ctx.LCalf : ctx.RCalf;
+                        if (calf >= 0) list[m] = new KeyValuePair<int, float>(calf, list[m].Value);
+                    }
+                    else if (nm.IndexOf("Finger", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        int hand = left ? ctx.LHand : ctx.RHand;
+                        if (hand >= 0) list[m] = new KeyValuePair<int, float>(hand, list[m].Value);
+                    }
+                    else if (p.Z < 0.52f && nm.IndexOf("Thigh", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        int calf = left ? ctx.LCalf : ctx.RCalf;
+                        if (calf >= 0) list[m] = new KeyValuePair<int, float>(calf, list[m].Value);
+                    }
+                    else if (p.Z > 0.58f && p.Z < 0.88f && nm.IndexOf("Calf", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        int thigh = left ? ctx.LThigh : ctx.RThigh;
+                        if (thigh >= 0) list[m] = new KeyValuePair<int, float>(thigh, list[m].Value);
+                    }
+                }
+
+                // merge duplicates created by remaps
+                var merge = new Dictionary<int, float>();
+                foreach (var kv in list) merge[kv.Key] = merge.TryGetValue(kv.Key, out float c) ? c + kv.Value : kv.Value;
+                list = new List<KeyValuePair<int, float>>(merge);
+                list.Sort((a, b) => b.Value.CompareTo(a.Value));
+            }
+
+            int keep = Math.Min(Math.Max(1, set.MaxBones), list.Count);
+            float kept = 0f;
+            for (int m = 0; m < keep; m++) kept += list[m].Value;
+            if (kept <= 1e-6f) return null;
+
+            var outInf = new VertexInfluence[keep];
+            for (int m = 0; m < keep; m++)
+                outInf[m] = new VertexInfluence { BoneId = list[m].Key, Weight = list[m].Value / kept };
+            return outInf;
+        }
+
+        // ---- Algorithm 0: K nearest body vertices ----
+        private VertexInfluence[][] ComputeNearest(LoadedMesh target, WrapCtx ctx, WrapSettings set)
+        {
+            int K = Math.Max(1, Math.Min(8, set.K));
+            int n = target.BaseVertices.Length;
+            var wrap = new VertexInfluence[n][];
+            var tmpSample = new int[K];
+            var tmpDist = new float[K];
+            var acc = new Dictionary<int, float>();
+            float r2 = set.Radius > 0f ? set.Radius * set.Radius : float.MaxValue;
+
+            for (int v = 0; v < n; v++)
+            {
+                Vector3 p = target.BaseVertices[v];
+                for (int k = 0; k < K; k++) { tmpSample[k] = -1; tmpDist[k] = float.MaxValue; }
+
+                for (int si = 0; si < ctx.Samples.Count; si++)
+                {
+                    var samp = ctx.Samples[si];
+                    if (set.Anatomical)
+                    {
+                        if (p.Z < 0.88f)
+                        {
+                            if (p.X < -0.01f && samp.pos.X > 0.01f) continue;
+                            if (p.X > 0.01f && samp.pos.X < -0.01f) continue;
+                        }
+                        if (p.Z < 0.52f)
+                        {
+                            if (ctx.SrcIsULegs[samp.srcIdx]) continue;
+                            if (samp.pos.Z > 0.55f) continue;
+                        }
+                        else if (p.Z >= 0.56f && p.Z < 0.88f)
+                        {
+                            if (ctx.SrcIsLLegs[samp.srcIdx]) continue;
+                            if (samp.pos.Z < 0.48f) continue;
+                        }
+                    }
+                    float dx = p.X - samp.pos.X, dy = p.Y - samp.pos.Y, dz = p.Z - samp.pos.Z;
+                    float d = dx * dx + dy * dy + dz * dz * 2.5f;
+                    if (d > r2) continue;
+                    if (d < tmpDist[K - 1])
+                    {
+                        int pos = K - 1;
+                        while (pos > 0 && d < tmpDist[pos - 1])
+                        {
+                            tmpDist[pos] = tmpDist[pos - 1]; tmpSample[pos] = tmpSample[pos - 1]; pos--;
+                        }
+                        tmpDist[pos] = d; tmpSample[pos] = si;
+                    }
+                }
+
+                if (tmpSample[0] < 0)   // relax filters fallback
+                {
+                    for (int si = 0; si < ctx.Samples.Count; si++)
+                    {
+                        var samp = ctx.Samples[si];
+                        if (set.Anatomical && p.Z < 0.88f)
+                        {
+                            if (p.X < -0.01f && samp.pos.X > 0.01f) continue;
+                            if (p.X > 0.01f && samp.pos.X < -0.01f) continue;
+                        }
+                        float d = Vector3.DistanceSquared(p, samp.pos);
+                        if (d > r2) continue;
+                        if (d < tmpDist[K - 1])
+                        {
+                            int pos = K - 1;
+                            while (pos > 0 && d < tmpDist[pos - 1])
+                            {
+                                tmpDist[pos] = tmpDist[pos - 1]; tmpSample[pos] = tmpSample[pos - 1]; pos--;
+                            }
+                            tmpDist[pos] = d; tmpSample[pos] = si;
+                        }
+                    }
+                }
+
+                acc.Clear();
+                for (int k = 0; k < K; k++)
+                {
+                    int sIdx = tmpSample[k];
+                    if (sIdx < 0) continue;
+                    var sample = ctx.Samples[sIdx];
+                    var infs = ctx.Sources[sample.srcIdx].Skin[sample.localVertIdx];
+                    if (infs == null || infs.Length == 0) continue;
+                    float wdist = WrapWeight((float)Math.Sqrt(tmpDist[k]), set.Falloff);
+                    var map = ctx.SourceBoneMaps[sample.srcIdx];
+                    for (int m = 0; m < infs.Length; m++)
+                    {
+                        int bId = infs[m].BoneId;
+                        if (bId < 0 || bId >= map.Length) continue;
+                        int mb = map[bId];
+                        float w = infs[m].Weight * wdist;
+                        acc[mb] = acc.TryGetValue(mb, out float cur) ? cur + w : w;
+                    }
+                }
+
+                wrap[v] = FinalizeInfluences(acc, p, ctx, set);
+            }
+            return wrap;
+        }
+
+        // ---- Algorithm 1: distance to body bone capsules ----
+        private VertexInfluence[][] ComputeCapsule(LoadedMesh target, WrapCtx ctx, WrapSettings set)
+        {
+            int n = target.BaseVertices.Length;
+            var wrap = new VertexInfluence[n][];
+            var acc = new Dictionary<int, float>();
+
+            // Bone capsules from the host's REST world matrices (bind skeleton).
+            var rest = ComputeBindWorld(ctx.Host.Bones);
+            var a = new Vector3[ctx.Host.Bones.Count];
+            var b = new Vector3[ctx.Host.Bones.Count];
+            var active = new bool[ctx.Host.Bones.Count];
+            for (int i = 0; i < ctx.Host.Bones.Count; i++)
+            {
+                var child = ctx.Host.Bones.FindIndex(c => c.ParentId == i);
+                a[i] = new Vector3(rest[i].M41, rest[i].M42, rest[i].M43);
+                b[i] = child >= 0
+                    ? new Vector3(rest[child].M41, rest[child].M42, rest[child].M43)
+                    : a[i];
+                active[i] = true;
+            }
+
+            float r2 = set.Radius > 0f ? set.Radius * set.Radius : float.MaxValue;
+
+            for (int v = 0; v < n; v++)
+            {
+                Vector3 p = target.BaseVertices[v];
+                acc.Clear();
+                int K = Math.Max(1, Math.Min(8, set.K));
+                var bestI = new int[K];
+                var bestD = new float[K];
+                for (int k = 0; k < K; k++) { bestI[k] = -1; bestD[k] = float.MaxValue; }
+
+                for (int i = 0; i < ctx.Host.Bones.Count; i++)
+                {
+                    if (!active[i]) continue;
+                    if (set.Anatomical && p.Z < 0.52f && ctx.Host.Bones[i].Name.IndexOf("Thigh", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    float d = PointSegmentDistanceSquared(p, a[i], b[i]);
+                    if (d > r2) continue;
+                    if (d < bestD[K - 1])
+                    {
+                        int pos = K - 1;
+                        while (pos > 0 && d < bestD[pos - 1])
+                        {
+                            bestD[pos] = bestD[pos - 1]; bestI[pos] = bestI[pos - 1]; pos--;
+                        }
+                        bestD[pos] = d; bestI[pos] = i;
+                    }
+                }
+
+                for (int k = 0; k < K; k++)
+                {
+                    if (bestI[k] < 0) continue;
+                    float w = WrapWeight((float)Math.Sqrt(bestD[k]), set.Falloff);
+                    acc[bestI[k]] = acc.TryGetValue(bestI[k], out float c) ? c + w : w;
+                }
+                wrap[v] = FinalizeInfluences(acc, p, ctx, set);
+            }
+            return wrap;
+        }
+
+        private static float PointSegmentDistanceSquared(Vector3 p, Vector3 a, Vector3 b)
+        {
+            Vector3 ab = b - a;
+            float len2 = ab.LengthSquared;
+            if (len2 < 1e-9f) return (p - a).LengthSquared;
+            float t = Vector3.Dot(p - a, ab) / len2;
+            t = Math.Max(0f, Math.Min(1f, t));
+            return (p - (a + ab * t)).LengthSquared;
+        }
+
+        // ---- Algorithm 2: project onto nearest body triangle (barycentric) ----
+        private VertexInfluence[][] ComputeSurface(LoadedMesh target, WrapCtx ctx, WrapSettings set)
+        {
+            int n = target.BaseVertices.Length;
+            var wrap = new VertexInfluence[n][];
+            var acc = new Dictionary<int, float>();
+            float r2 = set.Radius > 0f ? set.Radius * set.Radius : float.MaxValue;
+
+            if (ctx.Tris.Count == 0) return wrap;
+
+            for (int v = 0; v < n; v++)
+            {
+                Vector3 p = target.BaseVertices[v];
+                float bestD = float.MaxValue;
+                int bestT = -1;
+                Vector3 bestProj = p;
+                for (int t = 0; t < ctx.Tris.Count; t++)
+                {
+                    var tri = ctx.Tris[t];
+                    var src = ctx.Sources[tri.srcIdx];
+                    if (tri.a < 0 || tri.b < 0 || tri.c < 0 ||
+                        tri.a >= src.BaseVertices.Length || tri.b >= src.BaseVertices.Length || tri.c >= src.BaseVertices.Length)
+                        continue;
+                    Vector3 A = src.BaseVertices[tri.a], B = src.BaseVertices[tri.b], C = src.BaseVertices[tri.c];
+                    Vector3 proj = ClosestPointOnTriangle(p, A, B, C);
+                    float d = (proj - p).LengthSquared;
+                    if (d < bestD) { bestD = d; bestT = t; bestProj = proj; }
+                }
+                if (bestT < 0 || bestD > r2) continue;
+
+                var bt = ctx.Tris[bestT];
+                var s2 = ctx.Sources[bt.srcIdx];
+                Vector3 A2 = s2.BaseVertices[bt.a], B2 = s2.BaseVertices[bt.b], C2 = s2.BaseVertices[bt.c];
+                Vector3 bary = Barycentric(bestProj, A2, B2, C2);
+                var map = ctx.SourceBoneMaps[bt.srcIdx];
+
+                acc.Clear();
+                AddWeightedTriInf(s2, bt.a, bary.X, map, ctx, p, acc);
+                AddWeightedTriInf(s2, bt.b, bary.Y, map, ctx, p, acc);
+                AddWeightedTriInf(s2, bt.c, bary.Z, map, ctx, p, acc);
+                wrap[v] = FinalizeInfluences(acc, p, ctx, set);
+            }
+            return wrap;
+        }
+
+        private static void AddWeightedTriInf(LoadedMesh src, int vi, float w, int[] map, WrapCtx ctx, Vector3 p, Dictionary<int, float> acc)
+        {
+            if (w <= 1e-5f) return;
+            if (src.Skin == null || vi >= src.Skin.Length) return;
+            var infs = src.Skin[vi];
+            if (infs == null) return;
+            for (int m = 0; m < infs.Length; m++)
+            {
+                int bId = infs[m].BoneId;
+                if (bId < 0 || bId >= map.Length) continue;
+                int mb = map[bId];
+                float ww = infs[m].Weight * w;
+                acc[mb] = acc.TryGetValue(mb, out float c) ? c + ww : ww;
+            }
+        }
+
+        private static Vector3 ClosestPointOnTriangle(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
+        {
+            Vector3 ab = b - a, ac = c - a, ap = p - a;
+            float d1 = Vector3.Dot(ab, ap), d2 = Vector3.Dot(ac, ap);
+            if (d1 <= 0f && d2 <= 0f) return a;
+            Vector3 bp = p - b;
+            float d3 = Vector3.Dot(ab, bp), d4 = Vector3.Dot(ac, bp);
+            if (d3 >= 0f && d4 <= d3) return b;
+            float vc = d1 * d4 - d3 * d2;
+            if (vc <= 0f && d1 >= 0f && d3 <= 0f) { float t = d1 / (d1 - d3); return a + ab * t; }
+            Vector3 cp = p - c;
+            float d5 = Vector3.Dot(ab, cp), d6 = Vector3.Dot(ac, cp);
+            if (d6 >= 0f && d5 <= d6) return c;
+            float vb = d5 * d2 - d1 * d6;
+            if (vb <= 0f && d2 >= 0f && d6 <= 0f) { float t = d2 / (d2 - d6); return a + ac * t; }
+            float va = d3 * d6 - d5 * d4;
+            if (va <= 0f && (d4 - d3) >= 0f && (d5 - d6) >= 0f)
+            {
+                float t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                return b + (c - b) * t;
+            }
+            float denom = 1f / (va + vb + vc);
+            float vv = vb * denom, ww2 = vc * denom;
+            return a + ab * vv + ac * ww2;
+        }
+
+        private static Vector3 Barycentric(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
+        {
+            Vector3 v0 = b - a, v1 = c - a, v2 = p - a;
+            float d00 = Vector3.Dot(v0, v0), d01 = Vector3.Dot(v0, v1), d11 = Vector3.Dot(v1, v1);
+            float d20 = Vector3.Dot(v2, v0), d21 = Vector3.Dot(v2, v1);
+            float denom = d00 * d11 - d01 * d01;
+            if (Math.Abs(denom) < 1e-9f) return new Vector3(1f, 0f, 0f);
+            float v = (d11 * d20 - d01 * d21) / denom;
+            float w = (d00 * d21 - d01 * d20) / denom;
+            float u = 1f - v - w;
+            return new Vector3(u, v, w);
+        }
+
+        // ---- Preview / Apply / Cancel ----
+        private void RebuildWrapPreview()
+        {
+            RebuildWrapPreview(chkWrapLive != null && chkWrapLive.Checked);
+        }
+
+        private void RebuildWrapPreview(bool force)
+        {
+            if (_wrapPreviewBusy) return;
+            if (!force) return;     // live handlers only act when "Aperçu temps réel" is on
+
+            var idxs = GetSelectedMeshIndices();
+            if (idxs.Count == 0)
+            {
+                if (lblWrapInfo != null) lblWrapInfo.Text = "Aperçu : sélectionnez l'accessoire à lier.";
+                return;
+            }
+
+            _wrapPreviewBusy = true;
+            try
+            {
+                var set = ReadWrapSettings();
+                GatherWrapContext(idxs, set, out var sources, out var masterHost);
+                if (sources.Count == 0 || masterHost == null)
+                {
+                    if (lblWrapInfo != null) lblWrapInfo.Text = "Aperçu : aucune source de corps valide.";
+                    return;
+                }
+                var ctx = BuildWrapCtx(sources, masterHost);
+
+                for (int k = 0; k < _loadedMeshes.Count; k++)
+                    if (_loadedMeshes[k].PreviewActive) RestoreWrapPreview(_loadedMeshes[k]);
+
+                int boundTotal = 0, vertTotal = 0, meshes = 0;
+                foreach (int ti in idxs)
+                {
+                    var target = _loadedMeshes[ti];
+                    if (target.BaseVertices == null || target.BaseVertices.Length == 0) continue;
+
+                    VertexInfluence[][] wrap;
+                    switch (set.Algo)
+                    {
+                        case 1: wrap = ComputeCapsule(target, ctx, set); break;
+                        case 2: wrap = ComputeSurface(target, ctx, set); break;
+                        default: wrap = ComputeNearest(target, ctx, set); break;
+                    }
+
+                    int bound = 0;
+                    foreach (var w in wrap) if (w != null && w.Length > 0) bound++;
+
+                    target.PreviewSavedWrapSource = target.WrapSource;
+                    target.PreviewSavedWrapSkin = target.WrapSkin;
+                    target.PreviewActive = true;
+                    target.WrapSource = masterHost;
+                    target.WrapSkin = wrap;
+
+                    boundTotal += bound; vertTotal += wrap.Length; meshes++;
+                }
+
+                ApplyAnimationPose(_currentTime);
+                RefreshVertexBuffers(true);
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+
+                if (lblWrapInfo != null)
+                    lblWrapInfo.Text = $"Aperçu ({SetName(set)}) : {meshes} mesh(es), {boundTotal}/{vertTotal} sommets liés sur {sources.Count} sources.";
+                Log($"Wrap preview : algo={set.Algo} source={set.Source} K={set.K} rayon={set.Radius} falloff={set.Falloff} maxBones={set.MaxBones} anato={set.Anatomical} -> {boundTotal}/{vertTotal} sommets ({meshes} mesh).");
+            }
+            finally
+            {
+                _wrapPreviewBusy = false;
+            }
+        }
+
+        private static string SetName(WrapSettings set)
+        {
+            string a = set.Algo == 1 ? "os-capsules" : set.Algo == 2 ? "projection" : "voisins";
+            return a;
+        }
+
+        private void RestoreWrapPreview(LoadedMesh lm)
+        {
+            if (!lm.PreviewActive) return;
+            lm.WrapSource = lm.PreviewSavedWrapSource;
+            lm.WrapSkin = lm.PreviewSavedWrapSkin;
+            lm.PreviewSavedWrapSource = null;
+            lm.PreviewSavedWrapSkin = null;
+            lm.PreviewActive = false;
+        }
+
+        private void ApplyWrapPreview()
+        {
+            bool any = false;
+            foreach (var lm in _loadedMeshes)
+            {
+                if (!lm.PreviewActive) continue;
+                any = true;
+                // Preview already holds the new wrap in WrapSkin/WrapSource; commit it.
+                if (!lm.HasOriginalWrapBackup)
+                {
+                    lm.OriginalBones = lm.Bones != null ? new List<GrannyBone>(lm.Bones) : null;
+                    lm.OriginalSkin = lm.Skin;
+                    lm.OriginalAttachBoneName = lm.AttachBoneName;
+                    lm.OriginalHasAttachMatrix = lm.HasAttachMatrix;
+                    lm.OriginalAttachMatrix = lm.AttachMatrix;
+                    lm.OriginalCutoutRole = lm.CutoutRole;
+                    lm.HasOriginalWrapBackup = true;
+                }
+                lm.Bones = new List<GrannyBone>(lm.WrapSource.Bones);
+                lm.AttachMatrix = Matrix4.Identity;
+                lm.HasAttachMatrix = false;
+                lm.AttachBoneName = null;
+                lm.CutoutRole = MeshCutoutRole.Accessory;
+                lm.PreviewSavedWrapSource = null;
+                lm.PreviewSavedWrapSkin = null;
+                lm.PreviewActive = false;
+            }
+
+            if (!any) { Log("Wrap : aucun aperçu à appliquer."); return; }
+
+            if (_currentAnimation != null) EnsureAnimationBindings(_currentAnimation);
+            LoadEquipControlsFromMesh();
+            RefreshLoadedList();
+            ApplyAnimationPose(_currentTime);
+            RefreshVertexBuffers(true);
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            if (lblWrapInfo != null) lblWrapInfo.Text = "Aperçu appliqué (skin wrap enregistré).";
+            Log("Wrap : aperçu appliqué.");
+        }
+
+        private void CancelWrapPreview()
+        {
+            foreach (var lm in _loadedMeshes) RestoreWrapPreview(lm);
+            ApplyAnimationPose(_currentTime);
+            RefreshVertexBuffers(true);
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            if (lblWrapInfo != null) lblWrapInfo.Text = "Aperçu annulé (wrap d'origine restauré).";
+            Log("Wrap : aperçu annulé.");
+        }
+
+        // DEBUG/test: toggle raw-base display on the checked meshes (bypasses skin/wrap)
+        // so the user can tell whether a visible pose lives in the geometry or in skinning.
+        private void ToggleForceBaseDisplay()
+        {
+            var idxs = GetSelectedMeshIndices();
+            if (idxs.Count == 0)
+            {
+                MessageBox.Show("Cochez ou sélectionnez au moins un mesh.", "Géométrie brute");
+                return;
+            }
+            bool anyOff = false;
+            foreach (int ti in idxs) if (!_loadedMeshes[ti].ForceBaseDisplay) { anyOff = true; break; }
+            foreach (int ti in idxs)
+            {
+                var lm = _loadedMeshes[ti];
+                lm.ForceBaseDisplay = anyOff;
+                float x0 = float.MaxValue, x1 = float.MinValue, z0 = float.MaxValue, z1 = float.MinValue;
+                if (lm.BaseVertices != null)
+                    foreach (var p in lm.BaseVertices) { if (p.X < x0) x0 = p.X; if (p.X > x1) x1 = p.X; if (p.Z < z0) z0 = p.Z; if (p.Z > z1) z1 = p.Z; }
+                Log($"[BASEDIAG] '{lm.Name}' forceBase={lm.ForceBaseDisplay} baseX=[{x0:F3};{x1:F3}] baseZ=[{z0:F3};{z1:F3}] verts={lm.BaseVertices?.Length ?? 0}");
+            }
+            RefreshVertexBuffers(true);
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            if (lblWrapInfo != null) lblWrapInfo.Text = anyOff ? "Affichage BRUT (base, sans peau) activé." : "Affichage normal (peau) rétabli.";
+            Log($"Géométrie brute : {(anyOff ? "activée" : "désactivée")} sur {idxs.Count} mesh(es).");
+        }
+
 
         private static bool IsClothingOrSkinned(LoadedMesh lm)
         {
@@ -9679,6 +10483,7 @@ namespace UoFiddler.Plugin.Granny3D
                 bool skinned = (lm.Skin != null && lm.Skin.Length > 0 && lm.SkinMatrices != null) || hasWrap;
                 bool rigid = lm.HasAttachMatrix;
                 bool cloth = lm.IsCloth && lm.ClothPos != null && lm.Weld != null;
+                if (lm.ForceBaseDisplay) { skinned = false; rigid = false; cloth = false; }
 
                 // Effective per-axis scale = global * per-axis.
                 Vector3 pscale = new Vector3(
@@ -11761,6 +12566,17 @@ void main(){
         protected override void OnHandleDestroyed(EventArgs e)
         {
             _renderTimer?.Stop();
+
+            // Persist the current panel layout so it is restored on next open.
+            try
+            {
+                if (_mainSplit != null) LayoutMainSplit = _mainSplit.SplitterDistance;
+                if (_leftSplit != null) LayoutLeftSplit = _leftSplit.SplitterDistance;
+                if (_animSplit != null) LayoutAnimSplit = _animSplit.SplitterDistance;
+                SaveSettings();
+            }
+            catch { }
+
             if (glControl != null && glControl.IsHandleCreated)
             {
                 try
