@@ -7623,19 +7623,70 @@ namespace UoFiddler.Plugin.Granny3D
             }
             bool anyOff = false;
             foreach (int ti in idxs) if (!_loadedMeshes[ti].ForceBaseDisplay) { anyOff = true; break; }
+            foreach (int ti in idxs) _loadedMeshes[ti].ForceBaseDisplay = anyOff;
+
+            RefreshVertexBuffers(true);
+
             foreach (int ti in idxs)
             {
                 var lm = _loadedMeshes[ti];
-                lm.ForceBaseDisplay = anyOff;
-                float x0 = float.MaxValue, x1 = float.MinValue, z0 = float.MaxValue, z1 = float.MinValue;
+                float bx0 = float.MaxValue, bx1 = float.MinValue, by0 = float.MaxValue, by1 = float.MinValue, bz0 = float.MaxValue, bz1 = float.MinValue;
                 if (lm.BaseVertices != null)
-                    foreach (var p in lm.BaseVertices) { if (p.X < x0) x0 = p.X; if (p.X > x1) x1 = p.X; if (p.Z < z0) z0 = p.Z; if (p.Z > z1) z1 = p.Z; }
-                Log($"[BASEDIAG] '{lm.Name}' forceBase={lm.ForceBaseDisplay} baseX=[{x0:F3};{x1:F3}] baseZ=[{z0:F3};{z1:F3}] verts={lm.BaseVertices?.Length ?? 0}");
+                    foreach (var p in lm.BaseVertices) { if (p.X < bx0) bx0 = p.X; if (p.X > bx1) bx1 = p.X; if (p.Y < by0) by0 = p.Y; if (p.Y > by1) by1 = p.Y; if (p.Z < bz0) bz0 = p.Z; if (p.Z > bz1) bz1 = p.Z; }
+                float dx0 = float.MaxValue, dx1 = float.MinValue, dy0 = float.MaxValue, dy1 = float.MinValue, dz0 = float.MaxValue, dz1 = float.MinValue;
+                if (lm.DeformedCache != null)
+                    foreach (var p in lm.DeformedCache) { if (p.X < dx0) dx0 = p.X; if (p.X > dx1) dx1 = p.X; if (p.Y < dy0) dy0 = p.Y; if (p.Y > dy1) dy1 = p.Y; if (p.Z < dz0) dz0 = p.Z; if (p.Z > dz1) dz1 = p.Z; }
+                int idMats = 0, totMats = 0;
+                if (lm.SkinMatrices != null) { totMats = lm.SkinMatrices.Length; foreach (var m in lm.SkinMatrices) if (m.Equals(Matrix4.Identity)) idMats++; }
+                int skinned = 0;
+                if (lm.Skin != null) for (int k = 0; k < lm.Skin.Length; k++) if (lm.Skin[k] != null && lm.Skin[k].Length > 0) skinned++;
+                Log($"[BASEDIAG] '{lm.Name}' forceBase={lm.ForceBaseDisplay} bones={lm.Bones?.Count ?? 0} skinVerts={skinned} idMats={idMats}/{totMats} wrap={(lm.WrapSource != null)} attach={(lm.HasAttachMatrix ? 1 : 0)} rot=({lm.AttachRotation.X:F1};{lm.AttachRotation.Y:F1};{lm.AttachRotation.Z:F1}) off=({lm.AttachOffset.X:F3};{lm.AttachOffset.Y:F3};{lm.AttachOffset.Z:F3}) scale={lm.PartScale:F3} mirArms={lm.MirrorArms} | base X=[{bx0:F3};{bx1:F3}] Y=[{by0:F3};{by1:F3}] Z=[{bz0:F3};{bz1:F3}] | disp X=[{dx0:F3};{dx1:F3}] Y=[{dy0:F3};{dy1:F3}] Z=[{dz0:F3};{dz1:F3}]");
             }
-            RefreshVertexBuffers(true);
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
             if (lblWrapInfo != null) lblWrapInfo.Text = anyOff ? "Affichage BRUT (base, sans peau) activé." : "Affichage normal (peau) rétabli.";
             Log($"Géométrie brute : {(anyOff ? "activée" : "désactivée")} sur {idxs.Count} mesh(es).");
+
+            // Full-scene extents (body parts included) to compare T vs A across the scene.
+            foreach (var sm in _loadedMeshes)
+            {
+                if (sm.DeformedCache == null || sm.DeformedCache.Length == 0) continue;
+                float x0 = float.MaxValue, x1 = float.MinValue, y0 = float.MaxValue, y1 = float.MinValue, z0 = float.MaxValue, z1 = float.MinValue;
+                foreach (var p in sm.DeformedCache) { if (p.X < x0) x0 = p.X; if (p.X > x1) x1 = p.X; if (p.Y < y0) y0 = p.Y; if (p.Y > y1) y1 = p.Y; if (p.Z < z0) z0 = p.Z; if (p.Z > z1) z1 = p.Z; }
+                Log($"[SCENEDIAG] '{sm.Name}' slot='{sm.CharSlot}' base={sm.ForceBaseDisplay} disp X=[{x0:F3};{x1:F3}] Y=[{y0:F3};{y1:F3}] Z=[{z0:F3};{z1:F3}]");
+                LogProfile(sm.Name, sm.DeformedCache);
+            }
+        }
+
+        // Silhouette profile: X extent per Z slice. T-pose -> widest band at shoulder height;
+        // A-pose -> widest band low (hips) and narrow towards the top (arms hanging down).
+        private static void LogProfile(string name, Vector3[] pts)
+        {
+            if (pts == null || pts.Length == 0) return;
+            float z0 = float.MaxValue, z1 = float.MinValue;
+            foreach (var p in pts) { if (p.Z < z0) z0 = p.Z; if (p.Z > z1) z1 = p.Z; }
+            if (z1 - z0 < 1e-4f) return;
+            const int SLICES = 16;
+            var minX = new float[SLICES];
+            var maxX = new float[SLICES];
+            var cnt = new int[SLICES];
+            for (int i = 0; i < SLICES; i++) { minX[i] = float.MaxValue; maxX[i] = float.MinValue; }
+            foreach (var p in pts)
+            {
+                int s = (int)((p.Z - z0) / (z1 - z0) * SLICES);
+                if (s < 0) s = 0; if (s >= SLICES) s = SLICES - 1;
+                if (p.X < minX[s]) minX[s] = p.X;
+                if (p.X > maxX[s]) maxX[s] = p.X;
+                cnt[s]++;
+            }
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"[PROFILE] '{name}' ");
+            for (int s = 0; s < SLICES; s++)
+            {
+                if (cnt[s] == 0) continue;
+                float zc = z0 + (z1 - z0) * (s + 0.5f) / SLICES;
+                sb.Append($"z{zc:F2}:{minX[s]:F2}..{maxX[s]:F2} ");
+            }
+            Log(sb.ToString());
         }
 
 
