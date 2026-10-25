@@ -100,6 +100,7 @@ namespace UoFiddler.Plugin.Granny3D
         private float _rotZ = 0f;
         private bool _mirrorX = false;
         private Vector3 _offset = Vector3.Zero;
+        private bool _isInternalScaleChange = false;
 
         // Joint markers list
         public enum RigViewMode
@@ -471,7 +472,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = Localization.Tr("rig_grp_transform", "2. Orientation, Échelle & Alignement du Modèle"),
                 Dock = DockStyle.Top,
-                Height = 255,
+                Height = 285,
                 ForeColor = Color.DeepSkyBlue,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -520,8 +521,14 @@ namespace UoFiddler.Plugin.Granny3D
             pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_mirror_x", "⇋ Miroir X"), Color.FromArgb(70, 50, 40), ToggleMirrorX));
 
             // Row 3: Position Offset / Nudge
-            var pnlNudge = new Panel { Size = new Size(500, 32), Margin = new Padding(0, 4, 0, 0) };
-            var lblNudge = new Label { Text = Localization.Tr("rig_lbl_nudge", "Ajuster position :"), Location = new Point(0, 6), AutoSize = true, ForeColor = Color.Gainsboro };
+            var pnlNudge = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
+                Margin = new Padding(0, 4, 0, 0)
+            };
+            var lblNudge = new Label { Text = Localization.Tr("rig_lbl_nudge", "Position Modèle :"), AutoSize = true, ForeColor = Color.Gainsboro, Padding = new Padding(0, 6, 4, 0) };
             pnlNudge.Controls.Add(lblNudge);
             pnlNudge.Controls.Add(CreateTBtn("X: ◀ -5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(-0.05f, 0, 0)));
             pnlNudge.Controls.Add(CreateTBtn("▶ +5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(0.05f, 0, 0)));
@@ -532,17 +539,26 @@ namespace UoFiddler.Plugin.Granny3D
             pnlTransformInner.Controls.Add(pnlNudge);
 
             // Row 4: Manual scale input
-            var pnlScale = new Panel { Size = new Size(500, 32), Margin = new Padding(0, 4, 0, 0) };
-            var lblScale = new Label { Text = Localization.Tr("rig_lbl_scale", "Échelle globale :"), Location = new Point(0, 6), AutoSize = true, ForeColor = Color.Gainsboro };
-            nudScale = new NumericUpDown { DecimalPlaces = 4, Minimum = 0.0001m, Maximum = 1000m, Value = 1.0m, Increment = 0.01m, Location = new Point(110, 4), Width = 90, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.White };
-            nudScale.ValueChanged += (s, e) => { _scale = (float)nudScale.Value; RebakeModelTransform(); };
+            var pnlScale = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
+                Margin = new Padding(0, 4, 0, 0)
+            };
+            var lblScale = new Label { Text = Localization.Tr("rig_lbl_scale", "Échelle Modèle :"), AutoSize = true, ForeColor = Color.Gainsboro, Padding = new Padding(0, 6, 4, 0) };
+            nudScale = new NumericUpDown { DecimalPlaces = 4, Minimum = 0.0001m, Maximum = 1000m, Value = 1.0m, Increment = 0.01m, Width = 85, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.White, Margin = new Padding(0, 3, 4, 0) };
+            nudScale.ValueChanged += (s, e) => OnMeshScaleChanged();
 
             pnlScale.Controls.Add(lblScale);
             pnlScale.Controls.Add(nudScale);
-            pnlScale.Controls.Add(CreateTBtn("x0.01 (cm→m)", Color.FromArgb(40, 50, 60), () => { nudScale.Value = Math.Max(0.0001m, nudScale.Value * 0.01m); }));
-            pnlScale.Controls.Add(CreateTBtn("x100 (m→cm)", Color.FromArgb(40, 50, 60), () => { nudScale.Value = Math.Min(1000m, nudScale.Value * 100m); }));
-            pnlScale.Controls.Add(CreateTBtn("+10%", Color.FromArgb(40, 50, 60), () => { nudScale.Value = Math.Min(1000m, nudScale.Value * 1.1m); }));
-            pnlScale.Controls.Add(CreateTBtn("-10%", Color.FromArgb(40, 50, 60), () => { nudScale.Value = Math.Max(0.0001m, nudScale.Value * 0.9m); }));
+            pnlScale.Controls.Add(CreateTBtn("-10%", Color.FromArgb(40, 50, 60), () => SetModelScale(_scale * 0.9f)));
+            pnlScale.Controls.Add(CreateTBtn("+10%", Color.FromArgb(40, 50, 60), () => SetModelScale(_scale * 1.1f)));
+            pnlScale.Controls.Add(CreateTBtn("-5%", Color.FromArgb(35, 45, 55), () => SetModelScale(_scale * 0.95f)));
+            pnlScale.Controls.Add(CreateTBtn("+5%", Color.FromArgb(35, 45, 55), () => SetModelScale(_scale * 1.05f)));
+            pnlScale.Controls.Add(CreateTBtn("x0.01 (cm→m)", Color.FromArgb(30, 55, 75), () => SetModelScale(_scale * 0.01f)));
+            pnlScale.Controls.Add(CreateTBtn("x100 (m→cm)", Color.FromArgb(30, 55, 75), () => SetModelScale(_scale * 100f)));
+            pnlScale.Controls.Add(CreateTBtn("1.0 (Reset)", Color.FromArgb(50, 50, 55), () => SetModelScale(1.0f)));
             pnlTransformInner.Controls.Add(pnlScale);
 
             // Row 5: Dimensions display
@@ -656,7 +672,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = Localization.Tr("rig_grp_markers", "4. Positionnement des Articulations (Croix 3D)"),
                 Dock = DockStyle.Top,
-                Height = 350,
+                Height = 425,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -749,8 +765,8 @@ namespace UoFiddler.Plugin.Granny3D
             var lblJoint = new Label { Text = Localization.Tr("rig_lbl_sel_cross", "Croix sélectionnée :"), Location = new Point(12, 114), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
             cbJoints = new ComboBox
             {
-                Location = new Point(150, 111),
-                Width = 280,
+                Location = new Point(145, 111),
+                Width = 175,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(22, 22, 24),
                 ForeColor = Color.Gainsboro,
@@ -766,6 +782,32 @@ namespace UoFiddler.Plugin.Granny3D
                 UpdateNudValues();
                 glControl.Invalidate();
             };
+
+            var btnSelectAll = new Button
+            {
+                Text = Localization.Tr("rig_btn_sel_all", "🎯 Tout"),
+                Location = new Point(325, 110),
+                Size = new Size(72, 26),
+                BackColor = Color.FromArgb(45, 55, 75),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8F, FontStyle.Bold)
+            };
+            btnSelectAll.FlatAppearance.BorderColor = Color.FromArgb(65, 75, 95);
+            btnSelectAll.Click += (s, e) => SelectAllMarkers();
+
+            var btnDeselectAll = new Button
+            {
+                Text = Localization.Tr("rig_btn_desel_all", "🧹 Aucun"),
+                Location = new Point(402, 110),
+                Size = new Size(70, 26),
+                BackColor = Color.FromArgb(45, 45, 50),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8F, FontStyle.Regular)
+            };
+            btnDeselectAll.FlatAppearance.BorderColor = Color.FromArgb(65, 65, 70);
+            btnDeselectAll.Click += (s, e) => DeselectAllMarkers();
 
             var pnlCoords = new Panel { Location = new Point(12, 145), Size = new Size(480, 36), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
             Label CreateLbl(string txt, int x) => new Label { Text = txt, Location = new Point(x, 8), AutoSize = true, ForeColor = Color.Gainsboro };
@@ -827,13 +869,96 @@ namespace UoFiddler.Plugin.Granny3D
             pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_back", "Paume Arr. (180°)"), 245, 125, () => SetRollExact(180f)));
             pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_default", "0° (Défaut)"), 375, 80, () => SetRollExact(0f)));
 
+            // Skeleton Scale Presets Panel
+            var pnlSkelScale = new FlowLayoutPanel
+            {
+                Location = new Point(12, 250),
+                Size = new Size(480, 30),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0)
+            };
+            var lblSkelScale = new Label
+            {
+                Text = Localization.Tr("rig_lbl_skel_scale", "Échelle Squelette :"),
+                AutoSize = true,
+                ForeColor = Color.Gainsboro,
+                Padding = new Padding(0, 5, 4, 0),
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular)
+            };
+            pnlSkelScale.Controls.Add(lblSkelScale);
+
+            Button CreateSkelScaleBtn(string text, int width, float factor)
+            {
+                var b = new Button
+                {
+                    Text = text,
+                    Size = new Size(width, 24),
+                    BackColor = Color.FromArgb(30, 60, 50),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Margin = new Padding(2, 1, 2, 0),
+                    Font = new Font("Segoe UI", 8F, FontStyle.Bold)
+                };
+                b.FlatAppearance.BorderColor = Color.FromArgb(50, 80, 70);
+                b.Click += (s, e) => ScaleSkeletonMarkers(factor);
+                return b;
+            }
+
+            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("-10%", 48, 0.90f));
+            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("+10%", 48, 1.10f));
+            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("-5%", 44, 0.95f));
+            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("+5%", 44, 1.05f));
+            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("x0.5", 44, 0.50f));
+            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("x2.0", 44, 2.00f));
+
+            // Auto Fit & Center Skeleton Panel
+            var pnlSkelFit = new FlowLayoutPanel
+            {
+                Location = new Point(12, 282),
+                Size = new Size(480, 32),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0)
+            };
+
+            var btnFitSkel = new Button
+            {
+                Text = Localization.Tr("rig_btn_fit_skel_to_mesh", "📏 Aligner Squelette sur Modèle (Hauteur & Sol)"),
+                AutoSize = true,
+                Height = 26,
+                BackColor = Color.FromArgb(70, 45, 95),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(0, 2, 6, 0),
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnFitSkel.FlatAppearance.BorderColor = Color.FromArgb(90, 65, 115);
+            btnFitSkel.Click += (s, e) => AutoFitSkeletonHeightToMesh();
+
+            var btnCenterSkel = new Button
+            {
+                Text = Localization.Tr("rig_btn_center_skel", "🎯 Centrer"),
+                Size = new Size(80, 26),
+                BackColor = Color.FromArgb(40, 65, 85),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(0, 2, 2, 0),
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnCenterSkel.FlatAppearance.BorderColor = Color.FromArgb(60, 85, 105);
+            btnCenterSkel.Click += (s, e) => AutoCenterSkeletonToMesh();
+
+            pnlSkelFit.Controls.Add(btnFitSkel);
+            pnlSkelFit.Controls.Add(btnCenterSkel);
+
             lblRotTip = new Label
             {
-                Text = Localization.Tr("rig_lbl_rot_tip", "💡 Astuce : Maintenez Ctrl + glisser pour tracer un rectangle et déplacer plusieurs croix ensemble !"),
-                Location = new Point(12, 250),
+                Text = Localization.Tr("rig_lbl_rot_tip", "💡 Ctrl + glisser = multi-sélection. Les boutons d'échelle agissent sur la sélection (ou tout le squelette)."),
+                Location = new Point(12, 318),
                 AutoSize = true,
                 ForeColor = Color.Orange,
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+                Font = new Font("Segoe UI", 8F, FontStyle.Bold)
             };
 
             var btnResetPose = new Button
@@ -867,9 +992,13 @@ namespace UoFiddler.Plugin.Granny3D
 
             grpMarkers.Controls.Add(btnResetPose);
             grpMarkers.Controls.Add(lblRotTip);
+            grpMarkers.Controls.Add(pnlSkelFit);
+            grpMarkers.Controls.Add(pnlSkelScale);
             grpMarkers.Controls.Add(pnlRotBtns);
             grpMarkers.Controls.Add(pnlRotControls);
             grpMarkers.Controls.Add(pnlCoords);
+            grpMarkers.Controls.Add(btnDeselectAll);
+            grpMarkers.Controls.Add(btnSelectAll);
             grpMarkers.Controls.Add(cbJoints);
             grpMarkers.Controls.Add(lblJoint);
             grpMarkers.Controls.Add(pnlSkinBtns);
@@ -1267,11 +1396,210 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 float factor = targetH / currentH;
-                _scale *= factor;
-                if (nudScale != null) nudScale.Value = (decimal)MathHelper.Clamp(_scale, 0.0001f, 1000f);
-                RebakeModelTransform();
+                SetModelScale(_scale * factor);
                 AutoCenterAndGround();
             }
+        }
+
+        private void SetModelScale(float newScale)
+        {
+            newScale = MathHelper.Clamp(newScale, 0.0001f, 1000f);
+            _scale = newScale;
+            if (nudScale != null)
+            {
+                _isInternalScaleChange = true;
+                nudScale.Value = (decimal)_scale;
+                _isInternalScaleChange = false;
+            }
+            RebakeModelTransform();
+            EnsurePreviewModel();
+            glControl.Invalidate();
+        }
+
+        private void OnMeshScaleChanged()
+        {
+            if (_isInternalScaleChange || nudScale == null) return;
+            _scale = (float)nudScale.Value;
+            RebakeModelTransform();
+            EnsurePreviewModel();
+            glControl.Invalidate();
+        }
+
+        private void SelectAllMarkers()
+        {
+            _selectedMarkerIndices.Clear();
+            for (int i = 0; i < _markers.Count; i++)
+            {
+                _selectedMarkerIndices.Add(i);
+            }
+            if (_markers.Count > 0)
+            {
+                _selectedMarkerIndex = 0;
+                if (cbJoints != null && cbJoints.Items.Count > 0)
+                {
+                    cbJoints.SelectedIndex = 0;
+                }
+            }
+            UpdateNudValues();
+            glControl.Invalidate();
+        }
+
+        private void DeselectAllMarkers()
+        {
+            _selectedMarkerIndices.Clear();
+            _selectedMarkerIndex = -1;
+            UpdateNudValues();
+            glControl.Invalidate();
+        }
+
+        private void ScaleSkeletonMarkers(float factor, bool onlySelectedIfMultiple = true)
+        {
+            if (_markers == null || _markers.Count == 0 || factor <= 0.0001f) return;
+
+            List<JointMarker> targets;
+            bool isSubset = onlySelectedIfMultiple && _selectedMarkerIndices.Count > 1 && _selectedMarkerIndices.Count < _markers.Count;
+
+            if (isSubset)
+            {
+                targets = _selectedMarkerIndices.Where(i => i >= 0 && i < _markers.Count).Select(i => _markers[i]).ToList();
+            }
+            else
+            {
+                targets = _markers;
+            }
+
+            if (targets.Count == 0) return;
+
+            float minX = float.MaxValue, maxX = float.MinValue;
+            float minY = float.MaxValue, maxY = float.MinValue;
+            float minZ = float.MaxValue, maxZ = float.MinValue;
+
+            foreach (var m in targets)
+            {
+                minX = Math.Min(minX, m.Position.X); maxX = Math.Max(maxX, m.Position.X);
+                minY = Math.Min(minY, m.Position.Y); maxY = Math.Max(maxY, m.Position.Y);
+                minZ = Math.Min(minZ, m.Position.Z); maxZ = Math.Max(maxZ, m.Position.Z);
+            }
+
+            Vector3 pivot;
+            if (isSubset)
+            {
+                pivot = new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f);
+            }
+            else
+            {
+                // Garder les pieds au sol pour tout le squelette
+                pivot = new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, minZ);
+            }
+
+            foreach (var m in targets)
+            {
+                m.Position = pivot + (m.Position - pivot) * factor;
+
+                if (isSubset && chkSymmetry != null && chkSymmetry.Checked && !string.IsNullOrEmpty(m.SymmetricBoneName))
+                {
+                    var sym = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
+                    if (sym != null && !_selectedMarkerIndices.Contains(_markers.IndexOf(sym)))
+                    {
+                        sym.Position = new Vector3(-m.Position.X, m.Position.Y, m.Position.Z);
+                    }
+                }
+            }
+
+            UpdateNudValues();
+            EnsurePreviewModel();
+            glControl.Invalidate();
+        }
+
+        private void AutoFitSkeletonHeightToMesh()
+        {
+            if (_markers == null || _markers.Count == 0) return;
+            if (_baseVertices == null || _baseVertices.Length == 0) return;
+
+            float meshMinX = float.MaxValue, meshMaxX = float.MinValue;
+            float meshMinY = float.MaxValue, meshMaxY = float.MinValue;
+            float meshMinZ = float.MaxValue, meshMaxZ = float.MinValue;
+            foreach (var v in _baseVertices)
+            {
+                meshMinX = Math.Min(meshMinX, v.X); meshMaxX = Math.Max(meshMaxX, v.X);
+                meshMinY = Math.Min(meshMinY, v.Y); meshMaxY = Math.Max(meshMaxY, v.Y);
+                meshMinZ = Math.Min(meshMinZ, v.Z); meshMaxZ = Math.Max(meshMaxZ, v.Z);
+            }
+            float meshH = meshMaxZ - meshMinZ;
+            if (meshH < 0.001f) return;
+
+            float skelMinX = float.MaxValue, skelMaxX = float.MinValue;
+            float skelMinY = float.MaxValue, skelMaxY = float.MinValue;
+            float skelMinZ = float.MaxValue, skelMaxZ = float.MinValue;
+            foreach (var m in _markers)
+            {
+                skelMinX = Math.Min(skelMinX, m.Position.X); skelMaxX = Math.Max(skelMaxX, m.Position.X);
+                skelMinY = Math.Min(skelMinY, m.Position.Y); skelMaxY = Math.Max(skelMaxY, m.Position.Y);
+                skelMinZ = Math.Min(skelMinZ, m.Position.Z); skelMaxZ = Math.Max(skelMaxZ, m.Position.Z);
+            }
+            float skelH = skelMaxZ - skelMinZ;
+            if (skelH < 0.001f) return;
+
+            float factor = meshH / skelH;
+            Vector3 pivot = new Vector3((skelMinX + skelMaxX) * 0.5f, (skelMinY + skelMaxY) * 0.5f, skelMinZ);
+            foreach (var m in _markers)
+            {
+                m.Position = pivot + (m.Position - pivot) * factor;
+            }
+
+            float deltaX = ((meshMinX + meshMaxX) * 0.5f) - pivot.X;
+            float deltaY = ((meshMinY + meshMaxY) * 0.5f) - pivot.Y;
+            float deltaZ = meshMinZ - skelMinZ;
+
+            var shift = new Vector3(deltaX, deltaY, deltaZ);
+            foreach (var m in _markers)
+            {
+                m.Position += shift;
+            }
+
+            UpdateNudValues();
+            EnsurePreviewModel();
+            glControl.Invalidate();
+        }
+
+        private void AutoCenterSkeletonToMesh()
+        {
+            if (_markers == null || _markers.Count == 0) return;
+            if (_baseVertices == null || _baseVertices.Length == 0) return;
+
+            float meshMinX = float.MaxValue, meshMaxX = float.MinValue;
+            float meshMinY = float.MaxValue, meshMaxY = float.MinValue;
+            float meshMinZ = float.MaxValue, meshMaxZ = float.MinValue;
+            foreach (var v in _baseVertices)
+            {
+                meshMinX = Math.Min(meshMinX, v.X); meshMaxX = Math.Max(meshMaxX, v.X);
+                meshMinY = Math.Min(meshMinY, v.Y); meshMaxY = Math.Max(meshMinY, v.Y);
+                meshMinZ = Math.Min(meshMinZ, v.Z); meshMaxZ = Math.Max(meshMaxZ, v.Z);
+            }
+
+            float skelMinX = float.MaxValue, skelMaxX = float.MinValue;
+            float skelMinY = float.MaxValue, skelMaxY = float.MinValue;
+            float skelMinZ = float.MaxValue, skelMaxZ = float.MinValue;
+            foreach (var m in _markers)
+            {
+                skelMinX = Math.Min(skelMinX, m.Position.X); skelMaxX = Math.Max(skelMaxX, m.Position.X);
+                skelMinY = Math.Min(skelMinY, m.Position.Y); skelMaxY = Math.Max(skelMaxY, m.Position.Y);
+                skelMinZ = Math.Min(skelMinZ, m.Position.Z); skelMaxZ = Math.Max(skelMaxZ, m.Position.Z);
+            }
+
+            float deltaX = ((meshMinX + meshMaxX) * 0.5f) - ((skelMinX + skelMaxX) * 0.5f);
+            float deltaY = ((meshMinY + meshMaxY) * 0.5f) - ((skelMinY + skelMaxY) * 0.5f);
+            float deltaZ = meshMinZ - skelMinZ;
+
+            var shift = new Vector3(deltaX, deltaY, deltaZ);
+            foreach (var m in _markers)
+            {
+                m.Position += shift;
+            }
+
+            UpdateNudValues();
+            EnsurePreviewModel();
+            glControl.Invalidate();
         }
 
         private void RebakeModelTransform()
