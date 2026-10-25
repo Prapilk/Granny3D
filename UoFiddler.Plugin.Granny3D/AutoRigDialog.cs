@@ -38,6 +38,7 @@ namespace UoFiddler.Plugin.Granny3D
         private CheckBox chkForceAutoSkin = null!;
         private CheckBox chkShowSkeleton = null!;
         private CheckBox chkShowMesh = null!;
+        private CheckBox chkWireframe = null!;
         private RadioButton rbMale = null!;
         private RadioButton rbFemale = null!;
         private RadioButton rbCustom = null!;
@@ -120,6 +121,11 @@ namespace UoFiddler.Plugin.Granny3D
 
         private readonly List<JointMarker> _markers = new();
         private int _selectedMarkerIndex = -1;
+        private readonly HashSet<int> _selectedMarkerIndices = new();
+        private readonly Dictionary<int, Vector3> _dragStartMarkerPositions = new();
+        private bool _isBoxSelecting = false;
+        private Point _boxSelectStart;
+        private Point _boxSelectCurrent;
         private bool _isDraggingMarker = false;
         private Vector3 _dragPlanePoint;
         private Vector3 _dragPlaneNormal;
@@ -275,6 +281,9 @@ namespace UoFiddler.Plugin.Granny3D
                 cbJoints.SelectedIndex = _selectedMarkerIndex;
             else if (cbJoints.Items.Count > 0)
                 cbJoints.SelectedIndex = 0;
+
+            _selectedMarkerIndices.Clear();
+            if (_selectedMarkerIndex >= 0) _selectedMarkerIndices.Add(_selectedMarkerIndex);
         }
 
         private void InitializeComponentCustom()
@@ -337,7 +346,7 @@ namespace UoFiddler.Plugin.Granny3D
             pnlCamTools.Controls.Add(CreateCamBtn(Localization.Tr("cam_center", "🎯 Centrer Caméra"), () => { _cameraDist = 2.8f; _cameraPan = Vector3.Zero; }));
             UpdateViewButtonsUI();
 
-            var chkWireframe = new CheckBox
+            chkWireframe = new CheckBox
             {
                 Text = Localization.Tr("chk_wireframe", "Fil de fer"),
                 ForeColor = Color.Gainsboro,
@@ -752,6 +761,8 @@ namespace UoFiddler.Plugin.Granny3D
             cbJoints.SelectedIndexChanged += (s, e) =>
             {
                 _selectedMarkerIndex = cbJoints.SelectedIndex;
+                _selectedMarkerIndices.Clear();
+                if (_selectedMarkerIndex >= 0) _selectedMarkerIndices.Add(_selectedMarkerIndex);
                 UpdateNudValues();
                 glControl.Invalidate();
             };
@@ -818,7 +829,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             lblRotTip = new Label
             {
-                Text = Localization.Tr("rig_lbl_rot_tip", "💡 Astuce : Cliquez directement sur les croix (Pouce, Doigts, etc.) et déplacez-les à la souris !"),
+                Text = Localization.Tr("rig_lbl_rot_tip", "💡 Astuce : Maintenez Ctrl + glisser pour tracer un rectangle et déplacer plusieurs croix ensemble !"),
                 Location = new Point(12, 250),
                 AutoSize = true,
                 ForeColor = Color.Orange,
@@ -3882,7 +3893,9 @@ namespace UoFiddler.Plugin.Granny3D
             if (_isUpdatingNud) return;
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
             var m = _markers[_selectedMarkerIndex];
-            m.Position = new Vector3((float)nudX.Value, (float)nudY.Value, (float)nudZ.Value);
+            var newPos = new Vector3((float)nudX.Value, (float)nudY.Value, (float)nudZ.Value);
+            var delta = newPos - m.Position;
+            m.Position = newPos;
 
             if (chkSymmetry.Checked && !string.IsNullOrEmpty(m.SymmetricBoneName))
             {
@@ -3890,6 +3903,26 @@ namespace UoFiddler.Plugin.Granny3D
                 if (sym != null)
                 {
                     sym.Position = new Vector3(-m.Position.X, m.Position.Y, m.Position.Z);
+                }
+            }
+
+            if (_selectedMarkerIndices.Count > 1)
+            {
+                foreach (int idx in _selectedMarkerIndices)
+                {
+                    if (idx >= 0 && idx < _markers.Count && idx != _selectedMarkerIndex)
+                    {
+                        var curM = _markers[idx];
+                        curM.Position += delta;
+                        if (chkSymmetry.Checked && !string.IsNullOrEmpty(curM.SymmetricBoneName))
+                        {
+                            int symIdx = _markers.FindIndex(x => string.Equals(x.BoneName, curM.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
+                            if (symIdx >= 0 && !_selectedMarkerIndices.Contains(symIdx))
+                            {
+                                _markers[symIdx].Position = new Vector3(-curM.Position.X, curM.Position.Y, curM.Position.Z);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -4054,8 +4087,13 @@ void main() {
             const string fsMesh = @"#version 330 core
 in vec3 vNormal;
 in vec3 vFragPos;
+uniform int uWireframe;
 out vec4 FragColor;
 void main() {
+    if (uWireframe != 0) {
+        FragColor = vec4(0.30, 0.85, 1.0, 0.95);
+        return;
+    }
     vec3 norm = normalize(vNormal);
     vec3 lightDir1 = normalize(vec3(0.5, 0.8, 1.0));
     vec3 lightDir2 = normalize(vec3(-0.5, -0.8, 0.5));
@@ -4190,11 +4228,17 @@ void main() {
                 DrawMeshVAO(mvp);
             }
 
-            // 3. Draw Skeleton Bone Lines
+            // 3. Draw Skeleton Bone Lines & Markers
             if (chkShowSkeleton.Checked)
             {
                 DrawSkeletonLines(mvp);
                 DrawJointMarkers(mvp);
+            }
+
+            // 4. Draw 2D Marquee Selection Box
+            if (_isBoxSelecting)
+            {
+                DrawScreenSelectionBox();
             }
 
             glControl.SwapBuffers();
@@ -4206,11 +4250,32 @@ void main() {
         {
             GL.UseProgram(_shaderMeshProg);
             int uMvp = GL.GetUniformLocation(_shaderMeshProg, "uMvp");
+            int uWire = GL.GetUniformLocation(_shaderMeshProg, "uWireframe");
             GL.UniformMatrix4(uMvp, false, ref mvp);
+
+            bool isWireframe = chkWireframe != null && chkWireframe.Checked;
+            if (uWire >= 0)
+            {
+                GL.Uniform1(uWire, isWireframe ? 1 : 0);
+            }
+
+            if (isWireframe)
+            {
+                GL.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Line);
+                GL.Disable(EnableCap.CullFace);
+                GL.LineWidth(1.2f);
+            }
 
             GL.BindVertexArray(_meshVao);
             GL.DrawArrays(OpenTK.Graphics.OpenGL.PrimitiveType.Triangles, 0, _meshVertexCount);
             GL.BindVertexArray(0);
+
+            if (isWireframe)
+            {
+                GL.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Fill);
+                GL.Enable(EnableCap.CullFace);
+                GL.LineWidth(1.0f);
+            }
         }
 
         private void DrawSkeletonLines(Matrix4 mvp)
@@ -4310,7 +4375,8 @@ void main() {
             for (int i = 0; i < _markers.Count; i++)
             {
                 var m = _markers[i];
-                bool isSelected = (i == _selectedMarkerIndex);
+                bool isPrimary = (i == _selectedMarkerIndex);
+                bool isMultiSelected = _selectedMarkerIndices.Contains(i);
 
                 Vector3 pos = m.Position;
                 if ((_isPlayingAnim || _fingerFlexAmount > 0.001f) && _boneWorldMatrices != null && _previewModel != null)
@@ -4322,15 +4388,180 @@ void main() {
                     }
                 }
 
-                Vector4 col = isSelected
-                    ? new Vector4(1f, 1f, 0f, 1f)
-                    : new Vector4(m.Color.R / 255f, m.Color.G / 255f, m.Color.B / 255f, 1.0f);
-
-                GL.Uniform4(uColor, col);
-                DrawCrossMarker(mvp, pos, isSelected ? 0.07f : 0.045f, col);
+                if (isPrimary)
+                {
+                    Vector4 col = new Vector4(1f, 0.95f, 0.1f, 1f);
+                    GL.Uniform4(uColor, col);
+                    DrawCrossMarker(mvp, pos, 0.075f, col);
+                    DrawMarkerSelectionBox(mvp, pos, 0.04f, col);
+                }
+                else if (isMultiSelected)
+                {
+                    Vector4 col = new Vector4(0.2f, 0.95f, 1.0f, 1f);
+                    GL.Uniform4(uColor, col);
+                    DrawCrossMarker(mvp, pos, 0.065f, col);
+                    DrawMarkerSelectionBox(mvp, pos, 0.035f, col);
+                }
+                else
+                {
+                    Vector4 col = new Vector4(m.Color.R / 255f, m.Color.G / 255f, m.Color.B / 255f, 1.0f);
+                    GL.Uniform4(uColor, col);
+                    DrawCrossMarker(mvp, pos, 0.045f, col);
+                }
             }
 
             GL.Enable(EnableCap.DepthTest);
+        }
+
+        private void DrawMarkerSelectionBox(Matrix4 mvp, Vector3 c, float s, Vector4 color)
+        {
+            float[] boxVerts = new float[]
+            {
+                // Bottom quad
+                c.X - s, c.Y - s, c.Z - s,   c.X + s, c.Y - s, c.Z - s,
+                c.X + s, c.Y - s, c.Z - s,   c.X + s, c.Y + s, c.Z - s,
+                c.X + s, c.Y + s, c.Z - s,   c.X - s, c.Y + s, c.Z - s,
+                c.X - s, c.Y + s, c.Z - s,   c.X - s, c.Y - s, c.Z - s,
+                // Top quad
+                c.X - s, c.Y - s, c.Z + s,   c.X + s, c.Y - s, c.Z + s,
+                c.X + s, c.Y - s, c.Z + s,   c.X + s, c.Y + s, c.Z + s,
+                c.X + s, c.Y + s, c.Z + s,   c.X - s, c.Y + s, c.Z + s,
+                c.X - s, c.Y + s, c.Z + s,   c.X - s, c.Y - s, c.Z + s,
+                // Vertical pillars
+                c.X - s, c.Y - s, c.Z - s,   c.X - s, c.Y - s, c.Z + s,
+                c.X + s, c.Y - s, c.Z - s,   c.X + s, c.Y - s, c.Z + s,
+                c.X + s, c.Y + s, c.Z - s,   c.X + s, c.Y + s, c.Z + s,
+                c.X - s, c.Y + s, c.Z - s,   c.X - s, c.Y + s, c.Z + s,
+            };
+            DrawLinesImmediate(mvp, boxVerts, color, 1.5f);
+        }
+
+        private void DrawScreenSelectionBox()
+        {
+            int x1 = Math.Min(_boxSelectStart.X, _boxSelectCurrent.X);
+            int x2 = Math.Max(_boxSelectStart.X, _boxSelectCurrent.X);
+            int y1 = Math.Min(_boxSelectStart.Y, _boxSelectCurrent.Y);
+            int y2 = Math.Max(_boxSelectStart.Y, _boxSelectCurrent.Y);
+
+            if (x2 - x1 < 2 && y2 - y1 < 2) return;
+
+            int w = Math.Max(1, glControl.Width);
+            int h = Math.Max(1, glControl.Height);
+            Matrix4 ortho = Matrix4.CreateOrthographicOffCenter(0, w, h, 0, -1.0f, 1.0f);
+
+            GL.Disable(EnableCap.DepthTest);
+            GL.Disable(EnableCap.CullFace);
+            GL.Enable(EnableCap.Blend);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+
+            // Semi-transparent filled quad
+            float[] quadVerts = new float[]
+            {
+                x1, y1, 0f,
+                x2, y1, 0f,
+                x2, y2, 0f,
+
+                x1, y1, 0f,
+                x2, y2, 0f,
+                x1, y2, 0f
+            };
+            DrawTrianglesImmediate(ortho, quadVerts, new Vector4(0.2f, 0.65f, 1.0f, 0.22f));
+
+            // Solid border lines
+            float[] borderVerts = new float[]
+            {
+                x1, y1, 0f,  x2, y1, 0f,
+                x2, y1, 0f,  x2, y2, 0f,
+                x2, y2, 0f,  x1, y2, 0f,
+                x1, y2, 0f,  x1, y1, 0f
+            };
+            DrawLinesImmediate(ortho, borderVerts, new Vector4(0.35f, 0.85f, 1.0f, 0.95f), 1.5f);
+
+            GL.Disable(EnableCap.Blend);
+            GL.Enable(EnableCap.DepthTest);
+            GL.Enable(EnableCap.CullFace);
+        }
+
+        private void DrawTrianglesImmediate(Matrix4 mvp, float[] vertices, Vector4 color)
+        {
+            GL.UseProgram(_shaderLineProg);
+            int uMvp = GL.GetUniformLocation(_shaderLineProg, "uMvp");
+            int uColor = GL.GetUniformLocation(_shaderLineProg, "uColor");
+            GL.UniformMatrix4(uMvp, false, ref mvp);
+            GL.Uniform4(uColor, color);
+
+            if (_boneVao == 0) _boneVao = GL.GenVertexArray();
+            if (_boneVbo == 0) _boneVbo = GL.GenBuffer();
+
+            GL.BindVertexArray(_boneVao);
+            GL.BindBuffer(BufferTarget.ArrayBuffer, _boneVbo);
+            GL.BufferData(BufferTarget.ArrayBuffer, vertices.Length * sizeof(float), vertices, BufferUsageHint.DynamicDraw);
+
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+            GL.EnableVertexAttribArray(0);
+
+            GL.DrawArrays(OpenTK.Graphics.OpenGL.PrimitiveType.Triangles, 0, vertices.Length / 3);
+
+            GL.BindVertexArray(0);
+            GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+        }
+
+        private void UpdateMarkersInSelectionBox(bool replaceSelection)
+        {
+            if (glControl.Width <= 0 || glControl.Height <= 0) return;
+
+            int minX = Math.Min(_boxSelectStart.X, _boxSelectCurrent.X);
+            int maxX = Math.Max(_boxSelectStart.X, _boxSelectCurrent.X);
+            int minY = Math.Min(_boxSelectStart.Y, _boxSelectCurrent.Y);
+            int maxY = Math.Max(_boxSelectStart.Y, _boxSelectCurrent.Y);
+
+            float aspect = (float)glControl.Width / Math.Max(1, glControl.Height);
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, 0.05f, 100.0f);
+
+            float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
+            float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
+
+            Vector3 eyeOffset = new Vector3(
+                _cameraDist * MathF.Sin(radYaw) * MathF.Cos(radPitch),
+                -_cameraDist * MathF.Cos(radYaw) * MathF.Cos(radPitch),
+                _cameraDist * MathF.Sin(radPitch)
+            );
+            Vector3 eye = _cameraTarget + _cameraPan + eyeOffset;
+            Matrix4 view = Matrix4.LookAt(eye, _cameraTarget + _cameraPan, Vector3.UnitZ);
+            Matrix4 mvp = view * proj;
+
+            if (replaceSelection)
+            {
+                _selectedMarkerIndices.Clear();
+            }
+
+            for (int i = 0; i < _markers.Count; i++)
+            {
+                var p = _markers[i].Position;
+                Vector4 clip = new Vector4(p, 1.0f) * mvp;
+                if (clip.W <= 0.01f) continue;
+
+                Vector3 ndc = clip.Xyz / clip.W;
+                float sx = (ndc.X + 1.0f) * 0.5f * glControl.Width;
+                float sy = (1.0f - ndc.Y) * 0.5f * glControl.Height;
+
+                if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY)
+                {
+                    _selectedMarkerIndices.Add(i);
+                }
+            }
+
+            if (_selectedMarkerIndices.Count > 0)
+            {
+                if (!_selectedMarkerIndices.Contains(_selectedMarkerIndex))
+                {
+                    _selectedMarkerIndex = _selectedMarkerIndices.First();
+                }
+            }
+            else if (replaceSelection)
+            {
+                _selectedMarkerIndex = -1;
+            }
         }
 
         private void DrawCrossMarker(Matrix4 mvp, Vector3 center, float size, Vector4 color)
@@ -4408,70 +4639,152 @@ void main() {
         private void GlControl_MouseDown(object? sender, MouseEventArgs e)
         {
             _lastMousePos = e.Location;
+            bool isCtrl = ModifierKeys.HasFlag(Keys.Control);
 
             if (e.Button == MouseButtons.Left)
             {
                 int picked = PickMarkerAtScreen(e.X, e.Y);
-                if (picked >= 0)
+
+                if (isCtrl)
                 {
-                    _selectedMarkerIndex = picked;
-                    cbJoints.SelectedIndex = picked;
-                    UpdateNudValues();
-                    _isDraggingMarker = true;
-
-                    var m = _markers[picked];
-                    _dragStartMarkerPos = m.Position;
-                    _dragPlanePoint = m.Position;
-
-                    if (_currentViewMode == RigViewMode.Front || _currentViewMode == RigViewMode.Back ||
-                        ((Math.Abs(_cameraYaw) < 15f || Math.Abs(_cameraYaw - 180f) < 15f) && Math.Abs(_cameraPitch) < 15f))
+                    if (picked >= 0)
                     {
-                        // Plane normal is strictly Y (plane is X/Z)
-                        _dragPlaneNormal = new Vector3(0f, (_cameraYaw > 90f && _cameraYaw < 270f) ? 1f : -1f, 0f);
-                    }
-                    else if (_currentViewMode == RigViewMode.Profile ||
-                        ((Math.Abs(_cameraYaw - 90f) < 15f || Math.Abs(_cameraYaw + 90f) < 15f || Math.Abs(_cameraYaw - 270f) < 15f) && Math.Abs(_cameraPitch) < 15f))
-                    {
-                        // Plane normal is strictly X (plane is Y/Z)
-                        _dragPlaneNormal = new Vector3((_cameraYaw > 0f && _cameraYaw < 180f) ? 1f : -1f, 0f, 0f);
+                        // Ctrl + Click on a marker: toggle in selection
+                        if (_selectedMarkerIndices.Contains(picked))
+                        {
+                            _selectedMarkerIndices.Remove(picked);
+                            if (_selectedMarkerIndex == picked)
+                            {
+                                _selectedMarkerIndex = _selectedMarkerIndices.Count > 0 ? _selectedMarkerIndices.First() : -1;
+                            }
+                        }
+                        else
+                        {
+                            _selectedMarkerIndices.Add(picked);
+                            _selectedMarkerIndex = picked;
+                        }
+
+                        if (_selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
+                        {
+                            cbJoints.SelectedIndex = _selectedMarkerIndex;
+                            UpdateNudValues();
+                        }
+
+                        SetupMarkerDrag(e.X, e.Y);
+                        glControl.Invalidate();
+                        return;
                     }
                     else
                     {
-                        float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
-                        float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
-                        _dragPlaneNormal = new Vector3(
-                            MathF.Sin(radYaw) * MathF.Cos(radPitch),
-                            -MathF.Cos(radYaw) * MathF.Cos(radPitch),
-                            MathF.Sin(radPitch)
-                        ).Normalized();
+                        // Ctrl + Click in empty space: start marquee selection box!
+                        _isBoxSelecting = true;
+                        _boxSelectStart = e.Location;
+                        _boxSelectCurrent = e.Location;
+                        if (!ModifierKeys.HasFlag(Keys.Shift))
+                        {
+                            _selectedMarkerIndices.Clear();
+                            _selectedMarkerIndex = -1;
+                        }
+                        glControl.Invalidate();
+                        return;
                     }
-
-                    if (UnprojectMouseToPlane(e.X, e.Y, _dragPlanePoint, _dragPlaneNormal, out Vector3 initialHit))
-                    {
-                        _dragGrabOffset = _dragStartMarkerPos - initialHit;
-                    }
-                    else
-                    {
-                        _dragGrabOffset = Vector3.Zero;
-                    }
-
-                    glControl.Invalidate();
-                    return;
-                }
-
-                if (_currentViewMode == RigViewMode.Free3D)
-                {
-                    _isOrbiting = true;
                 }
                 else
                 {
-                    // In 2D views (Front, Profile, Back), left-drag on empty space pans instead of accidentally rotating the 2D view!
-                    _isPanning = true;
+                    if (picked >= 0)
+                    {
+                        // Click on a marker without Ctrl:
+                        if (!_selectedMarkerIndices.Contains(picked))
+                        {
+                            _selectedMarkerIndices.Clear();
+                            _selectedMarkerIndices.Add(picked);
+                            _selectedMarkerIndex = picked;
+                        }
+                        else
+                        {
+                            _selectedMarkerIndex = picked;
+                        }
+
+                        cbJoints.SelectedIndex = _selectedMarkerIndex;
+                        UpdateNudValues();
+
+                        SetupMarkerDrag(e.X, e.Y);
+                        glControl.Invalidate();
+                        return;
+                    }
+                    else
+                    {
+                        // Click in empty space without Ctrl: clear selection
+                        _selectedMarkerIndices.Clear();
+                        _selectedMarkerIndex = -1;
+                        glControl.Invalidate();
+
+                        if (_currentViewMode == RigViewMode.Free3D)
+                        {
+                            _isOrbiting = true;
+                        }
+                        else
+                        {
+                            _isPanning = true;
+                        }
+                        return;
+                    }
                 }
             }
             else if (e.Button == MouseButtons.Right)
             {
                 _isPanning = true;
+            }
+        }
+
+        private void SetupMarkerDrag(int mouseX, int mouseY)
+        {
+            if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
+
+            _isDraggingMarker = true;
+            _dragStartMarkerPositions.Clear();
+            foreach (int idx in _selectedMarkerIndices)
+            {
+                if (idx >= 0 && idx < _markers.Count)
+                {
+                    _dragStartMarkerPositions[idx] = _markers[idx].Position;
+                }
+            }
+
+            var m = _markers[_selectedMarkerIndex];
+            _dragStartMarkerPos = m.Position;
+            _dragPlanePoint = m.Position;
+
+            if (_currentViewMode == RigViewMode.Front || _currentViewMode == RigViewMode.Back ||
+                ((Math.Abs(_cameraYaw) < 15f || Math.Abs(_cameraYaw - 180f) < 15f) && Math.Abs(_cameraPitch) < 15f))
+            {
+                // Plane normal is strictly Y (plane is X/Z)
+                _dragPlaneNormal = new Vector3(0f, (_cameraYaw > 90f && _cameraYaw < 270f) ? 1f : -1f, 0f);
+            }
+            else if (_currentViewMode == RigViewMode.Profile ||
+                ((Math.Abs(_cameraYaw - 90f) < 15f || Math.Abs(_cameraYaw + 90f) < 15f || Math.Abs(_cameraYaw - 270f) < 15f) && Math.Abs(_cameraPitch) < 15f))
+            {
+                // Plane normal is strictly X (plane is Y/Z)
+                _dragPlaneNormal = new Vector3((_cameraYaw > 0f && _cameraYaw < 180f) ? 1f : -1f, 0f, 0f);
+            }
+            else
+            {
+                float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
+                float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
+                _dragPlaneNormal = new Vector3(
+                    MathF.Sin(radYaw) * MathF.Cos(radPitch),
+                    -MathF.Cos(radYaw) * MathF.Cos(radPitch),
+                    MathF.Sin(radPitch)
+                ).Normalized();
+            }
+
+            if (UnprojectMouseToPlane(mouseX, mouseY, _dragPlanePoint, _dragPlaneNormal, out Vector3 initialHit))
+            {
+                _dragGrabOffset = _dragStartMarkerPos - initialHit;
+            }
+            else
+            {
+                _dragGrabOffset = Vector3.Zero;
             }
         }
 
@@ -4481,39 +4794,60 @@ void main() {
             int dy = e.Y - _lastMousePos.Y;
             _lastMousePos = e.Location;
 
-            // 1:1 Ray-Plane unprojection dragging with strict orthographic axis locking
+            if (_isBoxSelecting)
+            {
+                _boxSelectCurrent = e.Location;
+                UpdateMarkersInSelectionBox(replaceSelection: !ModifierKeys.HasFlag(Keys.Shift));
+                glControl.Invalidate();
+                return;
+            }
+
+            // 1:1 Ray-Plane unprojection dragging with multi-marker group movement
             if (_isDraggingMarker && _selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
             {
-                var m = _markers[_selectedMarkerIndex];
                 if (UnprojectMouseToPlane(e.X, e.Y, _dragPlanePoint, _dragPlaneNormal, out Vector3 rawHit))
                 {
                     Vector3 targetHit = rawHit + _dragGrabOffset;
+                    Vector3 primaryNewPos;
 
                     if (_currentViewMode == RigViewMode.Front || _currentViewMode == RigViewMode.Back ||
                         ((Math.Abs(_cameraYaw) < 15f || Math.Abs(_cameraYaw - 180f) < 15f) && Math.Abs(_cameraPitch) < 15f))
                     {
                         // Front or Back view: STRICTLY X and Z move! Y is 100% locked to initial marker depth!
-                        m.Position = new Vector3(targetHit.X, _dragStartMarkerPos.Y, targetHit.Z);
+                        primaryNewPos = new Vector3(targetHit.X, _dragStartMarkerPos.Y, targetHit.Z);
                     }
                     else if (_currentViewMode == RigViewMode.Profile ||
                         ((Math.Abs(_cameraYaw - 90f) < 15f || Math.Abs(_cameraYaw + 90f) < 15f || Math.Abs(_cameraYaw - 270f) < 15f) && Math.Abs(_cameraPitch) < 15f))
                     {
                         // Profile view: STRICTLY Y and Z move! X is 100% locked to initial marker lateral!
-                        m.Position = new Vector3(_dragStartMarkerPos.X, targetHit.Y, targetHit.Z);
+                        primaryNewPos = new Vector3(_dragStartMarkerPos.X, targetHit.Y, targetHit.Z);
                     }
                     else
                     {
                         // Free 3D view: follows camera plane
-                        m.Position = targetHit;
+                        primaryNewPos = targetHit;
                     }
 
-                    // Automatic X symmetry
-                    if (chkSymmetry.Checked && !string.IsNullOrEmpty(m.SymmetricBoneName))
+                    Vector3 delta = primaryNewPos - _dragStartMarkerPos;
+
+                    // Apply delta to all selected markers
+                    foreach (var kvp in _dragStartMarkerPositions)
                     {
-                        var sym = _markers.FirstOrDefault(x => string.Equals(x.BoneName, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
-                        if (sym != null)
+                        int idx = kvp.Key;
+                        if (idx >= 0 && idx < _markers.Count)
                         {
-                            sym.Position = new Vector3(-m.Position.X, m.Position.Y, m.Position.Z);
+                            var curM = _markers[idx];
+                            curM.Position = kvp.Value + delta;
+
+                            // Automatic X symmetry for non-selected symmetric counterpart
+                            if (chkSymmetry.Checked && !string.IsNullOrEmpty(curM.SymmetricBoneName))
+                            {
+                                int symIdx = _markers.FindIndex(x => string.Equals(x.BoneName, curM.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
+                                if (symIdx >= 0 && !_selectedMarkerIndices.Contains(symIdx))
+                                {
+                                    _markers[symIdx].Position = new Vector3(-curM.Position.X, curM.Position.Y, curM.Position.Z);
+                                }
+                            }
                         }
                     }
 
@@ -4544,7 +4878,24 @@ void main() {
 
         private void GlControl_MouseUp(object? sender, MouseEventArgs e)
         {
+            if (_isBoxSelecting)
+            {
+                _isBoxSelecting = false;
+                _boxSelectCurrent = e.Location;
+                UpdateMarkersInSelectionBox(replaceSelection: !ModifierKeys.HasFlag(Keys.Shift));
+                if (_selectedMarkerIndices.Count > 0)
+                {
+                    if (!_selectedMarkerIndices.Contains(_selectedMarkerIndex))
+                        _selectedMarkerIndex = _selectedMarkerIndices.First();
+
+                    cbJoints.SelectedIndex = _selectedMarkerIndex;
+                    UpdateNudValues();
+                }
+                glControl.Invalidate();
+            }
+
             _isDraggingMarker = false;
+            _dragStartMarkerPositions.Clear();
             _isOrbiting = false;
             _isPanning = false;
         }
