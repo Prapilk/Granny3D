@@ -55,6 +55,7 @@ namespace UoFiddler.Plugin.Granny3D
         public string TextureFilePath = string.Empty;
         public int HueId = 0;
         public bool PartialHue = true;
+        public bool Desaturate = false;
 
         public int[] BoneToAnimTrack;
         public Matrix4[] LocalMatrices;
@@ -616,6 +617,7 @@ namespace UoFiddler.Plugin.Granny3D
         // UI - Hue selection (hues.mul)
         private NumericUpDown nudHue;
         private CheckBox chkPartialHue;
+        private CheckBox chkDesaturate;
         private Button btnPickHue;
         private Button btnResetHue;
         private Label lblHueName;
@@ -1069,7 +1071,7 @@ namespace UoFiddler.Plugin.Granny3D
             // Export the baked 3D render as a UO animation (.vd) using the same
             // category/action mapping as UOFiddler's "Export -> To vd.." menu.
             btnExportVd = new Button { Text = "Exporter en .vd (mapping)", Location = new Point(8, 192), Width = 228, Height = 28, BackColor = Color.FromArgb(84, 96, 78) };
-            btnExportVd.Click += (s, e) => ExportVdDialog();
+            btnExportVd.Click += (s, e) => ExportVdDialog(null, "Rendu complet (.vd)");
 
             // Cutout export: only the visible body is kept; armor/mount carve it away
             // (UO layered animation, body-only layer).
@@ -1078,7 +1080,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 foreach (var lm in _loadedMeshes)
                     Log($"cutout role: {lm.CutoutRole}  {lm.Name}");
-                ExportVdDialog(BuildCutoutFilter());
+                ExportVdDialog(BuildCutoutFilter(), "Cutout Corps (découpé par accessoires)");
             };
 
             // Inverse layer: export the accessory, carved by the body (+ mount).
@@ -1087,7 +1089,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 foreach (var lm in _loadedMeshes)
                     Log($"cutout role: {lm.CutoutRole}  {lm.Name}");
-                ExportVdDialog(BuildAccessoryCutoutFilter());
+                ExportVdDialog(BuildAccessoryCutoutFilter(), "Cutout Accessoire (découpé par le corps)");
             };
 
             var lblMount = new Label { Text = "Monture :", Location = new Point(8, 262), AutoSize = true, ForeColor = Color.Gainsboro };
@@ -1260,17 +1262,26 @@ namespace UoFiddler.Plugin.Granny3D
             chkPartialHue = new CheckBox
             {
                 Text = "Partial Hue",
-                Location = new Point(212, 21),
-                Width = 92,
+                Location = new Point(195, 21),
+                Width = 84,
                 Checked = true,
+                ForeColor = Color.Gainsboro
+            };
+
+            chkDesaturate = new CheckBox
+            {
+                Text = "Désaturation",
+                Location = new Point(282, 21),
+                Width = 96,
+                Checked = false,
                 ForeColor = Color.Gainsboro
             };
 
             btnResetHue = new Button
             {
                 Text = "Réinitialiser",
-                Location = new Point(310, 19),
-                Width = 85,
+                Location = new Point(382, 19),
+                Width = 80,
                 Height = 24,
                 BackColor = Color.FromArgb(60, 60, 62),
                 ForeColor = Color.Gainsboro,
@@ -1279,6 +1290,8 @@ namespace UoFiddler.Plugin.Granny3D
             btnResetHue.Click += (s, e) =>
             {
                 nudHue.Value = 0;
+                chkDesaturate.Checked = false;
+                ApplyCurrentHue();
             };
 
             lblHueName = new Label
@@ -1326,13 +1339,19 @@ namespace UoFiddler.Plugin.Granny3D
                 ApplyCurrentHue();
             };
 
+            chkDesaturate.CheckedChanged += (s, e) =>
+            {
+                if (_suppressHueEvents) return;
+                ApplyCurrentHue();
+            };
+
             cmbHueTarget.SelectedIndexChanged += (s, e) =>
             {
                 if (_suppressHueEvents) return;
                 ApplyCurrentHue();
             };
 
-            grpHue.Controls.AddRange(new Control[] { lblHueLabel, nudHue, btnPickHue, chkPartialHue, btnResetHue, lblHueName, lblTargetLabel, cmbHueTarget, picHueBar });
+            grpHue.Controls.AddRange(new Control[] { lblHueLabel, nudHue, btnPickHue, chkPartialHue, chkDesaturate, btnResetHue, lblHueName, lblTargetLabel, cmbHueTarget, picHueBar });
 
             pnlBottomSplit.Controls.Add(grpInfo, 0, 0);
             pnlBottomSplit.Controls.Add(grpHue, 1, 0);
@@ -6445,6 +6464,7 @@ namespace UoFiddler.Plugin.Granny3D
                     BaseMeshColor = src.BaseMeshColor,
                     HueId = src.HueId,
                     PartialHue = src.PartialHue,
+                    Desaturate = src.Desaturate,
                     PartScale = src.PartScale,
                     PartScaleVec = src.PartScaleVec,
                     Thickness = src.Thickness,
@@ -9071,6 +9091,7 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     nudHue.Value = Math.Max(nudHue.Minimum, Math.Min(nudHue.Maximum, lm.HueId));
                     chkPartialHue.Checked = lm.PartialHue;
+                    if (chkDesaturate != null) chkDesaturate.Checked = lm.Desaturate;
                 }
                 finally
                 {
@@ -9098,11 +9119,11 @@ namespace UoFiddler.Plugin.Granny3D
             return tex;
         }
 
-        private void ApplyHueToMesh(LoadedMesh lm, int hueId, bool partialHue)
+        private void ApplyHueToMesh(LoadedMesh lm, int hueId, bool partialHue, bool desaturate)
         {
             if (lm == null) return;
 
-            if (hueId <= 0)
+            if (hueId <= 0 && !desaturate)
             {
                 // Reset to original
                 if (lm.TextureId > 0 && lm.TextureId != lm.BaseTextureId)
@@ -9114,14 +9135,15 @@ namespace UoFiddler.Plugin.Granny3D
                 lm.MeshColor = lm.BaseMeshColor;
                 lm.HueId = 0;
                 lm.PartialHue = partialHue;
+                lm.Desaturate = false;
                 return;
             }
 
-            var hue = Ultima.Hues.GetHue(hueId);
-            if (hue == null) return;
+            var hue = hueId > 0 ? Ultima.Hues.GetHue(hueId) : null;
 
             lm.HueId = hueId;
             lm.PartialHue = partialHue;
+            lm.Desaturate = desaturate;
 
             if (lm.BaseTextureId > 0 || !string.IsNullOrEmpty(lm.TextureFilePath))
             {
@@ -9138,7 +9160,37 @@ namespace UoFiddler.Plugin.Granny3D
                         g.DrawImage(lm.BaseTextureBmp, 0, 0, lm.BaseTextureBmp.Width, lm.BaseTextureBmp.Height);
                     }
 
-                    hue.ApplyTo(clone, partialHue);
+                    if (desaturate)
+                    {
+                        var bd = clone.LockBits(new Rectangle(0, 0, clone.Width, clone.Height), ImageLockMode.ReadWrite, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                        try
+                        {
+                            unsafe
+                            {
+                                byte* scan = (byte*)bd.Scan0;
+                                for (int y = 0; y < bd.Height; y++)
+                                {
+                                    byte* row = scan + (long)y * bd.Stride;
+                                    for (int x = 0; x < bd.Width; x++)
+                                    {
+                                        int b = row[x * 4 + 0];
+                                        int g = row[x * 4 + 1];
+                                        int r = row[x * 4 + 2];
+                                        byte gray = (byte)((r * 299 + g * 587 + b * 114) / 1000);
+                                        row[x * 4 + 0] = gray;
+                                        row[x * 4 + 1] = gray;
+                                        row[x * 4 + 2] = gray;
+                                    }
+                                }
+                            }
+                        }
+                        finally { clone.UnlockBits(bd); }
+                    }
+
+                    if (hue != null)
+                    {
+                        hue.ApplyTo(clone, partialHue);
+                    }
 
                     if (glControl != null && glControl.IsHandleCreated) glControl.MakeCurrent();
                     int newTex = UploadMeshTextureBitmap(clone);
@@ -9154,14 +9206,35 @@ namespace UoFiddler.Plugin.Granny3D
                 }
                 else
                 {
-                    var c = hue.GetColor(16);
-                    lm.MeshColor = new Vector3(c.R / 255f, c.G / 255f, c.B / 255f);
+                    ApplyColorToMesh(lm, hue, desaturate);
                 }
             }
             else
             {
+                ApplyColorToMesh(lm, hue, desaturate);
+            }
+        }
+
+        private void ApplyColorToMesh(LoadedMesh lm, Ultima.Hue hue, bool desaturate)
+        {
+            if (hue != null)
+            {
                 var c = hue.GetColor(16);
-                lm.MeshColor = new Vector3(c.R / 255f, c.G / 255f, c.B / 255f);
+                float r = c.R / 255f, g = c.G / 255f, b = c.B / 255f;
+                if (desaturate)
+                {
+                    float gray = r * 0.299f + g * 0.587f + b * 0.114f;
+                    lm.MeshColor = new Vector3(gray, gray, gray);
+                }
+                else
+                {
+                    lm.MeshColor = new Vector3(r, g, b);
+                }
+            }
+            else if (desaturate)
+            {
+                float gray = lm.BaseMeshColor.X * 0.299f + lm.BaseMeshColor.Y * 0.587f + lm.BaseMeshColor.Z * 0.114f;
+                lm.MeshColor = new Vector3(gray, gray, gray);
             }
         }
 
@@ -9170,6 +9243,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (_loadedMeshes == null || _loadedMeshes.Count == 0 || nudHue == null) return;
             int hueId = (int)nudHue.Value;
             bool partial = chkPartialHue != null && chkPartialHue.Checked;
+            bool desaturate = chkDesaturate != null && chkDesaturate.Checked;
             int targetMode = cmbHueTarget != null ? cmbHueTarget.SelectedIndex : 1;
 
             if (glControl != null && glControl.IsHandleCreated) glControl.MakeCurrent();
@@ -9184,7 +9258,7 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         if (idx >= 0 && idx < _loadedMeshes.Count)
                         {
-                            ApplyHueToMesh(_loadedMeshes[idx], hueId, partial);
+                            ApplyHueToMesh(_loadedMeshes[idx], hueId, partial, desaturate);
                         }
                     }
                 }
@@ -9193,7 +9267,7 @@ namespace UoFiddler.Plugin.Granny3D
                     foreach (var lm in _loadedMeshes)
                     {
                         if (lm.CutoutRole == MeshCutoutRole.Accessory)
-                            ApplyHueToMesh(lm, hueId, partial);
+                            ApplyHueToMesh(lm, hueId, partial, desaturate);
                     }
                 }
             }
@@ -9204,7 +9278,7 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     if (lm.CutoutRole == MeshCutoutRole.Accessory || !string.IsNullOrEmpty(lm.AttachBoneName))
                     {
-                        ApplyHueToMesh(lm, hueId, partial);
+                        ApplyHueToMesh(lm, hueId, partial, desaturate);
                     }
                 }
             }
@@ -9213,7 +9287,7 @@ namespace UoFiddler.Plugin.Granny3D
                 // Tous les meshes
                 foreach (var lm in _loadedMeshes)
                 {
-                    ApplyHueToMesh(lm, hueId, partial);
+                    ApplyHueToMesh(lm, hueId, partial, desaturate);
                 }
             }
 
@@ -13472,7 +13546,135 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
-        private void ExportVdDialog((Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout = null)
+        // Render a single preview frame for VdRemapForm showing the live cutout / render result.
+        private Bitmap RenderExportPreviewFrame(string animPath, int direction, float timeNorm,
+            Vector3 actionOffset,
+            (Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout,
+            int size = 0)
+        {
+            if (!_glReady || glControl == null || !glControl.IsHandleCreated || _loadedMeshes.Count == 0)
+                return null;
+
+            var savedAnim = _currentAnimation;
+            float savedTime = _currentTime;
+            bool savedPlaying = _playing;
+            _playing = false;
+
+            try
+            {
+                GrannyAnimation anim = null;
+                if (!string.IsNullOrEmpty(animPath) && File.Exists(animPath))
+                {
+                    anim = LoadAnyAnimation(animPath);
+                }
+                if (anim == null) anim = savedAnim;
+
+                if (anim != null)
+                {
+                    _currentAnimation = anim;
+                    foreach (var lm in _loadedMeshes) lm.BoneToAnimTrack = null;
+                }
+
+                glControl.MakeCurrent();
+
+                float dur = _currentAnimation != null ? _currentAnimation.Duration : 1f;
+                if (dur <= 0.0001f) dur = 1f;
+                float t = Math.Max(0f, Math.Min(dur, dur * timeNorm));
+
+                // Pose skeletons
+                PoseSkeletons(t, actionOffset);
+
+                // Apply cloth if available
+                foreach (var lm in _loadedMeshes)
+                {
+                    if (lm.IsCloth && lm.ClothPos != null && lm.ClothBake != null)
+                    {
+                        ApplyBakeCloth(lm, t);
+                    }
+                }
+                RefreshVertexBuffers(false, actionOffset);
+
+                // Camera & View
+                Matrix4 vscale = Matrix4.CreateScale(1f, 1f, _uoVertScale);
+                Matrix4 modelToView = vscale * UoViewMatrix(direction);
+
+                // Cutout filters
+                var cut = cutout ?? default;
+                if (cutout.HasValue)
+                {
+                    var baseOccluder = cutout.Value.occluder;
+                    Func<LoadedMesh, bool> occ = lm => baseOccluder(lm) || lm.CutoutRole == MeshCutoutRole.Mount;
+                    cut = (occ, cutout.Value.target, cutout.Value.bounds);
+                }
+
+                Func<LoadedMesh, bool> boundsFilter = cutout.HasValue
+                    ? cut.bounds
+                    : (Func<LoadedMesh, bool>)(lm => lm.CutoutRole != MeshCutoutRole.Mount);
+
+                float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
+                AccumulateBounds(modelToView, ref minX, ref maxX, ref minY, ref maxY, boundsFilter);
+                if (minX > maxX) { minX = -1f; maxX = 1f; minY = -1f; maxY = 1f; }
+
+                float bw = Math.Max(1e-4f, maxX - minX);
+                float bh = Math.Max(1e-4f, maxY - minY);
+
+                float frameSpan = ComputeFrameSpan();
+                float totalZoom = Math.Max(0.01f, _uoZoom);
+                float previewViewH = _uoFeetOnLine
+                    ? frameSpan * 2f * 1.08f / totalZoom
+                    : frameSpan * 1.15f / totalZoom;
+                int previewH = Math.Max(1, glControl.Height);
+                float previewPpu = Math.Max(1e-6f, previewH / previewViewH);
+
+                const int pad = 2;
+                float ppu = (size > 0) ? Math.Max(1e-6f, size / bh) : previewPpu;
+                int cw = Math.Max(8, (int)Math.Ceiling(bw * ppu) + 2 * pad);
+                int ch = Math.Max(8, (int)Math.Ceiling(bh * ppu) + 2 * pad);
+
+                // 2x supersampling for nice crisp preview
+                const int ss = 2;
+                int rw = cw * ss, rh = ch * ss;
+                const int maxR = 2048;
+                if (rw > maxR || rh > maxR)
+                {
+                    float f = Math.Min(maxR / (float)rw, maxR / (float)rh);
+                    ppu *= f;
+                    cw = Math.Max(8, (int)Math.Ceiling(bw * ppu) + 2 * pad);
+                    ch = Math.Max(8, (int)Math.Ceiling(bh * ppu) + 2 * pad);
+                    rw = cw * ss; rh = ch * ss;
+                }
+
+                float viewW = cw / ppu, viewH = ch / ppu;
+                float shiftX = -(minX + maxX) * 0.5f;
+                float shiftY = -(minY + maxY) * 0.5f;
+                Matrix4 proj = Matrix4.CreateOrthographic(viewW, viewH, -5000f, 5000f);
+                Matrix4 mvp = modelToView * Matrix4.CreateTranslation(shiftX, shiftY, 0f) * proj;
+
+                using (var big = cutout.HasValue
+                           ? RenderFrameCutout(rw, rh, mvp, cut.occluder, cut.target)
+                           : RenderFrame(rw, rh, mvp, lm2 => lm2.CutoutRole != MeshCutoutRole.Mount))
+                {
+                    return DownsampleBox(big, cw, ch);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Preview error: {ex.Message}");
+                return null;
+            }
+            finally
+            {
+                _currentAnimation = savedAnim;
+                _currentTime = savedTime;
+                _playing = savedPlaying;
+                foreach (var lm in _loadedMeshes) lm.BoneToAnimTrack = null;
+                RefreshMountAnimation();
+                try { if (savedAnim != null) ApplyAnimationPose(savedTime); } catch { }
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            }
+        }
+
+        private void ExportVdDialog((Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout = null, string exportModeTitle = null)
         {
             if (_loadedMeshes.Count == 0) { Log("Export .vd : aucun modele charge."); return; }
             if (!_glReady || glControl == null || !glControl.IsHandleCreated) return;
@@ -13481,7 +13683,57 @@ namespace UoFiddler.Plugin.Granny3D
             if (sources.Count == 0) { Log("Export .vd : aucune animation source trouvee."); return; }
             var allSources = GatherAllExportAnimSources(out var allDisplay);
 
-            using (var form = new VdRemapForm(VdExport.Targets(), sources, prefix, allSources, allDisplay, BasePath))
+            Func<string, int, float, Vector3, int, Bitmap> previewRenderer = (animPath, dir, time, actOff, size) =>
+            {
+                return RenderExportPreviewFrame(animPath, dir, time, actOff, cutout, size);
+            };
+
+            string roleSummary;
+            bool hasWarning = false;
+            string warningText = null;
+
+            if (!cutout.HasValue)
+            {
+                exportModeTitle ??= "Export .vd complet (sans cutout)";
+                int vis = _loadedMeshes.Count(m => !m.Hidden && m.CutoutRole != MeshCutoutRole.Mount);
+                roleSummary = $"Mode standard : tous les meshes visibles ({vis}) sont exportés.";
+            }
+            else
+            {
+                var targetMeshes = _loadedMeshes.Where(m => !m.Hidden && cutout.Value.target(m)).ToList();
+                var occluderMeshes = _loadedMeshes.Where(m => !m.Hidden && cutout.Value.occluder(m)).ToList();
+
+                bool isBodyTarget = exportModeTitle != null && exportModeTitle.IndexOf("Corps", StringComparison.OrdinalIgnoreCase) >= 0;
+                exportModeTitle ??= isBodyTarget ? "Export Cutout : Corps (découpé)" : "Export Cutout : Accessoire (découpé)";
+
+                var sb = new StringBuilder();
+                sb.AppendLine($"Cible (exporté) : {targetMeshes.Count} mesh(es)");
+                foreach (var tm in targetMeshes.Take(3))
+                    sb.AppendLine($" • {Path.GetFileName(tm.SourcePath)} [{tm.CutoutRole}]");
+                if (targetMeshes.Count > 3) sb.AppendLine($" • ... (+{targetMeshes.Count - 3})");
+
+                sb.AppendLine($"Découpeur (masque) : {occluderMeshes.Count} mesh(es)");
+                foreach (var om in occluderMeshes.Take(3))
+                    sb.AppendLine($" • {Path.GetFileName(om.SourcePath)} [{om.CutoutRole}]");
+                if (occluderMeshes.Count > 3) sb.AppendLine($" • ... (+{occluderMeshes.Count - 3})");
+
+                roleSummary = sb.ToString();
+
+                if (targetMeshes.Count == 0)
+                {
+                    hasWarning = true;
+                    warningText = isBodyTarget
+                        ? "⚠️ Aucun mesh n'a le rôle 'Body' !\nDéfinissez-le dans l'onglet Équipement."
+                        : "⚠️ Aucun mesh n'a le rôle 'Accessory' !\nDéfinissez-le dans l'onglet Équipement.";
+                }
+                else if (occluderMeshes.Count == 0)
+                {
+                    warningText = "ℹ️ Aucun occluder présent (pas de découpage).";
+                }
+            }
+
+            using (var form = new VdRemapForm(VdExport.Targets(), sources, prefix, allSources, allDisplay, BasePath,
+                previewRenderer, exportModeTitle, roleSummary, hasWarning, warningText))
             {
                 if (form.ShowDialog(this) != DialogResult.OK) return;
                 var target = form.Target;

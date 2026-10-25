@@ -41,14 +41,36 @@ namespace UoFiddler.Plugin.Granny3D
         private Button _btnChooseMap;
         private Button _btnAll;
 
+        private readonly Func<string, int, float, Vector3, int, Bitmap> _previewRenderer;
+        private Panel _pnlPreview;
+        private PictureBox _picPreview;
+        private ComboBox _cmbPreviewAction;
+        private Button[] _btnDirs;
+        private Button _btnPlayPause;
+        private TrackBar _tbTime;
+        private Label _lblTime;
+        private Label _lblActionDetail;
+        private Label _lblRoleSummary;
+        private Label _lblWarning;
+        private System.Windows.Forms.Timer _tmrAnim;
+        private Bitmap _previewBmp;
+        private int _previewDir = 0;
+        private float _previewTimeNorm = 0f;
+        private int _activeActionIdx = 0;
+        private bool _isPlaying = false;
+
         public VdTargetDef Target { get; private set; }
         public int Fps => (int)_nudFps.Value;
         public int FrameSize => (int)_nudSize.Value;
         public int OffsetY => (int)_nudOffY.Value;
 
         public VdRemapForm(List<VdTargetDef> targets, List<string> sources, string stripPrefix = null,
-            List<string> allSources = null, List<string> allDisplay = null, string basePath = null)
+            List<string> allSources = null, List<string> allDisplay = null, string basePath = null,
+            Func<string, int, float, Vector3, int, Bitmap> previewRenderer = null,
+            string exportModeTitle = null, string cutoutInfo = null,
+            bool hasCutoutWarning = false, string cutoutWarningText = null)
         {
+            _previewRenderer = previewRenderer;
             _basePath = basePath;
             _targets = targets;
             _sources = sources != null ? new List<string>(sources) : new List<string>();
@@ -61,8 +83,8 @@ namespace UoFiddler.Plugin.Granny3D
                 ? allDisplay : new List<string>(_allNames);
 
             Text = "Export .vd — mapping des animations";
-            ClientSize = new Size(740, 640);
-            MinimumSize = new Size(700, 480);
+            ClientSize = new Size(1120, 680);
+            MinimumSize = new Size(1000, 520);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(40, 40, 44);
             ForeColor = Color.Gainsboro;
@@ -125,10 +147,12 @@ namespace UoFiddler.Plugin.Granny3D
 
             top.Controls.Add(new Label { Text = "Perso px :", Location = new Point(132, 42), Width = 65, ForeColor = Color.Gray });
             _nudSize = new NumericUpDown { Location = new Point(198, 38), Width = 55, Minimum = 0, Maximum = 512, Increment = 16, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            _nudSize.ValueChanged += (s, e) => UpdatePreview();
             top.Controls.Add(_nudSize);
 
             top.Controls.Add(new Label { Text = "Décal. Y px :", Location = new Point(262, 42), Width = 80, ForeColor = Color.Gray });
             _nudOffY = new NumericUpDown { Location = new Point(344, 38), Width = 55, Minimum = -64, Maximum = 64, Increment = 1, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            _nudOffY.ValueChanged += (s, e) => UpdatePreview();
             top.Controls.Add(_nudOffY);
 
             var btnMountZ = new Button
@@ -190,6 +214,17 @@ namespace UoFiddler.Plugin.Granny3D
 
             _rows = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(8) };
 
+            // Panel d'aperçu du rendu final et de validation cutout (à droite)
+            _pnlPreview = new Panel
+            {
+                Dock = DockStyle.Right,
+                Width = 360,
+                BackColor = Color.FromArgb(32, 32, 35),
+                Padding = new Padding(8),
+                AutoScroll = true
+            };
+            BuildPreviewControls(_pnlPreview, exportModeTitle, cutoutInfo, hasCutoutWarning, cutoutWarningText);
+
             var bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, FlowDirection = FlowDirection.RightToLeft, Height = 46, Padding = new Padding(8) };
             var ok = new Button { Text = "Exporter", Width = 100, Height = 28, BackColor = Color.FromArgb(70, 90, 70), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
             var cancel = new Button { Text = "Annuler", Width = 100, Height = 28, BackColor = Color.FromArgb(60, 60, 62), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
@@ -200,10 +235,324 @@ namespace UoFiddler.Plugin.Granny3D
 
             Controls.Add(_rows);
             Controls.Add(hdr);
+            Controls.Add(_pnlPreview);
             Controls.Add(bottom);
             Controls.Add(top);
 
             if (_cmbTarget.Items.Count > 0) _cmbTarget.SelectedIndex = 0;
+        }
+
+        private void BuildPreviewControls(Panel pnl, string modeTitle, string cutoutInfo, bool hasWarning, string warningText)
+        {
+            var lblTitle = new Label
+            {
+                Text = "Aperçu du rendu final",
+                Location = new Point(8, 6),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+                ForeColor = Color.White
+            };
+            pnl.Controls.Add(lblTitle);
+
+            var lblBadge = new Label
+            {
+                Text = modeTitle ?? "Rendu complet (.vd)",
+                Location = new Point(8, 28),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(100, 190, 255)
+            };
+            pnl.Controls.Add(lblBadge);
+
+            var lblActionPick = new Label
+            {
+                Text = "Action à prévisualiser :",
+                Location = new Point(8, 50),
+                AutoSize = true,
+                ForeColor = Color.DarkGray
+            };
+            pnl.Controls.Add(lblActionPick);
+
+            _cmbPreviewAction = new ComboBox
+            {
+                Location = new Point(8, 68),
+                Width = 340,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(24, 24, 26),
+                ForeColor = Color.Gainsboro
+            };
+            _cmbPreviewAction.SelectedIndexChanged += (s, e) =>
+            {
+                if (_cmbPreviewAction.SelectedIndex >= 0)
+                {
+                    _activeActionIdx = _cmbPreviewAction.SelectedIndex;
+                    UpdatePreview();
+                }
+            };
+            pnl.Controls.Add(_cmbPreviewAction);
+
+            _picPreview = new PictureBox
+            {
+                Location = new Point(8, 98),
+                Size = new Size(340, 260),
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(20, 20, 22)
+            };
+            _picPreview.Paint += PicPreview_Paint;
+            pnl.Controls.Add(_picPreview);
+
+            // Direction selector: 5 buttons [0: Sud] [1: S-O] [2: Ouest] [3: N-O] [4: Nord]
+            var lblDir = new Label
+            {
+                Text = "Angle UO (direction) :",
+                Location = new Point(8, 364),
+                AutoSize = true,
+                ForeColor = Color.DarkGray
+            };
+            pnl.Controls.Add(lblDir);
+
+            string[] dirNames = { "0: Sud", "1: S-O", "2: Ouest", "3: N-O", "4: Nord" };
+            _btnDirs = new Button[5];
+            int btnW = 63;
+            int btnH = 24;
+            for (int d = 0; d < 5; d++)
+            {
+                int dirIdx = d;
+                var b = new Button
+                {
+                    Text = dirNames[d],
+                    Location = new Point(8 + d * 69, 384),
+                    Width = btnW,
+                    Height = btnH,
+                    FlatStyle = FlatStyle.Flat,
+                    ForeColor = Color.Gainsboro,
+                    BackColor = (d == _previewDir) ? Color.FromArgb(40, 100, 150) : Color.FromArgb(50, 50, 55),
+                    Font = new Font("Segoe UI", 7.5f)
+                };
+                b.Click += (s, e) =>
+                {
+                    _previewDir = dirIdx;
+                    for (int i = 0; i < 5; i++)
+                        _btnDirs[i].BackColor = (i == _previewDir) ? Color.FromArgb(40, 100, 150) : Color.FromArgb(50, 50, 55);
+                    UpdatePreview();
+                };
+                _btnDirs[d] = b;
+                pnl.Controls.Add(b);
+            }
+
+            // Timeline / scrubber
+            _btnPlayPause = new Button
+            {
+                Text = "▶ Play",
+                Location = new Point(8, 414),
+                Width = 60,
+                Height = 24,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(50, 70, 55),
+                ForeColor = Color.LightGreen,
+                Font = new Font("Segoe UI", 8f)
+            };
+            _btnPlayPause.Click += (s, e) => TogglePlay();
+            pnl.Controls.Add(_btnPlayPause);
+
+            _tbTime = new TrackBar
+            {
+                Location = new Point(72, 414),
+                Width = 224,
+                Height = 26,
+                Minimum = 0,
+                Maximum = 100,
+                TickFrequency = 10,
+                Value = 0
+            };
+            _tbTime.Scroll += (s, e) =>
+            {
+                _previewTimeNorm = _tbTime.Value / 100f;
+                _lblTime.Text = $"{_tbTime.Value}%";
+                UpdatePreview();
+            };
+            pnl.Controls.Add(_tbTime);
+
+            _lblTime = new Label
+            {
+                Text = "0%",
+                Location = new Point(300, 418),
+                Width = 48,
+                ForeColor = Color.Gainsboro,
+                Font = new Font("Segoe UI", 8f)
+            };
+            pnl.Controls.Add(_lblTime);
+
+            _tmrAnim = new System.Windows.Forms.Timer { Interval = 100 };
+            _tmrAnim.Tick += (s, e) =>
+            {
+                _previewTimeNorm = (_previewTimeNorm + 0.08f) % 1.0f;
+                int val = (int)(_previewTimeNorm * 100);
+                if (val >= 0 && val <= 100) _tbTime.Value = val;
+                _lblTime.Text = $"{val}%";
+                UpdatePreview();
+            };
+
+            // Action details label
+            _lblActionDetail = new Label
+            {
+                Location = new Point(8, 444),
+                Size = new Size(340, 30),
+                ForeColor = Color.LightSkyBlue,
+                Font = new Font("Segoe UI", 8f),
+                Text = "Action: 00"
+            };
+            pnl.Controls.Add(_lblActionDetail);
+
+            // Validation & Role Info Card
+            var grpInfo = new GroupBox
+            {
+                Text = "Rôles & Découpage Cutout",
+                Location = new Point(8, 478),
+                Size = new Size(340, 140),
+                ForeColor = Color.Gainsboro,
+                Font = new Font("Segoe UI", 8f)
+            };
+
+            _lblRoleSummary = new Label
+            {
+                Location = new Point(8, 18),
+                Size = new Size(324, 76),
+                ForeColor = Color.LightGray,
+                Font = new Font("Segoe UI", 7.5f),
+                Text = cutoutInfo ?? "Rendu normal de tous les meshes visibles."
+            };
+            grpInfo.Controls.Add(_lblRoleSummary);
+
+            _lblWarning = new Label
+            {
+                Location = new Point(8, 96),
+                Size = new Size(324, 38),
+                ForeColor = hasWarning ? Color.FromArgb(255, 120, 100) : Color.FromArgb(160, 220, 140),
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                Text = warningText ?? (hasWarning ? "⚠️ Attention aux rôles !" : "✓ Rôles configurés pour l'export")
+            };
+            grpInfo.Controls.Add(_lblWarning);
+
+            pnl.Controls.Add(grpInfo);
+        }
+
+        private void TogglePlay()
+        {
+            _isPlaying = !_isPlaying;
+            if (_isPlaying)
+            {
+                _btnPlayPause.Text = "⏸ Pause";
+                _btnPlayPause.BackColor = Color.FromArgb(80, 50, 50);
+                _btnPlayPause.ForeColor = Color.OrangeRed;
+                _tmrAnim?.Start();
+            }
+            else
+            {
+                _btnPlayPause.Text = "▶ Play";
+                _btnPlayPause.BackColor = Color.FromArgb(50, 70, 55);
+                _btnPlayPause.ForeColor = Color.LightGreen;
+                _tmrAnim?.Stop();
+            }
+        }
+
+        private void PicPreview_Paint(object sender, PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+
+            int box = 14;
+            var c1 = Color.FromArgb(24, 24, 28);
+            var c2 = Color.FromArgb(34, 34, 40);
+            using (var b1 = new SolidBrush(c1))
+            using (var b2 = new SolidBrush(c2))
+            {
+                for (int y = 0; y < _picPreview.Height; y += box)
+                {
+                    for (int x = 0; x < _picPreview.Width; x += box)
+                    {
+                        var b = ((x / box + y / box) % 2 == 0) ? b1 : b2;
+                        g.FillRectangle(b, x, y, box, box);
+                    }
+                }
+            }
+
+            if (_previewBmp != null)
+            {
+                int drawW = _previewBmp.Width;
+                int drawH = _previewBmp.Height;
+                float scale = 1f;
+                if (drawW > _picPreview.Width || drawH > _picPreview.Height)
+                {
+                    scale = Math.Min((float)_picPreview.Width / drawW, (float)_picPreview.Height / drawH);
+                }
+                else if (drawW * 2 <= _picPreview.Width && drawH * 2 <= _picPreview.Height)
+                {
+                    scale = 2f; // Pixel-perfect 2x zoom for smaller sprites
+                }
+                int w = (int)(drawW * scale);
+                int h = (int)(drawH * scale);
+                int cx = (_picPreview.Width - w) / 2;
+                int cy = (_picPreview.Height - h) / 2;
+                g.DrawImage(_previewBmp, cx, cy, w, h);
+            }
+            else
+            {
+                using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                using var brush = new SolidBrush(Color.DarkGray);
+                g.DrawString("Sélectionnez une action\npour voir l'aperçu", Font, brush, _picPreview.ClientRectangle, sf);
+            }
+        }
+
+        private void UpdatePreview()
+        {
+            if (_previewRenderer == null) return;
+            int a = _activeActionIdx;
+            if (a < 0 || a >= _combos.Count) return;
+
+            var sources = ActiveSources();
+            int sel = _combos[a].SelectedIndex - 1;
+            string path = (sel >= 0 && sel < sources.Count) ? sources[sel] : null;
+
+            Vector3 off = Vector3.Zero;
+            if (a < _nudX.Count && a < _nudY.Count && a < _nudZ.Count)
+            {
+                off = new Vector3((float)_nudX[a].Value, (float)_nudY[a].Value, (float)_nudZ[a].Value);
+            }
+
+            float t = _previewTimeNorm;
+            int dir = _previewDir;
+            int size = (int)_nudSize.Value;
+
+            try
+            {
+                var bmp = _previewRenderer(path, dir, t, off, size);
+                var old = _previewBmp;
+                _previewBmp = bmp;
+                old?.Dispose();
+                _picPreview?.Invalidate();
+
+                if (_lblActionDetail != null)
+                {
+                    string clipName = !string.IsNullOrEmpty(path) ? Path.GetFileName(path) : "(aucune anim)";
+                    _lblActionDetail.Text = $"Action {a:D2} : {clipName}\nOffset 3D : ({off.X:F2}, {off.Y:F2}, {off.Z:F2})";
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"UpdatePreview failed: {ex.Message}");
+            }
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            _tmrAnim?.Stop();
+            _tmrAnim?.Dispose();
+            _tmrAnim = null;
+            _previewBmp?.Dispose();
+            _previewBmp = null;
+            base.OnFormClosing(e);
         }
 
         // Currently offered sources: the per-model set, or every clip when "ALL" is on.
@@ -303,6 +652,23 @@ namespace UoFiddler.Plugin.Granny3D
             var target = _cmbTarget.SelectedItem as VdTargetDef;
             if (target == null) { _rows.ResumeLayout(); return; }
 
+            // Sync preview action dropdown
+            if (_cmbPreviewAction != null)
+            {
+                _cmbPreviewAction.BeginUpdate();
+                _cmbPreviewAction.Items.Clear();
+                for (int i = 0; i < target.ActionCount; i++)
+                {
+                    string actionName = (i < target.ActionNames.Length) ? target.ActionNames[i] : "";
+                    _cmbPreviewAction.Items.Add($"{i:D2} {actionName}");
+                }
+                _cmbPreviewAction.EndUpdate();
+                if (_cmbPreviewAction.Items.Count > 0)
+                {
+                    _cmbPreviewAction.SelectedIndex = Math.Min(_activeActionIdx, _cmbPreviewAction.Items.Count - 1);
+                }
+            }
+
             var sources = ActiveSources();
             var display = ActiveDisplay();
             var options = new List<string> { "--- (aucune) ---" };
@@ -311,6 +677,7 @@ namespace UoFiddler.Plugin.Granny3D
             int y = 6;
             for (int i = 0; i < target.ActionCount; i++)
             {
+                int actIdx = i;
                 string actionName = (i < target.ActionNames.Length) ? target.ActionNames[i] : "";
                 string lbl = $"{i:D2} {actionName}";
 
@@ -337,6 +704,19 @@ namespace UoFiddler.Plugin.Granny3D
                     ? sources.FindIndex(p => string.Equals(p, preserve[i].Path, StringComparison.OrdinalIgnoreCase)) + 1
                     : 0;
                 cb.SelectedIndex = keep > 0 ? keep : PrefillIndex(i, actionName, target);
+
+                cb.SelectedIndexChanged += (s, e) =>
+                {
+                    if (_activeActionIdx == actIdx) UpdatePreview();
+                };
+                cb.Enter += (s, e) =>
+                {
+                    if (_cmbPreviewAction != null && _cmbPreviewAction.SelectedIndex != actIdx && actIdx < _cmbPreviewAction.Items.Count)
+                    {
+                        _cmbPreviewAction.SelectedIndex = actIdx;
+                    }
+                };
+
                 _combos.Add(cb);
                 _rows.Controls.Add(cb);
 
@@ -363,6 +743,7 @@ namespace UoFiddler.Plugin.Granny3D
                     BorderStyle = BorderStyle.FixedSingle,
                     ContextMenuStrip = ctxMenu
                 };
+                nx.ValueChanged += (s, e) => { if (_activeActionIdx == actIdx) UpdatePreview(); };
                 _nudX.Add(nx);
                 _rows.Controls.Add(nx);
 
@@ -382,6 +763,7 @@ namespace UoFiddler.Plugin.Granny3D
                     BorderStyle = BorderStyle.FixedSingle,
                     ContextMenuStrip = ctxMenu
                 };
+                ny.ValueChanged += (s, e) => { if (_activeActionIdx == actIdx) UpdatePreview(); };
                 _nudY.Add(ny);
                 _rows.Controls.Add(ny);
 
@@ -401,6 +783,7 @@ namespace UoFiddler.Plugin.Granny3D
                     BorderStyle = BorderStyle.FixedSingle,
                     ContextMenuStrip = ctxMenu
                 };
+                nz.ValueChanged += (s, e) => { if (_activeActionIdx == actIdx) UpdatePreview(); };
                 _nudZ.Add(nz);
                 _rows.Controls.Add(nz);
 
@@ -408,6 +791,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             _rows.ResumeLayout();
+            UpdatePreview();
         }
 
         private ContextMenuStrip CreateOffsetMenu(int actionIdx)
