@@ -375,6 +375,20 @@ namespace UoFiddler.Plugin.Granny3D
             }
             catch { }
 
+            // Double the left column width if it was the old default (< 550)
+            if (LayoutMainSplit > 0 && LayoutMainSplit < 550)
+                LayoutMainSplit = Math.Max(LayoutMainSplit * 2, 728);
+            else if (LayoutMainSplit <= 0)
+                LayoutMainSplit = 728;
+
+            // Ensure Animations treeview has plenty of height (not squeezed by pnlModels)
+            if (LayoutLeftSplit > 450 || LayoutLeftSplit < 180)
+                LayoutLeftSplit = 320;
+
+            // Ensure animSplit gives generous height to the Animations tree
+            if (LayoutAnimSplit < 360)
+                LayoutAnimSplit = 420;
+
             if (!Directory.Exists(BasePath))
             {
                 string fallback1 = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Models");
@@ -1222,7 +1236,7 @@ namespace UoFiddler.Plugin.Granny3D
             nudHue = new NumericUpDown
             {
                 Location = new Point(54, 20),
-                Width = 65,
+                Width = 56,
                 Minimum = 0,
                 Maximum = 2999,
                 Value = 0,
@@ -1234,8 +1248,8 @@ namespace UoFiddler.Plugin.Granny3D
             btnPickHue = new Button
             {
                 Text = "🎨 Palette...",
-                Location = new Point(125, 19),
-                Width = 80,
+                Location = new Point(114, 19),
+                Width = 84,
                 Height = 24,
                 BackColor = Color.FromArgb(60, 60, 68),
                 ForeColor = Color.Gainsboro,
@@ -1263,8 +1277,8 @@ namespace UoFiddler.Plugin.Granny3D
             chkPartialHue = new CheckBox
             {
                 Text = "Partial Hue",
-                Location = new Point(195, 21),
-                Width = 84,
+                Location = new Point(206, 21),
+                Width = 88,
                 Checked = true,
                 ForeColor = Color.Gainsboro
             };
@@ -1272,8 +1286,8 @@ namespace UoFiddler.Plugin.Granny3D
             chkDesaturate = new CheckBox
             {
                 Text = "Désaturation",
-                Location = new Point(282, 21),
-                Width = 96,
+                Location = new Point(298, 21),
+                Width = 94,
                 Checked = false,
                 ForeColor = Color.Gainsboro
             };
@@ -1281,8 +1295,8 @@ namespace UoFiddler.Plugin.Granny3D
             btnResetHue = new Button
             {
                 Text = "Réinitialiser",
-                Location = new Point(382, 19),
-                Width = 80,
+                Location = new Point(398, 19),
+                Width = 82,
                 Height = 24,
                 BackColor = Color.FromArgb(60, 60, 62),
                 ForeColor = Color.Gainsboro,
@@ -1628,9 +1642,9 @@ namespace UoFiddler.Plugin.Granny3D
             btnBakeModifs = new Button
             {
                 Text = "💾 Figer & Enregistrer les modifications",
-                Location = new Point(8, 492),
-                Width = 330,
-                Height = 30,
+                Location = new Point(440, 420),
+                Width = 320,
+                Height = 32,
                 BackColor = Color.FromArgb(35, 95, 45),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
@@ -2047,78 +2061,78 @@ namespace UoFiddler.Plugin.Granny3D
             chkUoView = new CheckBox { Text = "Afficher le rendu UO", Location = new Point(8, 20), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
             chkUoView.CheckedChanged += (s, e) => { _uoView = chkUoView.Checked; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Mode", Location = new Point(8, 42), Width = 110, ForeColor = Color.Gray });
-            cmbUoMode = new ComboBox { Location = new Point(8, 58), Width = 110, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
+            grpCamera.Controls.Add(new Label { Text = "Mode", Location = new Point(8, 44), Width = 110, Height = 15, ForeColor = Color.Gray });
+            cmbUoMode = new ComboBox { Location = new Point(8, 62), Width = 110, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
             cmbUoMode.Items.AddRange(new object[] { "Vue 1 dir.", "Planche 5" });
             cmbUoMode.SelectedIndex = 0;
             cmbUoMode.SelectedIndexChanged += (s, e) => { _uoSheet = cmbUoMode.SelectedIndex == 1; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Direction", Location = new Point(124, 42), Width = 114, ForeColor = Color.Gray });
-            cmbUoDir = new ComboBox { Location = new Point(124, 58), Width = 114, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
+            grpCamera.Controls.Add(new Label { Text = "Direction", Location = new Point(124, 44), Width = 114, Height = 15, ForeColor = Color.Gray });
+            cmbUoDir = new ComboBox { Location = new Point(124, 62), Width = 114, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
             cmbUoDir.Items.AddRange(new object[] { "N (0)", "NE (1)", "E (2)", "SE (3)", "S (4)" });
             cmbUoDir.SelectedIndex = 4;
             cmbUoDir.SelectedIndexChanged += (s, e) => { _uoDirection = cmbUoDir.SelectedIndex; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Zoom", Location = new Point(8, 84), Width = 110, ForeColor = Color.Gray });
-            nudUoZoom = new NumericUpDown { Location = new Point(8, 100), Width = 110, Minimum = 0.05m, Maximum = 6m, Increment = 0.02m, DecimalPlaces = 2, Value = 0.27m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Zoom", Location = new Point(8, 90), Width = 110, Height = 15, ForeColor = Color.Gray });
+            nudUoZoom = new NumericUpDown { Location = new Point(8, 108), Width = 110, Minimum = 0.05m, Maximum = 6m, Increment = 0.02m, DecimalPlaces = 2, Value = 0.27m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoZoom.ValueChanged += (s, e) => { _uoZoom = (float)nudUoZoom.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Inclinaison (°)", Location = new Point(124, 84), Width = 114, ForeColor = Color.Gray });
-            nudUoElev = new NumericUpDown { Location = new Point(124, 100), Width = 114, Minimum = 5m, Maximum = 60m, Increment = 0.5m, DecimalPlaces = 2, Value = 26.565m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Inclinaison (°)", Location = new Point(124, 90), Width = 114, Height = 15, ForeColor = Color.Gray });
+            nudUoElev = new NumericUpDown { Location = new Point(124, 108), Width = 114, Minimum = 5m, Maximum = 60m, Increment = 0.5m, DecimalPlaces = 2, Value = 26.565m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoElev.ValueChanged += (s, e) => { _uoElevationDeg = (float)nudUoElev.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Éch. verticale", Location = new Point(8, 126), Width = 110, ForeColor = Color.Gray });
-            nudUoVert = new NumericUpDown { Location = new Point(8, 142), Width = 110, Minimum = 0.2m, Maximum = 3m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Éch. verticale", Location = new Point(8, 136), Width = 110, Height = 15, ForeColor = Color.Gray });
+            nudUoVert = new NumericUpDown { Location = new Point(8, 154), Width = 110, Minimum = 0.2m, Maximum = 3m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoVert.ValueChanged += (s, e) => { _uoVertScale = (float)nudUoVert.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Luminosité", Location = new Point(124, 126), Width = 114, ForeColor = Color.Gray });
-            nudUoBright = new NumericUpDown { Location = new Point(124, 142), Width = 114, Minimum = 0.2m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.8m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Luminosité", Location = new Point(124, 136), Width = 114, Height = 15, ForeColor = Color.Gray });
+            nudUoBright = new NumericUpDown { Location = new Point(124, 154), Width = 114, Minimum = 0.2m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.8m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoBright.ValueChanged += (s, e) => { _uoBrightness = (float)nudUoBright.Value; if (glControl != null) glControl.Invalidate(); };
 
-            chkUoFeet = new CheckBox { Text = "Pieds sur la ligne rouge", Location = new Point(8, 168), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
+            chkUoFeet = new CheckBox { Text = "Pieds sur la ligne rouge", Location = new Point(8, 184), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
             chkUoFeet.CheckedChanged += (s, e) => { _uoFeetOnLine = chkUoFeet.Checked; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Décalage X", Location = new Point(8, 190), Width = 110, ForeColor = Color.Gray });
-            nudUoOffX = new NumericUpDown { Location = new Point(8, 206), Width = 110, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Décalage X", Location = new Point(8, 208), Width = 110, Height = 15, ForeColor = Color.Gray });
+            nudUoOffX = new NumericUpDown { Location = new Point(8, 226), Width = 110, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoOffX.ValueChanged += (s, e) => { _uoOffX = (float)nudUoOffX.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Décalage Y", Location = new Point(124, 190), Width = 114, ForeColor = Color.Gray });
-            nudUoOffY = new NumericUpDown { Location = new Point(124, 206), Width = 114, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = -0.080m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Décalage Y", Location = new Point(124, 208), Width = 114, Height = 15, ForeColor = Color.Gray });
+            nudUoOffY = new NumericUpDown { Location = new Point(124, 226), Width = 114, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = -0.080m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoOffY.ValueChanged += (s, e) => { _uoOffY = (float)nudUoOffY.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Rotation (°)", Location = new Point(8, 232), Width = 110, ForeColor = Color.Gray });
-            nudUoYaw = new NumericUpDown { Location = new Point(8, 248), Width = 110, Minimum = -180m, Maximum = 180m, Increment = 5m, DecimalPlaces = 0, Value = 180m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Rotation (°)", Location = new Point(8, 254), Width = 110, Height = 15, ForeColor = Color.Gray });
+            nudUoYaw = new NumericUpDown { Location = new Point(8, 272), Width = 110, Minimum = -180m, Maximum = 180m, Increment = 5m, DecimalPlaces = 0, Value = 180m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoYaw.ValueChanged += (s, e) => { _uoYawOffsetDeg = (float)nudUoYaw.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Zoom global %", Location = new Point(124, 232), Width = 114, ForeColor = Color.Gray });
-            nudUoGlobal = new NumericUpDown { Location = new Point(124, 248), Width = 114, Minimum = 10m, Maximum = 500m, Increment = 25m, DecimalPlaces = 0, Value = 100m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Zoom global %", Location = new Point(124, 254), Width = 114, Height = 15, ForeColor = Color.Gray });
+            nudUoGlobal = new NumericUpDown { Location = new Point(124, 272), Width = 114, Minimum = 10m, Maximum = 500m, Increment = 25m, DecimalPlaces = 0, Value = 100m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoGlobal.ValueChanged += (s, e) => { _uoGlobalZoom = (float)nudUoGlobal.Value / 100f; if (glControl != null) glControl.Invalidate(); };
 
             // Reference overlay (UOFiddler animation, body 400 = c_man).
-            chkUoRef = new CheckBox { Text = "Réf. c_man (superposée)", Location = new Point(8, 276), Width = 232, Checked = false, ForeColor = Color.Gainsboro };
+            chkUoRef = new CheckBox { Text = "Réf. c_man (superposée)", Location = new Point(8, 302), Width = 232, Checked = false, ForeColor = Color.Gainsboro };
             chkUoRef.CheckedChanged += (s, e) => { _uoRefShow = chkUoRef.Checked; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Action réf.", Location = new Point(8, 298), Width = 110, ForeColor = Color.Gray });
-            nudUoRefAction = new NumericUpDown { Location = new Point(8, 314), Width = 110, Minimum = 0m, Maximum = 34m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Action réf.", Location = new Point(8, 326), Width = 110, Height = 15, ForeColor = Color.Gray });
+            nudUoRefAction = new NumericUpDown { Location = new Point(8, 344), Width = 110, Minimum = 0m, Maximum = 34m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoRefAction.ValueChanged += (s, e) => { _uoRefAction = (int)nudUoRefAction.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Frame réf.", Location = new Point(124, 298), Width = 114, ForeColor = Color.Gray });
-            nudUoRefFrame = new NumericUpDown { Location = new Point(124, 314), Width = 114, Minimum = 0m, Maximum = 40m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Frame réf.", Location = new Point(124, 326), Width = 114, Height = 15, ForeColor = Color.Gray });
+            nudUoRefFrame = new NumericUpDown { Location = new Point(124, 344), Width = 114, Minimum = 0m, Maximum = 40m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoRefFrame.ValueChanged += (s, e) => { _uoRefFrame = (int)nudUoRefFrame.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Éch. réf.", Location = new Point(8, 340), Width = 110, ForeColor = Color.Gray });
-            nudUoRefScale = new NumericUpDown { Location = new Point(8, 356), Width = 110, Minimum = 0.05m, Maximum = 40m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Éch. réf.", Location = new Point(8, 372), Width = 110, Height = 15, ForeColor = Color.Gray });
+            nudUoRefScale = new NumericUpDown { Location = new Point(8, 390), Width = 110, Minimum = 0.05m, Maximum = 40m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoRefScale.ValueChanged += (s, e) => { _uoRefScale = (float)nudUoRefScale.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Opacité %", Location = new Point(124, 340), Width = 114, ForeColor = Color.Gray });
-            nudUoRefOpacity = new NumericUpDown { Location = new Point(124, 356), Width = 114, Minimum = 0m, Maximum = 100m, Increment = 5m, DecimalPlaces = 0, Value = 55m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Opacité %", Location = new Point(124, 372), Width = 114, Height = 15, ForeColor = Color.Gray });
+            nudUoRefOpacity = new NumericUpDown { Location = new Point(124, 390), Width = 114, Minimum = 0m, Maximum = 100m, Increment = 5m, DecimalPlaces = 0, Value = 55m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoRefOpacity.ValueChanged += (s, e) => { _uoRefOpacity = (float)nudUoRefOpacity.Value / 100f; if (glControl != null) glControl.Invalidate(); };
 
             // Camera Quick Presets (Perso / Monstre / Défaut)
             var btnPresetPerso = new Button
             {
                 Text = "Perso",
-                Location = new Point(8, 386),
+                Location = new Point(8, 420),
                 Width = 72,
                 Height = 25,
                 BackColor = Color.FromArgb(40, 70, 95),
@@ -2131,7 +2145,7 @@ namespace UoFiddler.Plugin.Granny3D
             var btnPresetMonstre = new Button
             {
                 Text = "Monstre",
-                Location = new Point(84, 386),
+                Location = new Point(84, 420),
                 Width = 74,
                 Height = 25,
                 BackColor = Color.FromArgb(60, 50, 75),
@@ -2144,7 +2158,7 @@ namespace UoFiddler.Plugin.Granny3D
             var btnResetCamera = new Button
             {
                 Text = "↺ Défaut",
-                Location = new Point(162, 386),
+                Location = new Point(162, 420),
                 Width = 76,
                 Height = 25,
                 BackColor = Color.FromArgb(60, 60, 62),
@@ -2158,7 +2172,7 @@ namespace UoFiddler.Plugin.Granny3D
             var btnSaveCamera = new Button
             {
                 Text = "💾 Sauver caméra…",
-                Location = new Point(8, 416),
+                Location = new Point(8, 450),
                 Width = 112,
                 Height = 26,
                 BackColor = Color.FromArgb(45, 60, 75),
@@ -2171,7 +2185,7 @@ namespace UoFiddler.Plugin.Granny3D
             var btnLoadCamera = new Button
             {
                 Text = "📂 Charger caméra…",
-                Location = new Point(124, 416),
+                Location = new Point(124, 450),
                 Width = 114,
                 Height = 26,
                 BackColor = Color.FromArgb(45, 60, 75),
@@ -2184,7 +2198,7 @@ namespace UoFiddler.Plugin.Granny3D
             var lblCamInfo = new Label
             {
                 Text = "Préréglages caméra & rendu UO",
-                Location = new Point(8, 448),
+                Location = new Point(8, 482),
                 Width = 230,
                 Height = 20,
                 ForeColor = Color.DarkGray,
@@ -2230,10 +2244,10 @@ namespace UoFiddler.Plugin.Granny3D
             ResumeLayout(false);
 
             // Initial splitter positions: restore the user's last layout if saved,
-            // otherwise sensible defaults (models column doubled 360 -> 720, etc.).
-            SetSplitterDistance(mainSplit, LayoutMainSplit > 0 ? LayoutMainSplit : 720);
-            SetSplitterDistance(leftSplit, LayoutLeftSplit > 0 ? LayoutLeftSplit : 430);
-            SetSplitterDistance(animSplit, LayoutAnimSplit > 0 ? LayoutAnimSplit : 190);
+            // otherwise sensible defaults (models column doubled 364 -> 728, animations 420 high).
+            SetSplitterDistance(mainSplit, LayoutMainSplit > 0 ? LayoutMainSplit : 728);
+            SetSplitterDistance(leftSplit, LayoutLeftSplit > 0 ? LayoutLeftSplit : 320);
+            SetSplitterDistance(animSplit, LayoutAnimSplit > 0 ? LayoutAnimSplit : 420);
 
             // Remember the layout when the user drags a splitter, and persist on close.
             mainSplit.SplitterMoved += (s, e) => LayoutMainSplit = mainSplit.SplitterDistance;
@@ -2241,6 +2255,54 @@ namespace UoFiddler.Plugin.Granny3D
             animSplit.SplitterMoved += (s, e) => LayoutAnimSplit = animSplit.SplitterDistance;
 
             LoadCategoryTree();
+        }
+
+        private bool _splittersConfigured;
+
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            if (Visible && !_splittersConfigured)
+            {
+                _splittersConfigured = true;
+                try { BeginInvoke((Action)(() => ApplySavedSplitters())); } catch { }
+            }
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (!_splittersConfigured && Width >= 800)
+            {
+                _splittersConfigured = true;
+                try { BeginInvoke((Action)(() => ApplySavedSplitters())); } catch { }
+            }
+        }
+
+        private void ApplySavedSplitters()
+        {
+            try
+            {
+                if (_mainSplit != null)
+                {
+                    int targetMain = LayoutMainSplit > 0 ? LayoutMainSplit : 728;
+                    if (targetMain < 550) targetMain = 728;
+                    SetSplitterDistance(_mainSplit, targetMain);
+                }
+                if (_leftSplit != null)
+                {
+                    int targetLeft = LayoutLeftSplit > 0 ? LayoutLeftSplit : 320;
+                    if (targetLeft > 380 || targetLeft < 180) targetLeft = 320;
+                    SetSplitterDistance(_leftSplit, targetLeft);
+                }
+                if (_animSplit != null)
+                {
+                    int targetAnim = LayoutAnimSplit > 0 ? LayoutAnimSplit : 420;
+                    if (targetAnim < 360) targetAnim = 420;
+                    SetSplitterDistance(_animSplit, targetAnim);
+                }
+            }
+            catch { }
         }
 
         private static void SetSplitterDistance(SplitContainer sc, int distance)
