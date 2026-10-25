@@ -19,13 +19,18 @@ namespace UoFiddler.Plugin.Granny3D
         public Vector2[] UVs { get; set; } = Array.Empty<Vector2>();
         public int[] Indices { get; set; } = Array.Empty<int>();
         public VertexInfluence[][] Skin { get; set; } = Array.Empty<VertexInfluence[]>();
+
+        // Bone attachment and cutout role (Version >= 2)
+        public string AttachBoneName { get; set; } = string.Empty;
+        public bool AttachInBindSpace { get; set; }
+        public MeshCutoutRole CutoutRole { get; set; } = MeshCutoutRole.Accessory;
     }
 
     public class GrannyModelFile
     {
         public const string Extension = ".char";
         static readonly byte[] Signature = Encoding.ASCII.GetBytes("UOCHAR\0"); // 7 bytes
-        const int Version = 1;
+        const int Version = 2;
 
         public string Name { get; set; } = string.Empty;
         public List<GrannyBone> Bones { get; set; } = new List<GrannyBone>();
@@ -130,6 +135,11 @@ namespace UoFiddler.Plugin.Granny3D
                             bw.Write(inf[k].Weight);
                         }
                     }
+
+                    // Bone attachment and cutout role (v2)
+                    WriteString(bw, part.AttachBoneName ?? string.Empty);
+                    bw.Write(part.AttachInBindSpace);
+                    bw.Write((int)part.CutoutRole);
                 }
 
                 return true;
@@ -159,7 +169,7 @@ namespace UoFiddler.Plugin.Granny3D
                     if (sig[i] != Signature[i]) return null;
 
                 int ver = br.ReadInt32();
-                if (ver != Version) return null;
+                if (ver != 1 && ver != 2) return null;
 
                 var model = new GrannyModelFile();
                 model.Name = ReadString(br);
@@ -229,6 +239,13 @@ namespace UoFiddler.Plugin.Granny3D
                             };
                         }
                         part.Skin[v] = inf;
+                    }
+
+                    if (ver >= 2)
+                    {
+                        part.AttachBoneName = ReadString(br);
+                        part.AttachInBindSpace = br.ReadBoolean();
+                        part.CutoutRole = (MeshCutoutRole)br.ReadInt32();
                     }
 
                     model.Parts.Add(part);
