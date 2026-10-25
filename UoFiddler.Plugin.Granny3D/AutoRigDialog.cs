@@ -45,6 +45,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblSkeletonName = null!;
         private string _customSkeletonPath = string.Empty;
         private string _customSkeletonName = string.Empty;
+        private bool _isInternalSkeletonSwitch = false;
         private NumericUpDown nudX = null!;
         private NumericUpDown nudY = null!;
         private NumericUpDown nudZ = null!;
@@ -176,7 +177,21 @@ namespace UoFiddler.Plugin.Granny3D
         {
             _currentModelPath = initialModelPath;
             _basePath = basePath ?? string.Empty;
-            _outFolder = !string.IsNullOrEmpty(initialOutFolder) ? initialOutFolder : Path.Combine(_basePath, "Others");
+            string othersFolder = Path.Combine(_basePath, "Others");
+            if (!Directory.Exists(othersFolder)) Directory.CreateDirectory(othersFolder);
+
+            // Redirige automatiquement vers Others si outFolder est vide ou pointe vers Meshs custom
+            if (string.IsNullOrEmpty(initialOutFolder) ||
+                initialOutFolder.IndexOf("Meshs custom", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                initialOutFolder.IndexOf("Mesh custom", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _outFolder = othersFolder;
+            }
+            else
+            {
+                _outFolder = initialOutFolder;
+            }
+
             _liveMeshes = liveMeshes;
             _activeSceneAnim = activeAnim;
             _activeSceneAnimPath = activeAnimPath;
@@ -192,12 +207,17 @@ namespace UoFiddler.Plugin.Granny3D
             LoadReferenceBones();
             PopulateTestAnimations();
 
-            // 1) If liveMeshes are present in UOFiddler's active scene, load them directly!
-            if (_liveMeshes != null && _liveMeshes.Count > 0 && _liveMeshes.Any(m => m.BaseVertices != null && m.BaseVertices.Length > 0))
+            // 1) Si initialModelPath est spécifié et est un fichier .char, charger prioritairement le modèle et son rig !
+            if (!string.IsNullOrEmpty(_currentModelPath) && Path.GetExtension(_currentModelPath).Equals(".char", StringComparison.OrdinalIgnoreCase) && File.Exists(_currentModelPath))
+            {
+                LoadModelFile(_currentModelPath);
+            }
+            // 2) Sinon si liveMeshes est présent dans la scène active d'UOFiddler, le charger directement
+            else if (_liveMeshes != null && _liveMeshes.Count > 0 && _liveMeshes.Any(m => m.BaseVertices != null && m.BaseVertices.Length > 0))
             {
                 LoadFromLiveMeshes(_liveMeshes);
             }
-            // 2) If no liveMeshes or if initialModelPath is specified and valid, load model file
+            // 3) Sinon charger le fichier spécifié
             else if (!string.IsNullOrEmpty(_currentModelPath) && File.Exists(_currentModelPath))
             {
                 LoadModelFile(_currentModelPath);
@@ -565,6 +585,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             rbMale.CheckedChanged += (s, e) =>
             {
+                if (_isInternalSkeletonSwitch) return;
                 if (rbMale.Checked)
                 {
                     lblSkeletonName.Text = "Squelette actif : Homme (H_Male_Lod2.grn)";
@@ -573,6 +594,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
             rbFemale.CheckedChanged += (s, e) =>
             {
+                if (_isInternalSkeletonSwitch) return;
                 if (rbFemale.Checked)
                 {
                     lblSkeletonName.Text = "Squelette actif : Femme (H_Female_Lod2.grn)";
@@ -581,6 +603,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
             rbCustom.CheckedChanged += (s, e) =>
             {
+                if (_isInternalSkeletonSwitch) return;
                 if (rbCustom.Checked)
                 {
                     if (string.IsNullOrEmpty(_customSkeletonPath) || !File.Exists(_customSkeletonPath))
@@ -666,7 +689,14 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (_liveOriginalBones != null && _liveOriginalBones.Count > 0)
                 {
-                    InitMarkersFromLiveBones(_liveOriginalBones);
+                    if (rbCustom.Checked)
+                    {
+                        InitializeMarkersFromCreatureBones(_liveOriginalBones);
+                    }
+                    else
+                    {
+                        InitMarkersFromLiveBones(_liveOriginalBones);
+                    }
                     EnsurePreviewModel();
                     glControl.Invalidate();
                 }
@@ -805,7 +835,24 @@ namespace UoFiddler.Plugin.Granny3D
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 9F, FontStyle.Regular)
             };
-            btnResetPose.Click += (s, e) => { InitializeDefaultMarkers(); UpdateNudValues(); EnsurePreviewModel(); glControl.Invalidate(); };
+            btnResetPose.Click += (s, e) =>
+            {
+                if (rbCustom.Checked && _refBones != null && _refBones.Count > 0)
+                {
+                    InitializeMarkersFromCreatureBones(_refBones);
+                }
+                else
+                {
+                    InitializeDefaultMarkers();
+                    if (_refBones != null && _refBones.Count > 0)
+                    {
+                        InitMarkersFromLiveBones(_refBones);
+                    }
+                }
+                UpdateNudValues();
+                EnsurePreviewModel();
+                glControl.Invalidate();
+            };
 
             grpMarkers.Controls.Add(btnResetPose);
             grpMarkers.Controls.Add(lblRotTip);
@@ -1578,17 +1625,213 @@ namespace UoFiddler.Plugin.Granny3D
             };
         }
 
+        private string? FindMatchingCreatureReference(List<GrannyBone> bones, string? modelPathHint, out string displayName)
+        {
+            displayName = "Créature";
+            if (bones == null || bones.Count == 0) return null;
+
+            string baseDir = !string.IsNullOrEmpty(_basePath) ? _basePath : Granny3DControl.BasePath;
+            string[] creatureFolders = new[] { "Animals", "Monsters", "SeaCreatures" };
+
+            var boneNameSet = new HashSet<string>(bones.Select(b => b.Name), StringComparer.OrdinalIgnoreCase);
+
+            // 1. Détection directe si un os a le nom master_<créature>
+            foreach (var b in bones)
+            {
+                if (b.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase))
+                {
+                    string clue = b.Name.Substring("master_".Length).Replace("_", "");
+                    foreach (var folder in creatureFolders)
+                    {
+                        string p = Path.Combine(baseDir, folder);
+                        if (!Directory.Exists(p)) continue;
+                        foreach (var f in Directory.GetFiles(p, "*_Lod2.grn"))
+                        {
+                            string fnClean = Path.GetFileNameWithoutExtension(f).Replace("_Lod2", "").Replace("_lod2", "").Replace("_", "");
+                            if (fnClean.IndexOf(clue, StringComparison.OrdinalIgnoreCase) >= 0 || clue.IndexOf(fnClean, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                var parser = new GrannyFormatParser();
+                                if (parser.Load(f) && parser.Bones.Count == bones.Count)
+                                {
+                                    displayName = Path.GetFileNameWithoutExtension(f).Replace("_Lod2", "").Replace("_lod2", "");
+                                    return f;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Détection directe pour les équidés / chevaux
+            if (bones.Any(b => b.Name.IndexOf("HorseLink", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                (!string.IsNullOrEmpty(modelPathHint) && (modelPathHint.IndexOf("horse", StringComparison.OrdinalIgnoreCase) >= 0 || modelPathHint.IndexOf("cheval", StringComparison.OrdinalIgnoreCase) >= 0)))
+            {
+                string horseCandidate = Path.Combine(baseDir, "Animals", "Equines_Horse_Dappled_Brown_Lod2.grn");
+                if (File.Exists(horseCandidate))
+                {
+                    displayName = "Equines_Horse";
+                    return horseCandidate;
+                }
+            }
+
+            // 3. Recherche dans les dossiers de créatures par nombre d'os et correspondance des noms
+            string? bestMatch = null;
+            int bestMatchedBoneNames = 0;
+            string bestDisplayName = "Créature";
+
+            foreach (var folder in creatureFolders)
+            {
+                string p = Path.Combine(baseDir, folder);
+                if (!Directory.Exists(p)) continue;
+
+                foreach (var f in Directory.GetFiles(p, "*_Lod2.grn"))
+                {
+                    var parser = new GrannyFormatParser();
+                    if (parser.Load(f) && parser.Bones.Count == bones.Count)
+                    {
+                        int matchCount = parser.Bones.Count(pb => boneNameSet.Contains(pb.Name));
+                        if (matchCount > bestMatchedBoneNames && matchCount >= (bones.Count / 2))
+                        {
+                            bestMatchedBoneNames = matchCount;
+                            bestMatch = f;
+                            bestDisplayName = Path.GetFileNameWithoutExtension(f).Replace("_Lod2", "").Replace("_lod2", "");
+                            if (matchCount == bones.Count) break;
+                        }
+                    }
+                }
+                if (bestMatchedBoneNames == bones.Count) break;
+            }
+
+            if (bestMatch != null)
+            {
+                displayName = bestDisplayName;
+                return bestMatch;
+            }
+
+            return null;
+        }
+
+        private void ApplyExistingRig(List<GrannyBone> bones, string? modelPathHint = null)
+        {
+            if (bones == null || bones.Count == 0) return;
+
+            for (int i = 0; i < bones.Count; i++) bones[i].Id = i;
+            _liveOriginalBones = new List<GrannyBone>(bones);
+
+            // Est-ce un squelette bipède humain classique (43 os ou doigts humains) ?
+            bool isHumanBiped = (bones.Count == 43 || (bones.Count >= 20 && bones.Any(b => b.Name.IndexOf("Finger1", StringComparison.OrdinalIgnoreCase) >= 0))) &&
+                                bones.Any(b => b.Name.IndexOf("Bip01", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            if (isHumanBiped)
+            {
+                bool isFemale = (!string.IsNullOrEmpty(modelPathHint) && modelPathHint.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                                bones.Any(b => b.Name.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                string maleRef = Path.Combine(_basePath, "Humans", "H_Male_Lod2.grn");
+                string femaleRef = Path.Combine(_basePath, "Humans", "H_Female_Lod2.grn");
+                if (!File.Exists(maleRef)) maleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Male_Lod2.grn");
+                if (!File.Exists(femaleRef)) femaleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Female_Lod2.grn");
+
+                _refPath = isFemale && File.Exists(femaleRef) ? femaleRef : maleRef;
+                _isInternalSkeletonSwitch = true;
+                try
+                {
+                    if (isFemale) rbFemale.Checked = true;
+                    else rbMale.Checked = true;
+                    lblSkeletonName.Text = $"Squelette actif : {(isFemale ? "Femme" : "Homme")} ({bones.Count} os)";
+                }
+                finally
+                {
+                    _isInternalSkeletonSwitch = false;
+                }
+
+                LoadReferenceBones();
+                InitializeDefaultMarkers();
+                InitMarkersFromLiveBones(bones);
+            }
+            else
+            {
+                // Squelette de créature (Cheval, Animal, Monstre, Créature marine, Custom...)
+                string? matchedRef = FindMatchingCreatureReference(bones, modelPathHint, out string creatureName);
+                if (!string.IsNullOrEmpty(matchedRef) && File.Exists(matchedRef))
+                {
+                    _refPath = matchedRef;
+                    _customSkeletonPath = matchedRef;
+                    _customSkeletonName = creatureName;
+                    LoadReferenceBones();
+                }
+                else
+                {
+                    _refPath = modelPathHint ?? string.Empty;
+                    _customSkeletonPath = _refPath;
+                    _customSkeletonName = !string.IsNullOrEmpty(modelPathHint) ? Path.GetFileNameWithoutExtension(modelPathHint) : "Créature";
+                    _refBones = new List<GrannyBone>(bones);
+                }
+
+                _isInternalSkeletonSwitch = true;
+                try
+                {
+                    rbCustom.Checked = true;
+                    rbCustom.Text = $"Créature : {_customSkeletonName}";
+                    lblSkeletonName.Text = $"Squelette actif : {_customSkeletonName} ({bones.Count} os)";
+                }
+                finally
+                {
+                    _isInternalSkeletonSwitch = false;
+                }
+
+                InitializeMarkersFromCreatureBones(bones);
+            }
+
+            if (_previewModel == null)
+            {
+                _previewModel = new GrannyModelFile
+                {
+                    Name = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetFileNameWithoutExtension(_currentModelPath) : "CustomRigModel",
+                    Bones = new List<GrannyBone>()
+                };
+            }
+            _previewModel.Bones = new List<GrannyBone>();
+            for (int i = 0; i < bones.Count; i++)
+            {
+                var b = bones[i];
+                _previewModel.Bones.Add(new GrannyBone
+                {
+                    Id = i,
+                    ParentId = b.ParentId,
+                    Name = b.Name,
+                    LocalPosition = b.LocalPosition,
+                    LocalRotation = b.LocalRotation,
+                    InverseBindMatrix = b.InverseBindMatrix
+                });
+            }
+
+            PopulateTestAnimations();
+        }
+
         private void LoadReferenceBones()
         {
             try
             {
                 if (File.Exists(_refPath))
                 {
-                    var parser = new GrannyFormatParser();
-                    if (parser.Load(_refPath) && parser.Bones.Count > 0)
+                    if (_refPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
                     {
-                        _refBones = new List<GrannyBone>(parser.Bones);
-                        return;
+                        var charModel = GrannyModelFile.Load(_refPath);
+                        if (charModel?.Bones != null && charModel.Bones.Count > 0)
+                        {
+                            _refBones = new List<GrannyBone>(charModel.Bones);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        var parser = new GrannyFormatParser();
+                        if (parser.Load(_refPath) && parser.Bones.Count > 0)
+                        {
+                            _refBones = new List<GrannyBone>(parser.Bones);
+                            return;
+                        }
                     }
                 }
             }
@@ -1663,7 +1906,7 @@ namespace UoFiddler.Plugin.Granny3D
             var animFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (!string.IsNullOrEmpty(_outFolder) && Directory.Exists(_outFolder)) animFolders.Add(_outFolder);
             string othersDir = Path.Combine(_basePath, "Others");
-            if (!Directory.Exists(othersDir)) othersDir = @"d:\Games\sphere\PROGRAMMESD_UO\Models\Others";
+            if (!Directory.Exists(othersDir)) othersDir = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Others";
             if (Directory.Exists(othersDir)) animFolders.Add(othersDir);
             if (!string.IsNullOrEmpty(_currentModelPath))
             {
@@ -1692,7 +1935,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (rbFemale.Checked || rbMale.Checked)
             {
                 string humansDir = Path.Combine(_basePath, "Humans");
-                if (!Directory.Exists(humansDir)) humansDir = @"d:\Games\sphere\PROGRAMMES D_UO\Models\Humans";
+                if (!Directory.Exists(humansDir)) humansDir = @"d:\Games\sphere\PROGRAMMES\3D_UO\Models\Humans";
 
                 if (Directory.Exists(humansDir))
                 {
@@ -1725,10 +1968,22 @@ namespace UoFiddler.Plugin.Granny3D
             else
             {
                 // Custom creature animations (e.g. Centaurs_centaur, Monsters, Animals, etc.)
-                string creatureFolder = Path.GetDirectoryName(_refPath) ?? string.Empty;
+                string creatureFolder = string.Empty;
+                string refFn = string.Empty;
+
+                if (!string.IsNullOrEmpty(_customSkeletonPath) && File.Exists(_customSkeletonPath) && !_customSkeletonPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+                {
+                    creatureFolder = Path.GetDirectoryName(_customSkeletonPath) ?? string.Empty;
+                    refFn = Path.GetFileNameWithoutExtension(_customSkeletonPath);
+                }
+                else if (!string.IsNullOrEmpty(_refPath) && File.Exists(_refPath) && !_refPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+                {
+                    creatureFolder = Path.GetDirectoryName(_refPath) ?? string.Empty;
+                    refFn = Path.GetFileNameWithoutExtension(_refPath);
+                }
+
                 if (!string.IsNullOrEmpty(creatureFolder) && Directory.Exists(creatureFolder))
                 {
-                    string refFn = Path.GetFileNameWithoutExtension(_refPath);
                     string cleanName = refFn;
                     int lodPos = cleanName.IndexOf("_Lod", StringComparison.OrdinalIgnoreCase);
                     if (lodPos < 0) lodPos = cleanName.IndexOf("_lod", StringComparison.OrdinalIgnoreCase);
@@ -2852,8 +3107,15 @@ namespace UoFiddler.Plugin.Granny3D
                 _liveMeshes = meshes;
                 _rawParts.Clear();
 
-                if (_refBones == null || _refBones.Count == 0)
+                var meshWithBones = meshes.OrderByDescending(m => m.Bones?.Count ?? 0).FirstOrDefault(m => m.Bones != null && m.Bones.Count > 0);
+                if (meshWithBones != null && meshWithBones.Bones.Count > 0)
+                {
+                    ApplyExistingRig(meshWithBones.Bones, _currentModelPath);
+                }
+                else if (_refBones == null || _refBones.Count == 0)
+                {
                     LoadReferenceBones();
+                }
 
                 int totalVerts = 0;
                 int totalFaces = 0;
@@ -2957,21 +3219,17 @@ namespace UoFiddler.Plugin.Granny3D
 
                 RebakeModelTransform();
 
-                var meshWithBones = meshes.OrderByDescending(m => m.Bones?.Count ?? 0).FirstOrDefault(m => m.Bones != null && m.Bones.Count > 0);
-                if (meshWithBones != null && meshWithBones.Bones.Count > 0)
+                if (meshWithBones == null)
                 {
-                    for (int i = 0; i < meshWithBones.Bones.Count; i++) meshWithBones.Bones[i].Id = i;
-                    _liveOriginalBones = new List<GrannyBone>(meshWithBones.Bones);
-                    InitMarkersFromLiveBones(meshWithBones.Bones);
-                }
-                else if (_refBones != null && _refBones.Count > 0)
-                {
-                    _liveOriginalBones = new List<GrannyBone>(_refBones);
-                    InitMarkersFromLiveBones(_refBones);
-                }
-                else
-                {
-                    AutoPlaceMixamoLandmarks();
+                    if (_refBones != null && _refBones.Count > 0)
+                    {
+                        _liveOriginalBones = new List<GrannyBone>(_refBones);
+                        InitMarkersFromLiveBones(_refBones);
+                    }
+                    else
+                    {
+                        AutoPlaceMixamoLandmarks();
+                    }
                 }
 
                 EnsurePreviewModel();
@@ -2991,11 +3249,6 @@ namespace UoFiddler.Plugin.Granny3D
                 _currentModelPath = filePath;
                 string fn = Path.GetFileName(filePath);
                 string ext = Path.GetExtension(filePath).ToLowerInvariant();
-
-                if (fn.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
-                    rbFemale.Checked = true;
-                else
-                    rbMale.Checked = true;
 
                 // 1) Is it a .char file?
                 if (ext == ".char")
@@ -3040,11 +3293,16 @@ namespace UoFiddler.Plugin.Granny3D
                         RebakeModelTransform();
                         if (model.Bones != null && model.Bones.Count > 0)
                         {
-                            _liveOriginalBones = new List<GrannyBone>(model.Bones);
-                            InitMarkersFromLiveBones(model.Bones);
+                            ApplyExistingRig(model.Bones, filePath);
                         }
                         else
                         {
+                            _isInternalSkeletonSwitch = true;
+                            if (fn.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
+                                rbFemale.Checked = true;
+                            else
+                                rbMale.Checked = true;
+                            _isInternalSkeletonSwitch = false;
                             AutoPlaceMixamoLandmarks();
                         }
                         EnsurePreviewModel();
@@ -3060,8 +3318,14 @@ namespace UoFiddler.Plugin.Granny3D
                     var parser = new GrannyFormatParser();
                     if (parser.Load(filePath) && parser.Meshes.Count > 0)
                     {
-                        if (_refBones == null || _refBones.Count == 0)
+                        if (parser.Bones != null && parser.Bones.Count > 0)
+                        {
+                            ApplyExistingRig(parser.Bones, filePath);
+                        }
+                        else if (_refBones == null || _refBones.Count == 0)
+                        {
                             LoadReferenceBones();
+                        }
 
                         var boneRemap = new Dictionary<int, int>();
                         if (parser.Bones != null && parser.Bones.Count > 0 && _refBones != null)
@@ -3148,13 +3412,14 @@ namespace UoFiddler.Plugin.Granny3D
                         }
 
                         RebakeModelTransform();
-                        if (_previewModel.Bones != null && _previewModel.Bones.Count > 0)
+                        if (_previewModel.Bones == null || _previewModel.Bones.Count == 0)
                         {
-                            _liveOriginalBones = new List<GrannyBone>(_previewModel.Bones);
-                            InitMarkersFromLiveBones(_previewModel.Bones);
-                        }
-                        else
-                        {
+                            _isInternalSkeletonSwitch = true;
+                            if (fn.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
+                                rbFemale.Checked = true;
+                            else
+                                rbMale.Checked = true;
+                            _isInternalSkeletonSwitch = false;
                             AutoPlaceMixamoLandmarks();
                         }
                         EnsurePreviewModel();
@@ -3253,12 +3518,17 @@ namespace UoFiddler.Plugin.Granny3D
                         RebakeModelTransform();
                         if (hasBones && importedModel.Bones != null && importedModel.Bones.Count > 0)
                         {
-                            _liveOriginalBones = new List<GrannyBone>(importedModel.Bones);
-                            InitMarkersFromLiveBones(importedModel.Bones);
+                            ApplyExistingRig(importedModel.Bones, filePath);
                         }
                         else
                         {
                             _liveOriginalBones = null;
+                            _isInternalSkeletonSwitch = true;
+                            if (fn.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
+                                rbFemale.Checked = true;
+                            else
+                                rbMale.Checked = true;
+                            _isInternalSkeletonSwitch = false;
                             AutoPlaceMixamoLandmarks();
                         }
                         EnsurePreviewModel();
@@ -3456,6 +3726,12 @@ namespace UoFiddler.Plugin.Granny3D
                 RebakeModelTransform();
                 AutoCenterAndGround();
                 AutoScaleToSkeleton();
+                _isInternalSkeletonSwitch = true;
+                if (fn.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
+                    rbFemale.Checked = true;
+                else
+                    rbMale.Checked = true;
+                _isInternalSkeletonSwitch = false;
                 AutoPlaceMixamoLandmarks();
                 EnsurePreviewModel();
                 PopulateTestAnimations();
@@ -3717,6 +3993,15 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     MessageBox.Show("Erreur lors de la génération du rig : " + (err ?? "inconnue"), "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
+                }
+
+                string othersFolder = Path.Combine(_basePath, "Others");
+                if (!Directory.Exists(othersFolder)) Directory.CreateDirectory(othersFolder);
+                if (string.IsNullOrEmpty(_outFolder) ||
+                    _outFolder.IndexOf("Meshs custom", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    _outFolder.IndexOf("Mesh custom", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _outFolder = othersFolder;
                 }
 
                 if (!Directory.Exists(_outFolder)) Directory.CreateDirectory(_outFolder);

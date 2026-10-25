@@ -3164,8 +3164,10 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
 
-                if (string.IsNullOrEmpty(outFolder))
-                    outFolder = Path.Combine(BasePath, "Others");
+                string othersFolder = Path.Combine(BasePath, "Others");
+                if (!Directory.Exists(othersFolder)) Directory.CreateDirectory(othersFolder);
+                // Tout personnage ou rig (.char) doit être enregistré automatiquement dans "Others"
+                outFolder = othersFolder;
 
                 // Pass BOTH sourceFile AND active _loadedMeshes, as well as current active animation, so AutoRigDialog has full context
                 using var dlg = new AutoRigDialog(sourceFile, BasePath, outFolder, _loadedMeshes, _currentAnimation, _currentAnimPath);
