@@ -1,0 +1,4 @@
+Total keys in code: 191
+Keys in code missing in fr.json: 0
+
+Keys in code missing in en.json: 0

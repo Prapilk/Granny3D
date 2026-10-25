@@ -370,6 +370,12 @@ namespace UoFiddler.Plugin.Granny3D
                         {
                             if (int.TryParse(trim.Substring(10).Trim(), out int v)) LayoutAnimSplit = v;
                         }
+                        else if (trim.StartsWith("Language=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string lang = trim.Substring(9).Trim();
+                            if (!string.IsNullOrEmpty(lang))
+                                Localization.SetLanguage(lang);
+                        }
                     }
                 }
             }
@@ -411,6 +417,7 @@ namespace UoFiddler.Plugin.Granny3D
                 File.WriteAllLines(file, new[]
                 {
                     "BasePath=" + BasePath,
+                    "Language=" + Localization.CurrentLanguage,
                     "MainSplit=" + LayoutMainSplit,
                     "LeftSplit=" + LayoutLeftSplit,
                     "AnimSplit=" + LayoutAnimSplit
@@ -590,6 +597,8 @@ namespace UoFiddler.Plugin.Granny3D
         private GroupBox grpCamera;
         private Label lblCharInfo;
         private ComboBox cbCharFace, cbCharHair, cbCharBeard, cbCharTorso, cbCharSkin;
+        private Button btnSaveChar, btnLoadChar, btnResetChar, btnExportCharFile;
+        private Button btnPresetPerso, btnPresetMonstre, btnResetCamera, btnSaveCamera, btnLoadCamera;
         private bool _suppressChar;
         private int _charGender;           // 0=none, 1=male, 2=female
         private string _skinOverride;      // body-skin texture base name (e.g. "UT256_H_Male_V2c"); null = embedded default
@@ -627,6 +636,12 @@ namespace UoFiddler.Plugin.Granny3D
         private Label lblBasePath;
         private Button btnSelectBasePath;
         private Button btnReloadBasePath;
+        private ComboBox cmbLanguage;
+        private GroupBox grpInfo;
+        private GroupBox grpHue;
+        private GroupBox grpPlayback;
+        private TabPage tabEquipment;
+        private TabPage tabPose;
         private ToolTip _toolTip;
 
         // UI - Hue selection (hues.mul)
@@ -1065,9 +1080,9 @@ namespace UoFiddler.Plugin.Granny3D
             // ---- Playback panel (bottom of right column) ----
             var pnlRightBottom = new Panel { Dock = DockStyle.Bottom, Height = 655, Padding = new Padding(0, 6, 0, 0) };
 
-            var grpPlayback = new GroupBox
+            grpPlayback = new GroupBox
             {
-                Text = "Playback Controls",
+                Text = Localization.Tr("grp_playback", "Contrôle Animation"),
                 Dock = DockStyle.Left,
                 Width = 250,
                 ForeColor = Color.Gainsboro,
@@ -1169,9 +1184,9 @@ namespace UoFiddler.Plugin.Granny3D
             pnlBottomSplit.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52f));
             pnlBottomSplit.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
-            var grpInfo = new GroupBox
+            grpInfo = new GroupBox
             {
-                Text = "Informations Modèle & Répertoire",
+                Text = Localization.Tr("grp_info", "Informations Modèle & Répertoire"),
                 Dock = DockStyle.Fill,
                 ForeColor = Color.Gainsboro,
                 Padding = new Padding(6)
@@ -1195,7 +1210,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             btnSelectBasePath = new Button
             {
-                Text = "📁 Dossier UO 3D...",
+                Text = Localization.Tr("btn_uo_folder", "📁 Dossier UO 3D..."),
                 Location = new Point(8, 76),
                 Width = 140,
                 Height = 24,
@@ -1207,7 +1222,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             btnReloadBasePath = new Button
             {
-                Text = "🔄 Recharger",
+                Text = Localization.Tr("btn_reload", "🔄 Recharger"),
                 Location = new Point(154, 76),
                 Width = 95,
                 Height = 24,
@@ -1221,11 +1236,35 @@ namespace UoFiddler.Plugin.Granny3D
                 Log("Rechargement des modèles et animations terminé.");
             };
 
-            grpInfo.Controls.AddRange(new Control[] { lblModelInfo, lblBasePath, btnSelectBasePath, btnReloadBasePath });
-
-            var grpHue = new GroupBox
+            cmbLanguage = new ComboBox
             {
-                Text = "Teintes & Couleurs (hues.mul)",
+                Location = new Point(255, 76),
+                Width = 110,
+                Height = 24,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(32, 32, 36),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular)
+            };
+            cmbLanguage.Items.Add("🇫🇷 Français");
+            cmbLanguage.Items.Add("🇬🇧 English");
+            cmbLanguage.SelectedIndex = string.Equals(Localization.CurrentLanguage, "en", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            cmbLanguage.SelectedIndexChanged += (s, e) =>
+            {
+                string chosen = cmbLanguage.SelectedIndex == 1 ? "en" : "fr";
+                if (!string.Equals(Localization.CurrentLanguage, chosen, StringComparison.OrdinalIgnoreCase))
+                {
+                    Localization.SetLanguage(chosen);
+                    SaveSettings();
+                }
+            };
+
+            grpInfo.Controls.AddRange(new Control[] { lblModelInfo, lblBasePath, btnSelectBasePath, btnReloadBasePath, cmbLanguage });
+
+            grpHue = new GroupBox
+            {
+                Text = Localization.Tr("grp_hue", "Teintes & Couleurs (hues.mul)"),
                 Dock = DockStyle.Fill,
                 ForeColor = Color.Gainsboro,
                 Padding = new Padding(6)
@@ -1372,9 +1411,9 @@ namespace UoFiddler.Plugin.Granny3D
             pnlBottomSplit.Controls.Add(grpHue, 1, 0);
 
             // ---- Equipment controller: mirror / rotation / offset for an attached item ----
-            var grpEquip = new GroupBox
+            grpEquip = new GroupBox
             {
-                Text = "Équipement (attache) — placement",
+                Text = Localization.Tr("grp_equip_adjust", "Ajustements & Retouches"),
                 Dock = DockStyle.Fill,
                 ForeColor = Color.Gainsboro,
                 Padding = new Padding(8)
@@ -1662,8 +1701,8 @@ namespace UoFiddler.Plugin.Granny3D
             // ---- Split the old "Équipement" panel into two tabs: equipment placement
             // | character pose/displacement (pose studio for non T-pose imports) ----
             tabEquip = new TabControl { Dock = DockStyle.Fill };
-            var tabEquipment = new TabPage("Équipement (attache)") { BackColor = Color.FromArgb(45, 45, 48) };
-            var tabPose = new TabPage("Personnage (déplacement / pose)") { BackColor = Color.FromArgb(45, 45, 48), AutoScroll = true };
+            tabEquipment = new TabPage(Localization.Tr("tab_equipment", "Équipement (attache)")) { BackColor = Color.FromArgb(45, 45, 48) };
+            tabPose = new TabPage(Localization.Tr("tab_pose", "Personnage (déplacement / pose)")) { BackColor = Color.FromArgb(45, 45, 48), AutoScroll = true };
             tabEquipment.Controls.Add(grpEquip);   // grpEquip already Dock=Fill
 
             // ============================================================================
@@ -1985,9 +2024,9 @@ namespace UoFiddler.Plugin.Granny3D
             cbCharSkin = MakeSlotCombo(252);
             cbCharSkin.SelectedIndexChanged += CharSkin_Changed;
             // Multipart character preset buttons (Save / Load / Reset / Unified .char export)
-            var btnSaveChar = new Button
+            btnSaveChar = new Button
             {
-                Text = "💾 Sauver personnage…",
+                Text = Localization.Tr("btn_char_save", "💾 Sauver personnage…"),
                 Location = new Point(8, 286),
                 Width = 232,
                 Height = 28,
@@ -1997,9 +2036,9 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnSaveChar.Click += (s, e) => SaveCharacterPresetDialog();
 
-            var btnLoadChar = new Button
+            btnLoadChar = new Button
             {
-                Text = "📂 Charger personnage…",
+                Text = Localization.Tr("btn_char_load", "📂 Charger personnage…"),
                 Location = new Point(8, 318),
                 Width = 232,
                 Height = 28,
@@ -2009,9 +2048,9 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnLoadChar.Click += (s, e) => LoadCharacterPresetDialog();
 
-            var btnResetChar = new Button
+            btnResetChar = new Button
             {
-                Text = "↺ Réinitialiser personnage",
+                Text = Localization.Tr("btn_char_reset", "↺ Réinitialiser personnage"),
                 Location = new Point(8, 350),
                 Width = 232,
                 Height = 26,
@@ -2021,9 +2060,9 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnResetChar.Click += (s, e) => ResetCharacterToDefault();
 
-            var btnExportCharFile = new Button
+            btnExportCharFile = new Button
             {
-                Text = "📦 Exporter en .char unifié…",
+                Text = Localization.Tr("btn_char_export", "📦 Exporter en .char unifié…"),
                 Location = new Point(8, 380),
                 Width = 232,
                 Height = 28,
@@ -2129,9 +2168,9 @@ namespace UoFiddler.Plugin.Granny3D
             nudUoRefOpacity.ValueChanged += (s, e) => { _uoRefOpacity = (float)nudUoRefOpacity.Value / 100f; if (glControl != null) glControl.Invalidate(); };
 
             // Camera Quick Presets (Perso / Monstre / Défaut)
-            var btnPresetPerso = new Button
+            btnPresetPerso = new Button
             {
-                Text = "Perso",
+                Text = Localization.Tr("btn_cam_char", "Perso"),
                 Location = new Point(8, 420),
                 Width = 72,
                 Height = 25,
@@ -2142,9 +2181,9 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnPresetPerso.Click += (s, e) => ApplyCameraPreset(new UoCameraPreset { Zoom = 0.27f, ElevationDeg = 26.565f, VertScale = 1.0f, Brightness = 0.8f, FeetOnLine = true, OffX = 0f, OffY = -0.080f, YawOffsetDeg = 180f, GlobalZoom = 1.0f });
 
-            var btnPresetMonstre = new Button
+            btnPresetMonstre = new Button
             {
-                Text = "Monstre",
+                Text = Localization.Tr("btn_cam_monster", "Monstre"),
                 Location = new Point(84, 420),
                 Width = 74,
                 Height = 25,
@@ -2155,9 +2194,9 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnPresetMonstre.Click += (s, e) => ApplyCameraPreset(new UoCameraPreset { Zoom = 0.18f, ElevationDeg = 26.565f, VertScale = 1.0f, Brightness = 0.8f, FeetOnLine = true, OffX = 0f, OffY = -0.050f, YawOffsetDeg = 180f, GlobalZoom = 1.0f });
 
-            var btnResetCamera = new Button
+            btnResetCamera = new Button
             {
-                Text = "↺ Défaut",
+                Text = Localization.Tr("btn_cam_default", "↺ Défaut"),
                 Location = new Point(162, 420),
                 Width = 76,
                 Height = 25,
@@ -2169,9 +2208,9 @@ namespace UoFiddler.Plugin.Granny3D
             btnResetCamera.Click += (s, e) => ApplyCameraPreset(new UoCameraPreset());
 
             // Camera Save / Load buttons
-            var btnSaveCamera = new Button
+            btnSaveCamera = new Button
             {
-                Text = "💾 Sauver caméra…",
+                Text = Localization.Tr("btn_cam_save", "💾 Sauver caméra…"),
                 Location = new Point(8, 450),
                 Width = 112,
                 Height = 26,
@@ -2182,9 +2221,9 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnSaveCamera.Click += (s, e) => SaveCameraPresetDialog();
 
-            var btnLoadCamera = new Button
+            btnLoadCamera = new Button
             {
-                Text = "📂 Charger caméra…",
+                Text = Localization.Tr("btn_cam_load", "📂 Charger caméra…"),
                 Location = new Point(124, 450),
                 Width = 114,
                 Height = 26,
@@ -2255,6 +2294,89 @@ namespace UoFiddler.Plugin.Granny3D
             animSplit.SplitterMoved += (s, e) => LayoutAnimSplit = animSplit.SplitterDistance;
 
             LoadCategoryTree();
+            Localization.LanguageChanged += UpdateUILanguage;
+            UpdateUILanguage();
+        }
+
+        private void UpdateUILanguage()
+        {
+            if (grpInfo != null) grpInfo.Text = Localization.Tr("grp_info", "Informations Modèle & Répertoire");
+            if (btnSelectBasePath != null) btnSelectBasePath.Text = Localization.Tr("btn_uo_folder", "📁 Dossier UO 3D...");
+            if (btnReloadBasePath != null) btnReloadBasePath.Text = Localization.Tr("btn_reload", "🔄 Recharger");
+            if (grpHue != null) grpHue.Text = Localization.Tr("grp_hue", "Teintes & Couleurs (hues.mul)");
+            if (btnPickHue != null) btnPickHue.Text = Localization.Tr("btn_pick_hue", "Palette...");
+            if (chkPartialHue != null) chkPartialHue.Text = Localization.Tr("chk_partial_hue", "Partial hue");
+            if (chkDesaturate != null) chkDesaturate.Text = Localization.Tr("chk_desaturate", "Désaturer");
+            if (btnResetHue != null) btnResetHue.Text = Localization.Tr("btn_reset_hue", "Reset");
+            if (grpPlayback != null) grpPlayback.Text = Localization.Tr("grp_playback", "Contrôle Animation");
+            if (btnPlay != null) btnPlay.Text = Localization.Tr("btn_play", "Play");
+            if (btnPause != null) btnPause.Text = Localization.Tr("btn_pause", "Pause");
+            if (btnStop != null) btnStop.Text = Localization.Tr("btn_stop", "Stop");
+            if (chkLoop != null) chkLoop.Text = Localization.Tr("chk_loop", "Loop");
+            if (btnExportVd != null) btnExportVd.Text = Localization.Tr("btn_export_vd", "Exporter en .vd (mapping)");
+            if (btnExportCutout != null) btnExportCutout.Text = Localization.Tr("btn_export_cutout", "Exporter cutout (corps)");
+            if (btnExportCutoutAcc != null) btnExportCutoutAcc.Text = Localization.Tr("btn_export_cutout_acc", "cutout accessoire");
+            if (grpAnimations != null) grpAnimations.Text = Localization.Tr("grp_animations", "Animations UO 3D");
+            if (btnTPose != null) btnTPose.Text = Localization.Tr("btn_tpose", "T-Pose");
+            if (btnImportAnim != null) btnImportAnim.Text = Localization.Tr("btn_import_anim", "Importer Action (.anim)...");
+            if (btnApplyMixamo != null) btnApplyMixamo.Text = Localization.Tr("btn_auto_rig", "⚡ Convert/create rig to UO…");
+            if (grpLoaded != null) grpLoaded.Text = Localization.Tr("grp_loaded", "Meshes & Sous-objets affichés");
+            if (btnAttach != null) btnAttach.Text = Localization.Tr("btn_attach", "Attacher...");
+            if (btnImportMesh != null) btnImportMesh.Text = Localization.Tr("btn_import_mesh", "Importer Mesh (.grn)...");
+            if (btnImportModel != null) btnImportModel.Text = Localization.Tr("btn_import_model", "Charger Modèle (.grn)...");
+            if (tabEquipment != null) tabEquipment.Text = Localization.Tr("tab_equipment", "Équipement (attache)");
+            if (tabPose != null) tabPose.Text = Localization.Tr("tab_pose", "Personnage (déplacement / pose)");
+            if (grpCamera != null) grpCamera.Text = Localization.Tr("grp_camera", "Caméra (rendu UO)");
+            if (chkUoView != null) chkUoView.Text = Localization.Tr("chk_uo_view", "Afficher le rendu UO");
+            if (chkUoFeet != null) chkUoFeet.Text = Localization.Tr("chk_uo_feet", "Pieds sur la ligne rouge");
+            if (chkUoRef != null) chkUoRef.Text = Localization.Tr("chk_uo_ref", "Réf. c_man (superposée)");
+            if (grpChar != null) grpChar.Text = Localization.Tr("grp_char", "Personnage (multipartie)");
+            if (grpEquip != null) grpEquip.Text = Localization.Tr("grp_equip_adjust", "Ajustements & Retouches");
+            if (chkCloth != null) chkCloth.Text = Localization.Tr("chk_cloth_sim", "Tissu (simulation)");
+            if (chkShowColliders != null) chkShowColliders.Text = Localization.Tr("chk_colliders", "Colliders");
+            if (chkShowBones != null) chkShowBones.Text = Localization.Tr("chk_skeleton", "Squelette");
+            if (chkClothHeatmap != null) chkClothHeatmap.Text = Localization.Tr("chk_cloth_zones", "Zones Tissu");
+            if (btnSkinWrap != null) btnSkinWrap.Text = Localization.Tr("btn_skin_wrap", "Skin wrap (copier la peau du corps)");
+            if (_btnPushOutBody != null) _btnPushOutBody.Text = Localization.Tr("btn_push_out", "Repousser hors du corps (mesh-mesh)");
+            if (_btnShrinkSew != null) _btnShrinkSew.Text = Localization.Tr("btn_shrink_sew", "Rétrécir / Coudre (Shrink/Sew)");
+            if (btnBakeModifs != null) btnBakeModifs.Text = Localization.Tr("btn_freeze_save", "💾 Figer & Enregistrer les modifications");
+            if (btnDuplicateMirror != null) btnDuplicateMirror.Text = Localization.Tr("btn_duplicate_mirror", "Dupliquer en miroir (D ↔ G)");
+            if (btnSubdiv != null) btnSubdiv.Text = Localization.Tr("btn_subdiv", "Subdiviser (1 → 4)");
+            if (btnClothBake != null) btnClothBake.Text = Localization.Tr("btn_cloth_bake", "Recalculer le tissu");
+
+            if (lblBone != null) lblBone.Text = Localization.Tr("lbl_attach_bone", "Attacher à l'os :");
+            if (btnAttach != null) btnAttach.Text = Localization.Tr("btn_attach_toggle", "Attacher / Détacher");
+            if (lblModels != null) lblModels.Text = Localization.Tr("lbl_models", "Modèles (LOD2)");
+            if (btnForceBase != null) btnForceBase.Text = Localization.Tr("btn_force_base", "Afficher la géométrie brute (base, sans peau)");
+            if (btnWrapPreview != null) btnWrapPreview.Text = Localization.Tr("btn_preview", "Aperçu");
+            if (btnWrapCancel != null) btnWrapCancel.Text = Localization.Tr("btn_cancel", "Annuler");
+            if (chkWrapLive != null) chkWrapLive.Text = Localization.Tr("chk_wrap_live", "Aperçu temps réel");
+            if (btnSaveChar != null) btnSaveChar.Text = Localization.Tr("btn_char_save", "💾 Sauver personnage…");
+            if (btnLoadChar != null) btnLoadChar.Text = Localization.Tr("btn_char_load", "📂 Charger personnage…");
+            if (btnResetChar != null) btnResetChar.Text = Localization.Tr("btn_char_reset", "↺ Réinitialiser personnage");
+            if (btnExportCharFile != null) btnExportCharFile.Text = Localization.Tr("btn_char_export", "📦 Exporter en .char unifié…");
+            if (btnResetCamera != null) btnResetCamera.Text = Localization.Tr("btn_cam_default", "↺ Défaut");
+            if (btnSaveCamera != null) btnSaveCamera.Text = Localization.Tr("btn_cam_save", "💾 Sauver caméra…");
+            if (btnLoadCamera != null) btnLoadCamera.Text = Localization.Tr("btn_cam_load", "📂 Charger caméra…");
+            if (btnPresetPerso != null) btnPresetPerso.Text = Localization.Tr("btn_cam_char", "Perso");
+            if (btnPresetMonstre != null) btnPresetMonstre.Text = Localization.Tr("btn_cam_monster", "Monstre");
+            if (btnPoseResetBone != null) btnPoseResetBone.Text = Localization.Tr("btn_pose_reset_bone", "↺  Réinitialiser l'os");
+            if (btnPoseResetAll != null) btnPoseResetAll.Text = Localization.Tr("btn_pose_reset_all", "⟲  Tout réinitialiser");
+            if (btnPoseSave != null) btnPoseSave.Text = Localization.Tr("btn_pose_save", "💾  Sauvegarder la pose sous...  (fichier .pose)");
+            if (chkPoseBodyOnly != null) chkPoseBodyOnly.Text = Localization.Tr("chk_pose_body_only", "Corps seulement (l'équipement libre reste en place)");
+            if (chkPoseMirror != null) chkPoseMirror.Text = Localization.Tr("chk_pose_mirror", "Miroir X automatique (D ↔ G)");
+
+            if (cbBones != null && cbBones.Items.Count > 0 && cbBones.SelectedIndex == 0)
+            {
+                cbBones.Items[0] = Localization.Tr("cb_bone_none", "(non attaché)");
+            }
+
+            if (cmbLanguage != null)
+            {
+                int desired = string.Equals(Localization.CurrentLanguage, "en", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+                if (cmbLanguage.SelectedIndex != desired)
+                    cmbLanguage.SelectedIndex = desired;
+            }
         }
 
         private bool _splittersConfigured;
@@ -2860,24 +2982,24 @@ namespace UoFiddler.Plugin.Granny3D
                 applyMixamoGen.Font = new Font(tvMenu.Font, FontStyle.Bold);
                 tvMenu.Items.Add(applyMixamoGen);
 
-                tvMenu.Items.Add("Importer un Character Mixamo (FBX)...", null, BtnImportModel_Click);
-                tvMenu.Items.Add("Importer un mesh (FBX / OBJ)...", null, BtnImportMesh_Click);
-                tvMenu.Items.Add("Importer une animation FBX Mixamo...", null, BtnImportAnim_Click);
+                tvMenu.Items.Add(Localization.Tr("menu_import_mixamo", "Importer un Character Mixamo (FBX)..."), null, BtnImportModel_Click);
+                tvMenu.Items.Add(Localization.Tr("menu_import_mesh", "Importer un mesh (FBX / OBJ)..."), null, BtnImportMesh_Click);
+                tvMenu.Items.Add(Localization.Tr("menu_import_anim", "Importer une animation FBX Mixamo..."), null, BtnImportAnim_Click);
                 tvMenu.Items.Add(new ToolStripSeparator());
-                tvMenu.Items.Add("Rafraîchir la liste des modèles", null, (s, a) => RestoreModelsTree());
+                tvMenu.Items.Add(Localization.Tr("menu_refresh_models", "Rafraîchir la liste des modèles"), null, (s, a) => RestoreModelsTree());
                 return;
             }
 
             if (info.IsFolder)
             {
-                tvMenu.Items.Add(node.IsExpanded ? "Réduire" : "Développer", null, (s, a) =>
+                tvMenu.Items.Add(node.IsExpanded ? Localization.Tr("menu_collapse", "Réduire") : Localization.Tr("menu_expand", "Développer"), null, (s, a) =>
                 {
                     if (!info.Populated) AddCreatureNodes(node, info.Folder);
                     node.Toggle();
                 });
 
                 tvMenu.Items.Add(new ToolStripSeparator());
-                var applyMixamoFolder = new ToolStripMenuItem("⚡ Convert/create rig to UO (Rig Studio)...", null, (s, a) =>
+                var applyMixamoFolder = new ToolStripMenuItem(Localization.Tr("menu_auto_rig", "⚡ Convert/create rig to UO (Rig Studio)..."), null, (s, a) =>
                 {
                     ApplyMixamoForUo(info.Folder);
                 });
@@ -2886,20 +3008,20 @@ namespace UoFiddler.Plugin.Granny3D
             }
             else if (info.LeafPath != null)
             {
-                tvMenu.Items.Add("Lire l'animation", null, (s, a) =>
+                tvMenu.Items.Add(Localization.Tr("menu_play_anim", "Lire l'animation"), null, (s, a) =>
                 {
                     var parentInfo = node.Parent?.Tag as TreeNodeInfo;
                     EnsureMeshLoaded(parentInfo?.MeshPath);
                     LoadAnimation(info.LeafPath);
                 });
-                tvMenu.Items.Add("Charger le modèle de la créature", null, (s, a) =>
+                tvMenu.Items.Add(Localization.Tr("menu_load_creature_model", "Charger le modèle de la créature"), null, (s, a) =>
                 {
                     var parentInfo = node.Parent?.Tag as TreeNodeInfo;
                     if (parentInfo?.MeshPath != null) LoadModel(parentInfo.MeshPath);
                 });
 
                 tvMenu.Items.Add(new ToolStripSeparator());
-                var applyMixamoLeaf = new ToolStripMenuItem("⚡ Convert/create rig to UO (Rig Studio)...", null, (s, a) =>
+                var applyMixamoLeaf = new ToolStripMenuItem(Localization.Tr("menu_auto_rig", "⚡ Convert/create rig to UO (Rig Studio)..."), null, (s, a) =>
                 {
                     var parentInfo = node.Parent?.Tag as TreeNodeInfo;
                     ApplyMixamoForUo(parentInfo?.MeshPath);
@@ -2909,17 +3031,17 @@ namespace UoFiddler.Plugin.Granny3D
             }
             else
             {
-                tvMenu.Items.Add("Charger (remplacer la scène)", null, (s, a) =>
+                tvMenu.Items.Add(Localization.Tr("menu_load_replace_scene", "Charger (remplacer la scène)"), null, (s, a) =>
                 {
                     if (info.MeshPath != null) LoadModel(info.MeshPath);
                 });
-                tvMenu.Items.Add("Ajouter à la scène (équipement)", null, (s, a) =>
+                tvMenu.Items.Add(Localization.Tr("menu_add_to_scene", "Ajouter à la scène (équipement)"), null, (s, a) =>
                 {
                     if (info.MeshPath != null) AddToScene(info.MeshPath);
                 });
 
                 tvMenu.Items.Add(new ToolStripSeparator());
-                var applyMixamoModel = new ToolStripMenuItem("⚡ Convert/create rig to UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+                var applyMixamoModel = new ToolStripMenuItem(Localization.Tr("menu_auto_rig", "⚡ Convert/create rig to UO (Rig Studio)..."), null, (s, a) =>
                 {
                     ApplyMixamoForUo(info.MeshPath);
                 });
@@ -2938,12 +3060,12 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 tvMenu.Items.Add(new ToolStripSeparator());
 
-                tvMenu.Items.Add("Assigner / Modifier les textures...", null, (s, a) =>
+                tvMenu.Items.Add(Localization.Tr("menu_manage_textures", "Assigner / Modifier les textures..."), null, (s, a) =>
                 {
                     OpenTextureManagerForModel(info.MeshPath);
                 });
 
-                tvMenu.Items.Add("Renommer...", null, (s, a) =>
+                tvMenu.Items.Add(Localization.Tr("menu_rename", "Renommer..."), null, (s, a) =>
                 {
                     RenameCustomModel(node, info);
                 });
@@ -2953,14 +3075,14 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (isOthersCat)
                 {
-                    tvMenu.Items.Add("Déplacer vers 'Meshs custom'", null, (s, a) =>
+                    tvMenu.Items.Add(Localization.Tr("menu_move_to_custom", "Déplacer vers 'Meshs custom'"), null, (s, a) =>
                     {
                         MoveCustomModel(node, info, Path.Combine(BasePath, "Meshs custom"), "Meshs custom");
                     });
                 }
                 else if (isCustomMeshCat)
                 {
-                    tvMenu.Items.Add("Déplacer vers 'Others'", null, (s, a) =>
+                    tvMenu.Items.Add(Localization.Tr("menu_move_to_others", "Déplacer vers 'Others'"), null, (s, a) =>
                     {
                         MoveCustomModel(node, info, Path.Combine(BasePath, "Others"), "Others");
                     });
@@ -2968,15 +3090,15 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (!string.IsNullOrEmpty(info.MeshPath) && info.MeshPath.EndsWith(GrannyModelFile.Extension, StringComparison.OrdinalIgnoreCase))
                 {
-                    tvMenu.Items.Add("Extraire des pièces vers 'Meshs custom'...", null, (s, a) =>
+                    tvMenu.Items.Add(Localization.Tr("menu_extract_parts", "Extraire des pièces vers 'Meshs custom'..."), null, (s, a) =>
                     {
                         OpenExtractPartsDialog(info.MeshPath);
                     });
                 }
 
                 string delLabel = isCustomMeshCat
-                    ? "Supprimer ce mesh"
-                    : "Supprimer ce character";
+                    ? Localization.Tr("menu_del_mesh", "Supprimer ce mesh")
+                    : Localization.Tr("menu_del_char", "Supprimer ce character");
                 var deleteItem = new ToolStripMenuItem(delLabel, null, (s, a) =>
                 {
                     DeleteCustomCharacter(node, info);
@@ -2986,9 +3108,9 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             tvMenu.Items.Add(new ToolStripSeparator());
-            tvMenu.Items.Add("Retirer le dernier mesh", null, (s, a) =>
+            tvMenu.Items.Add(Localization.Tr("menu_remove_last_mesh", "Retirer le dernier mesh"), null, (s, a) =>
                 RemoveMeshAt(_loadedMeshes.Count - 1));
-            tvMenu.Items.Add("Vider la scène", null, (s, a) => ClearScene());
+            tvMenu.Items.Add(Localization.Tr("menu_clear_scene", "Vider la scène"), null, (s, a) => ClearScene());
         }
 
         private void ApplyMixamoForUo(string pathOrFolder)
@@ -5038,12 +5160,42 @@ namespace UoFiddler.Plugin.Granny3D
                 string outFolder = Path.Combine(BasePath, "Meshs custom");
                 if (!Directory.Exists(outFolder)) Directory.CreateDirectory(outFolder);
 
-                string refPath = Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
-                if (!File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Female_Lod2.grn");
-
-                if (!MixamoCharacterImport.TryImport(ofd.FileName, outFolder, refPath, out var model, out string err) || model == null)
+                bool hasSkeletalBones = false;
+                try
                 {
-                    MessageBox.Show("Import du mesh échoué : " + (err ?? "raison inconnue"));
+                    using var chkCtx = new Assimp.AssimpContext();
+                    var chkScene = chkCtx.ImportFile(ofd.FileName, Assimp.PostProcessSteps.None);
+                    if (chkScene != null)
+                    {
+                        for (int m = 0; m < chkScene.MeshCount; m++)
+                        {
+                            if (chkScene.Meshes[m].HasBones) { hasSkeletalBones = true; break; }
+                        }
+                    }
+                }
+                catch { }
+
+                bool asStaticAccessory = false;
+                if (!hasSkeletalBones)
+                {
+                    var askAccessory = MessageBox.Show(
+                        Localization.Tr("msg_import_as_accessory",
+                            "Ce fichier 3D ne contient aucun squelette d'animation.\n\n" +
+                            "Souhaitez-vous l'importer en tant qu'accessoire rigide (Selle, Arme, Équipement) ?\n\n" +
+                            "• Oui : Accessoire rigide sans déformation (Idéal pour selles de chevaux, armes, casques, boucliers à attacher sur un os).\n" +
+                            "• Non : Tenter de l'associer au squelette d'un personnage."),
+                        Localization.Tr("title_import_mesh_type", "Type d'équipement"),
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+                    asStaticAccessory = (askAccessory == DialogResult.Yes);
+                }
+
+                string refPath = asStaticAccessory ? null : Path.Combine(BasePath, "Humans", "H_Male_Lod2.grn");
+                if (!asStaticAccessory && !File.Exists(refPath)) refPath = Path.Combine(BasePath, "Humans", "H_Female_Lod2.grn");
+
+                if (!MixamoCharacterImport.TryImport(ofd.FileName, outFolder, refPath, out var model, out string err, asStaticAccessory: asStaticAccessory) || model == null)
+                {
+                    MessageBox.Show(Localization.Tr("msg_import_mesh_fail", "Import du mesh échoué : ") + (err ?? "raison inconnue"));
                     return;
                 }
 
@@ -6164,16 +6316,33 @@ namespace UoFiddler.Plugin.Granny3D
             if (cbBones == null) return;
             string prev = cbBones.Text;
             List<GrannyBone> bones = null;
+
+            // Prioritize primary creature / character skeleton (CutoutRole.Body or Mount)
             foreach (var lm in _loadedMeshes)
             {
-                if (lm.Bones != null && lm.Bones.Count > 0 &&
-                    (bones == null || lm.Bones.Count > bones.Count))
-                    bones = lm.Bones;
+                if (lm.Hidden) continue;
+                if ((lm.CutoutRole == MeshCutoutRole.Body || lm.CutoutRole == MeshCutoutRole.Mount) &&
+                    lm.Bones != null && lm.Bones.Count > 0)
+                {
+                    if (bones == null || lm.Bones.Count > bones.Count)
+                        bones = lm.Bones;
+                }
+            }
+
+            // Fallback: search all meshes if no explicit body role found
+            if (bones == null)
+            {
+                foreach (var lm in _loadedMeshes)
+                {
+                    if (lm.Bones != null && lm.Bones.Count > 0 &&
+                        (bones == null || lm.Bones.Count > bones.Count))
+                        bones = lm.Bones;
+                }
             }
 
             cbBones.BeginUpdate();
             cbBones.Items.Clear();
-            cbBones.Items.Add("(non attaché)");
+            cbBones.Items.Add(Localization.Tr("cb_bone_none", "(non attaché)"));
             if (bones != null)
             {
                 foreach (var b in bones)
@@ -6940,9 +7109,10 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
 
-            // If the best skeleton in the scene has fewer than 40 bones (e.g. only individual body parts loaded),
+            // If the best skeleton in the scene has fewer than 40 bones and we are assembling humanoid parts,
             // load the full 43-bone reference skeleton (H_Male_Lod2 / H_Female_Lod2) or synthesize a unified host.
-            if (masterHost == null || maxBones < 40)
+            bool isHumanoidPartAssembly = _charGender != 0 || sources.Any(s => !string.IsNullOrEmpty(s.CharSlot));
+            if (masterHost == null || (maxBones < 40 && isHumanoidPartAssembly))
             {
                 bool preferFemale = _charGender == 2;
                 foreach (var s in sources)
@@ -7443,7 +7613,8 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (var m in _loadedMeshes)
                 if (m.Bones != null && m.Bones.Count > maxBones) { maxBones = m.Bones.Count; masterHost = m; }
 
-            if (masterHost == null || maxBones < 40)
+            bool isHumanoidPartAssembly = _charGender != 0 || sources.Any(s => !string.IsNullOrEmpty(s.CharSlot));
+            if (masterHost == null || (maxBones < 40 && isHumanoidPartAssembly))
             {
                 bool preferFemale = _charGender == 2;
                 foreach (var s in sources)
@@ -9106,7 +9277,11 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 string bone = cbBones?.Text?.Trim();
-                bool isDetached = string.IsNullOrEmpty(bone) || string.Equals(bone, "(non attaché)", StringComparison.OrdinalIgnoreCase);
+                bool isDetached = string.IsNullOrEmpty(bone) ||
+                    cbBones?.SelectedIndex == 0 ||
+                    string.Equals(bone, "(non attaché)", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(bone, "(not attached)", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(bone, Localization.Tr("cb_bone_none", "(non attaché)"), StringComparison.OrdinalIgnoreCase);
                 if (isDetached)
                 {
                     foreach (var i in idxs)
@@ -9757,7 +9932,7 @@ namespace UoFiddler.Plugin.Granny3D
             var idxs = GetSelectedMeshIndices();
             if (idxs.Count == 0)
             {
-                var applyMixamoFallback = new ToolStripMenuItem("⚡ Convert/create rig to UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+                var applyMixamoFallback = new ToolStripMenuItem(Localization.Tr("menu_auto_rig", "⚡ Convert/create rig to UO (Rig Studio)..."), null, (s, a) =>
                 {
                     string target = !string.IsNullOrEmpty(_currentModelPath) ? _currentModelPath : null;
                     ApplyMixamoForUo(target);
@@ -9765,38 +9940,88 @@ namespace UoFiddler.Plugin.Granny3D
                 applyMixamoFallback.Font = new Font(lstLoadedMenu.Font, FontStyle.Bold);
                 lstLoadedMenu.Items.Add(applyMixamoFallback);
 
-                lstLoadedMenu.Items.Add("Importer un Character Mixamo (FBX)...", null, BtnImportModel_Click);
-                lstLoadedMenu.Items.Add("Importer un mesh...", null, BtnImportMesh_Click);
+                lstLoadedMenu.Items.Add(Localization.Tr("menu_import_mixamo", "Importer un Character Mixamo (FBX)..."), null, BtnImportModel_Click);
+                lstLoadedMenu.Items.Add(Localization.Tr("menu_import_mesh", "Importer un mesh (FBX / OBJ)..."), null, BtnImportMesh_Click);
                 return;
             }
 
             int firstIdx = idxs[0];
             var lm = _loadedMeshes[firstIdx];
             string title = idxs.Count > 1
-                ? (tvLoaded?.SelectedNode?.Tag is List<int> ? tvLoaded.SelectedNode.Text : $"{idxs.Count} meshes sélectionnés")
+                ? (tvLoaded?.SelectedNode?.Tag is List<int> ? tvLoaded.SelectedNode.Text : Localization.TrFmt("lbl_selected_meshes_fmt", "{0} meshes sélectionnés", idxs.Count))
                 : $"Mesh : {lm.Name}";
 
             var headerItem = new ToolStripMenuItem(title) { Enabled = false };
             lstLoadedMenu.Items.Add(headerItem);
             lstLoadedMenu.Items.Add(new ToolStripSeparator());
 
-            var bakeMenuItem = new ToolStripMenuItem("💾 Figer & Enregistrer les modifications du mesh...", null, (s, a) =>
+            var bakeMenuItem = new ToolStripMenuItem(Localization.Tr("btn_freeze_save", "💾 Figer & Enregistrer les modifications du mesh..."), null, (s, a) =>
             {
                 BakeAndSaveSelectedMesh();
             });
             bakeMenuItem.Font = new Font(lstLoadedMenu.Font, FontStyle.Bold);
             lstLoadedMenu.Items.Add(bakeMenuItem);
-            lstLoadedMenu.Items.Add("Dupliquer en miroir (D ↔ G)", null, (s, a) => DuplicateMirrorSelectedMesh());
+            lstLoadedMenu.Items.Add(Localization.Tr("btn_duplicate_mirror", "Dupliquer en miroir (D ↔ G)"), null, (s, a) => DuplicateMirrorSelectedMesh());
+
+            // Convert to rigid accessory / remove skeleton option
+            bool anyHasBonesOrSkin = false;
+            foreach (int i in idxs)
+            {
+                var m = _loadedMeshes[i];
+                if ((m.Bones != null && m.Bones.Count > 0) || m.Skin != null || m.WrapSkin != null)
+                {
+                    anyHasBonesOrSkin = true;
+                    break;
+                }
+            }
+
+            if (anyHasBonesOrSkin)
+            {
+                var stripRigItem = new ToolStripMenuItem(Localization.Tr("menu_strip_rig", "✂️ Supprimer le squelette / Convertir en accessoire rigide (Selle, Arme, Prop)..."), null, (s, a) =>
+                {
+                    var ask = MessageBox.Show(
+                        Localization.Tr("msg_strip_rig_confirm", "Voulez-vous supprimer le squelette et le skinning de ce(s) mesh(es) ?\n\nIl(s) deviendront des accessoires 100% rigides (idéal pour les selles, armes, casques, boucliers) qui s'attachent à n'importe quel os (ex: dos du cheval, main, tête) sans aucune déformation."),
+                        Localization.Tr("title_strip_rig", "Convertir en accessoire rigide"),
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+                    if (ask != DialogResult.Yes) return;
+
+                    foreach (int i in idxs)
+                    {
+                        var m = _loadedMeshes[i];
+                        m.Bones = new List<GrannyBone>();
+                        m.Skin = null;
+                        m.WrapSkin = null;
+                        m.WrapSource = null;
+                        m.SkinMatrices = null;
+                        m.CutoutRole = MeshCutoutRole.Accessory;
+                        m.AttachInBindSpace = false;
+                        m.CharSlot = null;
+                    }
+                    RefreshLoadedList();
+                    PopulateBoneCombo();
+                    ApplyAnimationPose(_currentTime);
+                    RefreshVertexBuffers(true);
+                    if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+                    MessageBox.Show(
+                        Localization.Tr("msg_strip_rig_done", "Squelette et skinning supprimés avec succès !\nVous pouvez maintenant sélectionner l'os cible dans « Attacher à l'os » (ex: Bip01 Spine pour le dos du cheval) et cliquer sur « Attacher / Détacher »."),
+                        Localization.Tr("title_strip_rig", "Convertir en accessoire rigide"),
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                });
+                lstLoadedMenu.Items.Add(stripRigItem);
+            }
+
             lstLoadedMenu.Items.Add(new ToolStripSeparator());
 
-            lstLoadedMenu.Items.Add("Assigner une texture...", null, (s, a) =>
+            lstLoadedMenu.Items.Add(Localization.Tr("menu_assign_tex", "Assigner une texture..."), null, (s, a) =>
             {
                 foreach (int i in idxs) AssignTextureToLoadedMesh(_loadedMeshes[i]);
             });
 
             if (lm.HasTexture && lm.TextureId > 0)
             {
-                lstLoadedMenu.Items.Add("Retirer la texture", null, (s, a) =>
+                lstLoadedMenu.Items.Add(Localization.Tr("menu_remove_tex", "Retirer la texture"), null, (s, a) =>
                 {
                     foreach (int i in idxs) RemoveTextureFromLoadedMesh(_loadedMeshes[i]);
                 });
@@ -9805,14 +10030,14 @@ namespace UoFiddler.Plugin.Granny3D
             if (!string.IsNullOrEmpty(lm.SourcePath) && lm.SourcePath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
             {
                 lstLoadedMenu.Items.Add(new ToolStripSeparator());
-                lstLoadedMenu.Items.Add("Gérer toutes les textures du modèle...", null, (s, a) =>
+                lstLoadedMenu.Items.Add(Localization.Tr("menu_manage_all_tex", "Gérer toutes les textures du modèle..."), null, (s, a) =>
                 {
                     OpenTextureManagerForModel(lm.SourcePath);
                 });
             }
 
             lstLoadedMenu.Items.Add(new ToolStripSeparator());
-            var applyMixamoLoaded = new ToolStripMenuItem("⚡ Convert/create rig to UO (Adapter au squelette UO Biped)...", null, (s, a) =>
+            var applyMixamoLoaded = new ToolStripMenuItem(Localization.Tr("menu_auto_rig", "⚡ Convert/create rig to UO (Rig Studio)..."), null, (s, a) =>
             {
                 string target = !string.IsNullOrEmpty(lm.SourcePath) ? lm.SourcePath : _currentModelPath;
                 ApplyMixamoForUo(target);
@@ -9820,7 +10045,9 @@ namespace UoFiddler.Plugin.Granny3D
             applyMixamoLoaded.Font = new Font(lstLoadedMenu.Font, FontStyle.Bold);
             lstLoadedMenu.Items.Add(applyMixamoLoaded);
 
-            string removeText = idxs.Count > 1 ? $"Retirer ces {idxs.Count} meshes de la scène" : "Retirer ce mesh de la scène";
+            string removeText = idxs.Count > 1
+                ? Localization.TrFmt("menu_remove_meshes_fmt", "Retirer ces {0} meshes de la scène", idxs.Count)
+                : Localization.Tr("menu_remove_mesh", "Retirer ce mesh de la scène");
             lstLoadedMenu.Items.Add(removeText, null, (s, a) =>
             {
                 RemoveMeshesAt(idxs);

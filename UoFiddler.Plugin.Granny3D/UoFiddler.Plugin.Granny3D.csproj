@@ -38,6 +38,12 @@
 		<PackageReference Include="AssimpNet" Version="4.1.0" GeneratePathProperty="true" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<None Update="Languages\*.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+
 	<!-- AssimpNet et OpenTK (GLFW) chargent leurs DLL natives par P/Invoke :
 	     pour un plugin chargé via LoadFrom, le runtime ne probe que la racine
 	     de l'application (UoFiddler\bin\...\), pas les sous-dossiers runtimes/.
@@ -57,8 +63,10 @@
 	<Target Name="SyncPluginToUOFiddlerMaster" AfterTargets="Build">
 		<ItemGroup>
 			<PluginOutputFiles Include="$(TargetDir)*.*" />
+			<LanguageFiles Include="$(TargetDir)Languages\*.*" />
 		</ItemGroup>
-		<Copy SourceFiles="@(PluginOutputFiles)" DestinationFolder="$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\plugins\" Condition="Exists('$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\plugins\')" SkipUnchangedFiles="true" />
+		<Copy SourceFiles="@(PluginOutputFiles)" DestinationFolder="$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\plugins\" Condition="Exists('$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\plugins\')" SkipUnchangedFiles="true" ContinueOnError="true" />
+		<Copy SourceFiles="@(LanguageFiles)" DestinationFolder="$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\plugins\Languages\" Condition="Exists('$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\plugins\')" SkipUnchangedFiles="true" ContinueOnError="true" />
 	</Target>
 
 </Project>

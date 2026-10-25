@@ -40,6 +40,11 @@ namespace UoFiddler.Plugin.Granny3D
         private CheckBox chkShowMesh = null!;
         private RadioButton rbMale = null!;
         private RadioButton rbFemale = null!;
+        private RadioButton rbCustom = null!;
+        private Button btnChooseSkeleton = null!;
+        private Label lblSkeletonName = null!;
+        private string _customSkeletonPath = string.Empty;
+        private string _customSkeletonName = string.Empty;
         private NumericUpDown nudX = null!;
         private NumericUpDown nudY = null!;
         private NumericUpDown nudZ = null!;
@@ -206,37 +211,37 @@ namespace UoFiddler.Plugin.Granny3D
             _markers.Clear();
 
             // Anatomical markers corresponding to UO Biped key joints (pivots d'articulation)
-            _markers.Add(new JointMarker { BoneName = "Bip01 Head", DisplayName = "Tête (Pivot nuque / base crâne)", Position = new Vector3(0.0f, 0.029f, 1.441f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 Neck" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Neck", DisplayName = "Cou (Pivot base cou / haut sternum)", Position = new Vector3(0.0f, 0.032f, 1.369f), Color = Color.FromArgb(255, 215, 0), ParentName = "Bip01 Spine2" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Spine2", DisplayName = "Poitrine / Cage Thoracique", Position = new Vector3(0.0f, 0.041f, 1.214f), Color = Color.FromArgb(124, 252, 0), ParentName = "Bip01 Spine1" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Spine", DisplayName = "Abdomen (Taille / nombril)", Position = new Vector3(0.0f, 0.037f, 1.021f), Color = Color.FromArgb(50, 205, 50), ParentName = "Bip01 Pelvis" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 Pelvis", DisplayName = "Bassin / Hanches (Pelvis)", Position = new Vector3(0.0f, 0.037f, 0.937f), Color = Color.FromArgb(0, 206, 209), ParentName = null });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Head", DisplayName = Localization.Tr("marker_head", "Tête (Pivot nuque / base crâne)"), Position = new Vector3(0.0f, 0.029f, 1.441f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 Neck" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Neck", DisplayName = Localization.Tr("marker_neck", "Cou (Pivot base cou / haut sternum)"), Position = new Vector3(0.0f, 0.032f, 1.369f), Color = Color.FromArgb(255, 215, 0), ParentName = "Bip01 Spine2" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Spine2", DisplayName = Localization.Tr("marker_chest", "Poitrine / Cage Thoracique"), Position = new Vector3(0.0f, 0.041f, 1.214f), Color = Color.FromArgb(124, 252, 0), ParentName = "Bip01 Spine1" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Spine", DisplayName = Localization.Tr("marker_spine", "Abdomen (Taille / nombril)"), Position = new Vector3(0.0f, 0.037f, 1.021f), Color = Color.FromArgb(50, 205, 50), ParentName = "Bip01 Pelvis" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 Pelvis", DisplayName = Localization.Tr("marker_pelvis", "Bassin / Hanches (Pelvis)"), Position = new Vector3(0.0f, 0.037f, 0.937f), Color = Color.FromArgb(0, 206, 209), ParentName = null });
 
             // Right Arm (Vue de face = Écran Gauche, X < 0)
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Clavicle", DisplayName = "Clavicule D (Écran Gauche)", Position = new Vector3(-0.042f, 0.031f, 1.339f), Color = Color.FromArgb(255, 69, 0), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 L Clavicle" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R UpperArm", DisplayName = "Épaule D (Écran Gauche)", Position = new Vector3(-0.160f, 0.038f, 1.336f), Color = Color.FromArgb(220, 20, 60), ParentName = "Bip01 R Clavicle", SymmetricBoneName = "Bip01 L UpperArm" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Forearm", DisplayName = "Coude D (Écran Gauche)", Position = new Vector3(-0.380f, 0.031f, 1.335f), Color = Color.FromArgb(205, 92, 92), ParentName = "Bip01 R UpperArm", SymmetricBoneName = "Bip01 L Forearm" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Hand", DisplayName = "Poignet D (Écran Gauche)", Position = new Vector3(-0.580f, 0.003f, 1.332f), Color = Color.FromArgb(255, 99, 71), ParentName = "Bip01 R Forearm", SymmetricBoneName = "Bip01 L Hand" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger0", DisplayName = "Pouce D (Écran Gauche)", Position = new Vector3(-0.621f, -0.032f, 1.324f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger0" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger1", DisplayName = "Doigts D (Écran Gauche)", Position = new Vector3(-0.655f, -0.013f, 1.327f), Color = Color.FromArgb(0, 206, 209), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger1" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Clavicle", DisplayName = Localization.Tr("marker_r_clavicle", "Clavicule D (Écran Gauche)"), Position = new Vector3(-0.042f, 0.031f, 1.339f), Color = Color.FromArgb(255, 69, 0), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 L Clavicle" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R UpperArm", DisplayName = Localization.Tr("marker_r_upperarm", "Épaule D (Écran Gauche)"), Position = new Vector3(-0.160f, 0.038f, 1.336f), Color = Color.FromArgb(220, 20, 60), ParentName = "Bip01 R Clavicle", SymmetricBoneName = "Bip01 L UpperArm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Forearm", DisplayName = Localization.Tr("marker_r_forearm", "Coude D (Écran Gauche)"), Position = new Vector3(-0.380f, 0.031f, 1.335f), Color = Color.FromArgb(205, 92, 92), ParentName = "Bip01 R UpperArm", SymmetricBoneName = "Bip01 L Forearm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Hand", DisplayName = Localization.Tr("marker_r_hand", "Poignet D (Écran Gauche)"), Position = new Vector3(-0.580f, 0.003f, 1.332f), Color = Color.FromArgb(255, 99, 71), ParentName = "Bip01 R Forearm", SymmetricBoneName = "Bip01 L Hand" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger0", DisplayName = Localization.Tr("marker_r_thumb", "Pouce D (Écran Gauche)"), Position = new Vector3(-0.621f, -0.032f, 1.324f), Color = Color.FromArgb(255, 140, 0), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger0" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Finger1", DisplayName = Localization.Tr("marker_r_fingers", "Doigts D (Écran Gauche)"), Position = new Vector3(-0.655f, -0.013f, 1.327f), Color = Color.FromArgb(0, 206, 209), ParentName = "Bip01 R Hand", SymmetricBoneName = "Bip01 L Finger1" });
 
             // Left Arm (Vue de face = Écran Droite, X > 0)
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Clavicle", DisplayName = "Clavicule G (Écran Droite)", Position = new Vector3(0.042f, 0.031f, 1.339f), Color = Color.FromArgb(30, 144, 255), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 R Clavicle" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 L UpperArm", DisplayName = "Épaule G (Écran Droite)", Position = new Vector3(0.160f, 0.038f, 1.336f), Color = Color.FromArgb(65, 105, 225), ParentName = "Bip01 L Clavicle", SymmetricBoneName = "Bip01 R UpperArm" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Forearm", DisplayName = "Coude G (Écran Droite)", Position = new Vector3(0.380f, 0.031f, 1.335f), Color = Color.FromArgb(100, 149, 237), ParentName = "Bip01 L UpperArm", SymmetricBoneName = "Bip01 R Forearm" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Hand", DisplayName = "Poignet G (Écran Droite)", Position = new Vector3(0.580f, 0.003f, 1.332f), Color = Color.FromArgb(0, 191, 255), ParentName = "Bip01 L Forearm", SymmetricBoneName = "Bip01 R Hand" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger0", DisplayName = "Pouce G (Écran Droite)", Position = new Vector3(0.621f, -0.032f, 1.324f), Color = Color.FromArgb(255, 191, 0), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger0" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger1", DisplayName = "Doigts G (Écran Droite)", Position = new Vector3(0.655f, -0.013f, 1.327f), Color = Color.FromArgb(0, 255, 255), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger1" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Clavicle", DisplayName = Localization.Tr("marker_l_clavicle", "Clavicule G (Écran Droite)"), Position = new Vector3(0.042f, 0.031f, 1.339f), Color = Color.FromArgb(30, 144, 255), ParentName = "Bip01 Spine2", SymmetricBoneName = "Bip01 R Clavicle" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L UpperArm", DisplayName = Localization.Tr("marker_l_upperarm", "Épaule G (Écran Droite)"), Position = new Vector3(0.160f, 0.038f, 1.336f), Color = Color.FromArgb(65, 105, 225), ParentName = "Bip01 L Clavicle", SymmetricBoneName = "Bip01 R UpperArm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Forearm", DisplayName = Localization.Tr("marker_l_forearm", "Coude G (Écran Droite)"), Position = new Vector3(0.380f, 0.031f, 1.335f), Color = Color.FromArgb(100, 149, 237), ParentName = "Bip01 L UpperArm", SymmetricBoneName = "Bip01 R Forearm" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Hand", DisplayName = Localization.Tr("marker_l_hand", "Poignet G (Écran Droite)"), Position = new Vector3(0.580f, 0.003f, 1.332f), Color = Color.FromArgb(0, 191, 255), ParentName = "Bip01 L Forearm", SymmetricBoneName = "Bip01 R Hand" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger0", DisplayName = Localization.Tr("marker_l_thumb", "Pouce G (Écran Droite)"), Position = new Vector3(0.621f, -0.032f, 1.324f), Color = Color.FromArgb(255, 191, 0), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger0" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Finger1", DisplayName = Localization.Tr("marker_l_fingers", "Doigts G (Écran Droite)"), Position = new Vector3(0.655f, -0.013f, 1.327f), Color = Color.FromArgb(0, 255, 255), ParentName = "Bip01 L Hand", SymmetricBoneName = "Bip01 R Finger1" });
 
             // Right Leg (Vue de face = Écran Gauche, X < 0)
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Thigh", DisplayName = "Hanche D (Écran Gauche)", Position = new Vector3(-0.086f, 0.037f, 0.900f), Color = Color.FromArgb(218, 112, 214), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 L Thigh" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Calf", DisplayName = "Genou D (Écran Gauche)", Position = new Vector3(-0.092f, 0.041f, 0.500f), Color = Color.FromArgb(186, 85, 211), ParentName = "Bip01 R Thigh", SymmetricBoneName = "Bip01 L Calf" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 R Foot", DisplayName = "Cheville D (Écran Gauche)", Position = new Vector3(-0.097f, 0.070f, 0.100f), Color = Color.FromArgb(255, 105, 180), ParentName = "Bip01 R Calf", SymmetricBoneName = "Bip01 L Foot" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Thigh", DisplayName = Localization.Tr("marker_r_thigh", "Hanche D (Écran Gauche)"), Position = new Vector3(-0.086f, 0.037f, 0.900f), Color = Color.FromArgb(218, 112, 214), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 L Thigh" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Calf", DisplayName = Localization.Tr("marker_r_calf", "Genou D (Écran Gauche)"), Position = new Vector3(-0.092f, 0.041f, 0.500f), Color = Color.FromArgb(186, 85, 211), ParentName = "Bip01 R Thigh", SymmetricBoneName = "Bip01 L Calf" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 R Foot", DisplayName = Localization.Tr("marker_r_foot", "Cheville D (Écran Gauche)"), Position = new Vector3(-0.097f, 0.070f, 0.100f), Color = Color.FromArgb(255, 105, 180), ParentName = "Bip01 R Calf", SymmetricBoneName = "Bip01 L Foot" });
 
             // Left Leg (Vue de face = Écran Droite, X > 0)
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Thigh", DisplayName = "Hanche G (Écran Droite)", Position = new Vector3(0.086f, 0.037f, 0.900f), Color = Color.FromArgb(72, 209, 204), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 R Thigh" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Calf", DisplayName = "Genou G (Écran Droite)", Position = new Vector3(0.092f, 0.041f, 0.500f), Color = Color.FromArgb(32, 178, 170), ParentName = "Bip01 L Thigh", SymmetricBoneName = "Bip01 R Calf" });
-            _markers.Add(new JointMarker { BoneName = "Bip01 L Foot", DisplayName = "Cheville G (Écran Droite)", Position = new Vector3(0.097f, 0.070f, 0.100f), Color = Color.FromArgb(0, 139, 139), ParentName = "Bip01 L Calf", SymmetricBoneName = "Bip01 R Foot" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Thigh", DisplayName = Localization.Tr("marker_l_thigh", "Hanche G (Écran Droite)"), Position = new Vector3(0.086f, 0.037f, 0.900f), Color = Color.FromArgb(72, 209, 204), ParentName = "Bip01 Pelvis", SymmetricBoneName = "Bip01 R Thigh" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Calf", DisplayName = Localization.Tr("marker_l_calf", "Genou G (Écran Droite)"), Position = new Vector3(0.092f, 0.041f, 0.500f), Color = Color.FromArgb(32, 178, 170), ParentName = "Bip01 L Thigh", SymmetricBoneName = "Bip01 R Calf" });
+            _markers.Add(new JointMarker { BoneName = "Bip01 L Foot", DisplayName = Localization.Tr("marker_l_foot", "Cheville G (Écran Droite)"), Position = new Vector3(0.097f, 0.070f, 0.100f), Color = Color.FromArgb(0, 139, 139), ParentName = "Bip01 L Calf", SymmetricBoneName = "Bip01 R Foot" });
 
             RefreshJointsCombo();
         }
@@ -254,7 +259,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void InitializeComponentCustom()
         {
-            Text = "⚡ Convert/create rig to UO (Rig Studio)";
+            Text = Localization.Tr("rig_title", "⚡ Convert/create rig to UO (Rig Studio)");
             Size = new Size(1500, 960);
             MinimumSize = new Size(1100, 750);
             StartPosition = FormStartPosition.CenterParent;
@@ -300,21 +305,21 @@ namespace UoFiddler.Plugin.Granny3D
                 return b;
             }
 
-            btnVueFace = CreateCamBtn("👁 Vue Face (Z/X)", () => SetViewMode(RigViewMode.Front));
-            btnVueProfil = CreateCamBtn("👁 Vue Profil (Z/Y)", () => SetViewMode(RigViewMode.Profile));
-            btnVueDos = CreateCamBtn("👁 Vue Dos", () => SetViewMode(RigViewMode.Back));
-            btnVue3D = CreateCamBtn("🎥 3D Persp", () => SetViewMode(RigViewMode.Free3D));
+            btnVueFace = CreateCamBtn(Localization.Tr("cam_front", "👁 Vue Face (Z/X)"), () => SetViewMode(RigViewMode.Front));
+            btnVueProfil = CreateCamBtn(Localization.Tr("cam_profile", "👁 Vue Profil (Z/Y)"), () => SetViewMode(RigViewMode.Profile));
+            btnVueDos = CreateCamBtn(Localization.Tr("cam_back", "👁 Vue Dos"), () => SetViewMode(RigViewMode.Back));
+            btnVue3D = CreateCamBtn(Localization.Tr("cam_3d", "🎥 3D Persp"), () => SetViewMode(RigViewMode.Free3D));
 
             pnlCamTools.Controls.Add(btnVueFace);
             pnlCamTools.Controls.Add(btnVueProfil);
             pnlCamTools.Controls.Add(btnVueDos);
             pnlCamTools.Controls.Add(btnVue3D);
-            pnlCamTools.Controls.Add(CreateCamBtn("🎯 Centrer Caméra", () => { _cameraDist = 2.8f; _cameraPan = Vector3.Zero; }));
+            pnlCamTools.Controls.Add(CreateCamBtn(Localization.Tr("cam_center", "🎯 Centrer Caméra"), () => { _cameraDist = 2.8f; _cameraPan = Vector3.Zero; }));
             UpdateViewButtonsUI();
 
             var chkWireframe = new CheckBox
             {
-                Text = "Fil de fer",
+                Text = Localization.Tr("chk_wireframe", "Fil de fer"),
                 ForeColor = Color.Gainsboro,
                 AutoSize = true,
                 Margin = new Padding(16, 6, 0, 0)
@@ -324,7 +329,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             chkShowSkeleton = new CheckBox
             {
-                Text = "Squelette",
+                Text = Localization.Tr("chk_skeleton", "Squelette"),
                 Checked = true,
                 ForeColor = Color.LimeGreen,
                 AutoSize = true,
@@ -335,7 +340,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             chkShowMesh = new CheckBox
             {
-                Text = "Modèle 3D",
+                Text = Localization.Tr("chk_mesh", "Modèle 3D"),
                 Checked = true,
                 ForeColor = Color.DeepSkyBlue,
                 AutoSize = true,
@@ -372,7 +377,7 @@ namespace UoFiddler.Plugin.Granny3D
             // 1. Source Model Group
             var grpSource = new GroupBox
             {
-                Text = "1. Modèle 3D Source (Actif / Importé)",
+                Text = Localization.Tr("rig_grp_source", "1. Modèle 3D Source (Actif / Importé)"),
                 Dock = DockStyle.Top,
                 Height = 135,
                 ForeColor = Color.Gold,
@@ -383,7 +388,7 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlSourceBtns = new Panel { Dock = DockStyle.Top, Height = 34 };
             var btnBrowseModel = new Button
             {
-                Text = "📂 Ouvrir un autre modèle 3D…",
+                Text = Localization.Tr("rig_btn_browse", "📂 Ouvrir un autre modèle 3D…"),
                 Location = new Point(0, 2),
                 Width = 240,
                 Height = 30,
@@ -396,7 +401,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnReloadActive = new Button
             {
-                Text = "🔄 Recharger la preview active",
+                Text = Localization.Tr("rig_btn_reload_preview", "🔄 Recharger la preview active"),
                 Location = new Point(246, 2),
                 Width = 220,
                 Height = 30,
@@ -422,7 +427,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             lblModelInfo = new Label
             {
-                Text = "Chargement du modèle…",
+                Text = Localization.Tr("rig_lbl_loading_model", "Chargement du modèle…"),
                 Dock = DockStyle.Fill,
                 ForeColor = Color.Gainsboro,
                 Font = new Font("Segoe UI", 9F, FontStyle.Regular),
@@ -435,7 +440,7 @@ namespace UoFiddler.Plugin.Granny3D
             // 2. Transform & Orientation Group
             var grpTransform = new GroupBox
             {
-                Text = "2. Orientation, Échelle & Alignement du Modèle",
+                Text = Localization.Tr("rig_grp_transform", "2. Orientation, Échelle & Alignement du Modèle"),
                 Dock = DockStyle.Top,
                 Height = 255,
                 ForeColor = Color.DeepSkyBlue,
@@ -471,9 +476,9 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             // Row 1: Fast Alignment
-            pnlTransformInner.Controls.Add(CreateTBtn("🧍 Redresser Debout (Z-up)", Color.FromArgb(30, 90, 140), AutoStandUp));
-            pnlTransformInner.Controls.Add(CreateTBtn("⚡ Pieds au sol (Z=0) & Centrer", Color.FromArgb(20, 100, 70), AutoCenterAndGround));
-            pnlTransformInner.Controls.Add(CreateTBtn("⚡ Ajuster taille au squelette (1.75m)", Color.FromArgb(90, 40, 110), AutoScaleToSkeleton));
+            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_stand_up", "🧍 Redresser Debout (Z-up)"), Color.FromArgb(30, 90, 140), AutoStandUp));
+            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_ground", "⚡ Pieds au sol (Z=0) & Centrer"), Color.FromArgb(20, 100, 70), AutoCenterAndGround));
+            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_fit_skel", "⚡ Ajuster taille au squelette (1.75m)"), Color.FromArgb(90, 40, 110), AutoScaleToSkeleton));
 
             // Row 2: Rotations & Mirror
             pnlTransformInner.Controls.Add(CreateTBtn("↻ Rot X +90°", Color.FromArgb(45, 45, 50), () => RotateModel(90f, 0, 0)));
@@ -483,11 +488,11 @@ namespace UoFiddler.Plugin.Granny3D
             pnlTransformInner.Controls.Add(CreateTBtn("↻ Rot Z +90°", Color.FromArgb(45, 45, 50), () => RotateModel(0, 0, 90f)));
             pnlTransformInner.Controls.Add(CreateTBtn("↺ Rot Z -90°", Color.FromArgb(45, 45, 50), () => RotateModel(0, 0, -90f)));
             pnlTransformInner.Controls.Add(CreateTBtn("↻ 180°", Color.FromArgb(45, 45, 50), () => RotateModel(0, 0, 180f)));
-            pnlTransformInner.Controls.Add(CreateTBtn("⇋ Miroir X", Color.FromArgb(70, 50, 40), ToggleMirrorX));
+            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_mirror_x", "⇋ Miroir X"), Color.FromArgb(70, 50, 40), ToggleMirrorX));
 
             // Row 3: Position Offset / Nudge
             var pnlNudge = new Panel { Size = new Size(500, 32), Margin = new Padding(0, 4, 0, 0) };
-            var lblNudge = new Label { Text = "Ajuster position :", Location = new Point(0, 6), AutoSize = true, ForeColor = Color.Gainsboro };
+            var lblNudge = new Label { Text = Localization.Tr("rig_lbl_nudge", "Ajuster position :"), Location = new Point(0, 6), AutoSize = true, ForeColor = Color.Gainsboro };
             pnlNudge.Controls.Add(lblNudge);
             pnlNudge.Controls.Add(CreateTBtn("X: ◀ -5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(-0.05f, 0, 0)));
             pnlNudge.Controls.Add(CreateTBtn("▶ +5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(0.05f, 0, 0)));
@@ -499,7 +504,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             // Row 4: Manual scale input
             var pnlScale = new Panel { Size = new Size(500, 32), Margin = new Padding(0, 4, 0, 0) };
-            var lblScale = new Label { Text = "Échelle globale :", Location = new Point(0, 6), AutoSize = true, ForeColor = Color.Gainsboro };
+            var lblScale = new Label { Text = Localization.Tr("rig_lbl_scale", "Échelle globale :"), Location = new Point(0, 6), AutoSize = true, ForeColor = Color.Gainsboro };
             nudScale = new NumericUpDown { DecimalPlaces = 4, Minimum = 0.0001m, Maximum = 1000m, Value = 1.0m, Increment = 0.01m, Location = new Point(110, 4), Width = 90, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.White };
             nudScale.ValueChanged += (s, e) => { _scale = (float)nudScale.Value; RebakeModelTransform(); };
 
@@ -514,7 +519,7 @@ namespace UoFiddler.Plugin.Granny3D
             // Row 5: Dimensions display
             lblBoundsInfo = new Label
             {
-                Text = "Dimensions : calcul en cours…",
+                Text = Localization.Tr("rig_lbl_calc_bounds", "Dimensions : calcul en cours…"),
                 Size = new Size(500, 20),
                 ForeColor = Color.LightSkyBlue,
                 Margin = new Padding(0, 4, 0, 0)
@@ -526,24 +531,71 @@ namespace UoFiddler.Plugin.Granny3D
             // 3. Skeleton & Rigging Options Group
             var grpSkeleton = new GroupBox
             {
-                Text = "3. Squelette UO Biped & Options",
+                Text = Localization.Tr("rig_grp_skeleton", "3. Squelette UO (Humains, Monstres, Animaux) & Options"),
                 Dock = DockStyle.Top,
-                Height = 115,
+                Height = 135,
                 ForeColor = Color.LimeGreen,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
             };
 
-            rbMale = new RadioButton { Text = "Homme (H_Male)", Checked = true, Location = new Point(15, 24), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
-            rbFemale = new RadioButton { Text = "Femme (H_Female)", Location = new Point(170, 24), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
-            rbMale.CheckedChanged += (s, e) => { if (rbMale.Checked) OnSkeletonChanged(false); };
-            rbFemale.CheckedChanged += (s, e) => { if (rbFemale.Checked) OnSkeletonChanged(true); };
+            rbMale = new RadioButton { Text = Localization.Tr("rig_rb_male", "Homme (H_Male)"), Checked = true, Location = new Point(15, 22), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+            rbFemale = new RadioButton { Text = Localization.Tr("rig_rb_female", "Femme (H_Female)"), Location = new Point(155, 22), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+            rbCustom = new RadioButton { Text = Localization.Tr("rig_rb_creature", "Autre créature UO"), Location = new Point(295, 22), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+
+            btnChooseSkeleton = new Button
+            {
+                Text = Localization.Tr("rig_btn_choose_skel", "🔍 Choisir squelette..."),
+                Location = new Point(455, 19),
+                Size = new Size(200, 26),
+                BackColor = Color.FromArgb(40, 75, 110),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+
+            lblSkeletonName = new Label
+            {
+                Text = "Squelette actif : Homme (H_Male_Lod2.grn)",
+                Location = new Point(15, 50),
+                Size = new Size(650, 20),
+                ForeColor = Color.LightGreen,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Italic)
+            };
+
+            rbMale.CheckedChanged += (s, e) =>
+            {
+                if (rbMale.Checked)
+                {
+                    lblSkeletonName.Text = "Squelette actif : Homme (H_Male_Lod2.grn)";
+                    OnSkeletonChanged(false);
+                }
+            };
+            rbFemale.CheckedChanged += (s, e) =>
+            {
+                if (rbFemale.Checked)
+                {
+                    lblSkeletonName.Text = "Squelette actif : Femme (H_Female_Lod2.grn)";
+                    OnSkeletonChanged(true);
+                }
+            };
+            rbCustom.CheckedChanged += (s, e) =>
+            {
+                if (rbCustom.Checked)
+                {
+                    if (string.IsNullOrEmpty(_customSkeletonPath) || !File.Exists(_customSkeletonPath))
+                        ChooseCustomSkeleton();
+                    else
+                        OnSkeletonChangedCreature(_customSkeletonPath, _customSkeletonName);
+                }
+            };
+            btnChooseSkeleton.Click += (s, e) => ChooseCustomSkeleton();
 
             chkSymmetry = new CheckBox
             {
-                Text = "Symétrie X automatique (déplacer G met à jour D)",
+                Text = Localization.Tr("rig_chk_symmetry", "Symétrie X automatique (déplacer G met à jour D)"),
                 Checked = true,
-                Location = new Point(15, 52),
+                Location = new Point(15, 75),
                 AutoSize = true,
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI", 9F, FontStyle.Regular)
@@ -551,9 +603,9 @@ namespace UoFiddler.Plugin.Granny3D
 
             chkForceAutoSkin = new CheckBox
             {
-                Text = "Forcer le skinning volumétrique UO (recommandé si modèle statique)",
+                Text = Localization.Tr("rig_chk_force_skin", "Forcer le skinning volumétrique UO (recommandé si modèle statique)"),
                 Checked = false,
-                Location = new Point(15, 78),
+                Location = new Point(15, 101),
                 AutoSize = true,
                 ForeColor = Color.LightYellow,
                 Font = new Font("Segoe UI", 9F, FontStyle.Regular)
@@ -561,13 +613,16 @@ namespace UoFiddler.Plugin.Granny3D
 
             grpSkeleton.Controls.Add(rbMale);
             grpSkeleton.Controls.Add(rbFemale);
+            grpSkeleton.Controls.Add(rbCustom);
+            grpSkeleton.Controls.Add(btnChooseSkeleton);
+            grpSkeleton.Controls.Add(lblSkeletonName);
             grpSkeleton.Controls.Add(chkSymmetry);
             grpSkeleton.Controls.Add(chkForceAutoSkin);
 
             // 4. Markers Adjustments Group
             var grpMarkers = new GroupBox
             {
-                Text = "4. Positionnement des Articulations (Croix 3D)",
+                Text = Localization.Tr("rig_grp_markers", "4. Positionnement des Articulations (Croix 3D)"),
                 Dock = DockStyle.Top,
                 Height = 350,
                 ForeColor = Color.Orange,
@@ -577,7 +632,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var lblJointTip = new Label
             {
-                Text = "💡 Les croix 3D marquent les PIVOTS d'articulation (rotation), pas le milieu des volumes.",
+                Text = Localization.Tr("rig_lbl_joint_tip", "💡 Les croix 3D marquent les PIVOTS d'articulation (rotation), pas le milieu des volumes."),
                 Dock = DockStyle.Top,
                 Height = 20,
                 ForeColor = Color.Khaki,
@@ -587,7 +642,7 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlTopRigBtns = new Panel { Dock = DockStyle.Top, Height = 32 };
             var btnAutoDetect = new Button
             {
-                Text = "🎯 Auto-Placement Mixamo (5 repères)",
+                Text = Localization.Tr("rig_btn_auto_detect", "🎯 Auto-Placement Mixamo (5 repères)"),
                 Dock = DockStyle.Left,
                 Width = 250,
                 BackColor = Color.FromArgb(140, 70, 20),
@@ -599,7 +654,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnRestoreLiveBones = new Button
             {
-                Text = "🦴 Squelette d'Origine",
+                Text = Localization.Tr("rig_btn_orig_skel", "🦴 Squelette d'Origine"),
                 Dock = DockStyle.Right,
                 Width = 230,
                 BackColor = Color.FromArgb(40, 70, 110),
@@ -617,7 +672,7 @@ namespace UoFiddler.Plugin.Granny3D
                 }
                 else
                 {
-                    MessageBox.Show("Aucun squelette d'origine en mémoire pour ce modèle.", "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(Localization.Tr("rig_msg_no_orig_skel", "Aucun squelette d'origine en mémoire pour ce modèle."), "Auto-Rig Studio", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             };
             pnlTopRigBtns.Controls.Add(btnAutoDetect);
@@ -627,7 +682,7 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlSkinBtns = new Panel { Dock = DockStyle.Top, Height = 34, Padding = new Padding(0, 4, 0, 0) };
             var btnRecalcArms = new Button
             {
-                Text = "💪 Recalculer Skinning Bras",
+                Text = Localization.Tr("rig_btn_recalc_arms", "💪 Recalculer Skinning Bras"),
                 Dock = DockStyle.Left,
                 Width = 250,
                 BackColor = Color.FromArgb(20, 100, 80),
@@ -639,7 +694,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnRecalcAllSkin = new Button
             {
-                Text = "🔥 Recalculer Tout le Skinning",
+                Text = Localization.Tr("rig_btn_recalc_all", "🔥 Recalculer Tout le Skinning"),
                 Dock = DockStyle.Right,
                 Width = 230,
                 BackColor = Color.FromArgb(90, 40, 100),
@@ -652,7 +707,7 @@ namespace UoFiddler.Plugin.Granny3D
             pnlSkinBtns.Controls.Add(btnRecalcArms);
             pnlSkinBtns.Controls.Add(btnRecalcAllSkin);
 
-            var lblJoint = new Label { Text = "Croix sélectionnée :", Location = new Point(12, 114), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            var lblJoint = new Label { Text = Localization.Tr("rig_lbl_sel_cross", "Croix sélectionnée :"), Location = new Point(12, 114), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
             cbJoints = new ComboBox
             {
                 Location = new Point(150, 111),
@@ -699,7 +754,7 @@ namespace UoFiddler.Plugin.Granny3D
             nudPitch.ValueChanged += (s, e) => OnNudRotChanged();
             nudYaw.ValueChanged += (s, e) => OnNudRotChanged();
 
-            pnlRotControls.Controls.Add(CreateLbl("Torsion (Roll) :", 5));
+            pnlRotControls.Controls.Add(CreateLbl(Localization.Tr("rig_lbl_twist", "Torsion (Roll) :"), 5));
             pnlRotControls.Controls.Add(nudRoll);
             pnlRotControls.Controls.Add(CreateLbl("Pitch :", 195));
             pnlRotControls.Controls.Add(nudPitch);
@@ -727,13 +782,13 @@ namespace UoFiddler.Plugin.Granny3D
 
             pnlRotBtns.Controls.Add(CreateRotBtn("⟲ -15°", 5, 55, () => ApplyRollOffset(-15f)));
             pnlRotBtns.Controls.Add(CreateRotBtn("⟳ +15°", 65, 55, () => ApplyRollOffset(15f)));
-            pnlRotBtns.Controls.Add(CreateRotBtn("Paume Bas (90°)", 125, 115, () => SetRollExact(90f)));
-            pnlRotBtns.Controls.Add(CreateRotBtn("Paume Arr. (180°)", 245, 125, () => SetRollExact(180f)));
-            pnlRotBtns.Controls.Add(CreateRotBtn("0° (Défaut)", 375, 80, () => SetRollExact(0f)));
+            pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_down", "Paume Bas (90°)"), 125, 115, () => SetRollExact(90f)));
+            pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_back", "Paume Arr. (180°)"), 245, 125, () => SetRollExact(180f)));
+            pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_default", "0° (Défaut)"), 375, 80, () => SetRollExact(0f)));
 
             lblRotTip = new Label
             {
-                Text = "💡 Astuce : Cliquez directement sur les croix (Pouce, Doigts, etc.) et déplacez-les à la souris !",
+                Text = Localization.Tr("rig_lbl_rot_tip", "💡 Astuce : Cliquez directement sur les croix (Pouce, Doigts, etc.) et déplacez-les à la souris !"),
                 Location = new Point(12, 250),
                 AutoSize = true,
                 ForeColor = Color.Orange,
@@ -742,7 +797,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnResetPose = new Button
             {
-                Text = "🔄 Réinitialiser les repères Biped UO par défaut",
+                Text = Localization.Tr("rig_btn_reset_pose", "🔄 Réinitialiser les repères Biped UO par défaut"),
                 Dock = DockStyle.Bottom,
                 Height = 28,
                 BackColor = Color.FromArgb(45, 45, 48),
@@ -766,7 +821,7 @@ namespace UoFiddler.Plugin.Granny3D
             // 5. Animation Preview Group
             var grpAnim = new GroupBox
             {
-                Text = "5. Prévisualisation en Direct (Test Animation UO)",
+                Text = Localization.Tr("rig_grp_anim", "5. Prévisualisation en Direct (Test Animation UO)"),
                 Dock = DockStyle.Top,
                 Height = 220,
                 ForeColor = Color.MediumOrchid,
@@ -787,7 +842,7 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlAnimBtns = new Panel { Dock = DockStyle.Top, Height = 36, Padding = new Padding(0, 6, 0, 0) };
             btnPlayAnim = new Button
             {
-                Text = "▶ Lancer le Test",
+                Text = Localization.Tr("rig_btn_play_anim", "▶ Lancer le Test"),
                 Location = new Point(0, 4),
                 Width = 145,
                 Height = 28,
@@ -800,7 +855,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             btnStopAnim = new Button
             {
-                Text = "⏹ T-Pose",
+                Text = Localization.Tr("rig_btn_stop_anim", "⏹ T-Pose"),
                 Location = new Point(152, 4),
                 Width = 95,
                 Height = 28,
@@ -813,7 +868,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnVictoryAnim = new Button
             {
-                Text = "✨ Test Doigts (Victoire)",
+                Text = Localization.Tr("rig_btn_victory", "✨ Test Doigts (Victoire)"),
                 Location = new Point(254, 4),
                 Width = 220,
                 Height = 28,
@@ -839,7 +894,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnImportAnim = new Button
             {
-                Text = "📂 Importer Action...",
+                Text = Localization.Tr("rig_btn_import_action", "📂 Importer Action..."),
                 Location = new Point(480, 4),
                 Width = 160,
                 Height = 28,
@@ -859,7 +914,7 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlFingerFlex = new Panel { Dock = DockStyle.Top, Height = 62, Padding = new Padding(0, 4, 0, 0) };
             lblFingerFlex = new Label
             {
-                Text = "✋ Test Flexion Doigts / Poing : 0%",
+                Text = Localization.Tr("rig_lbl_finger_flex", "✋ Test Flexion Doigts / Poing : 0%"),
                 Location = new Point(0, 4),
                 AutoSize = true,
                 ForeColor = Color.Gold,
@@ -867,7 +922,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
             var btnFlexOpen = new Button
             {
-                Text = "Ouvrir",
+                Text = Localization.Tr("rig_btn_flex_open", "Ouvrir"),
                 Location = new Point(285, 2),
                 Size = new Size(60, 22),
                 BackColor = Color.FromArgb(45, 45, 48),
@@ -877,7 +932,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
             var btnFlexFist = new Button
             {
-                Text = "Poing",
+                Text = Localization.Tr("rig_btn_flex_fist", "Poing"),
                 Location = new Point(350, 2),
                 Size = new Size(60, 22),
                 BackColor = Color.FromArgb(120, 50, 20),
@@ -898,7 +953,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 tbFingerFlex.Value = 0;
                 _fingerFlexAmount = 0f;
-                lblFingerFlex.Text = "✋ Test Flexion Doigts / Poing : 0%";
+                lblFingerFlex.Text = Localization.Tr("rig_lbl_finger_flex", "✋ Test Flexion Doigts / Poing : 0%");
                 ApplyAnimationPose(_animTime);
                 glControl.Invalidate();
             };
@@ -906,14 +961,14 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 tbFingerFlex.Value = 100;
                 _fingerFlexAmount = 1.0f;
-                lblFingerFlex.Text = "✋ Test Flexion Doigts / Poing : 100%";
+                lblFingerFlex.Text = Localization.TrFmt("rig_lbl_finger_flex_pct", "✋ Test Flexion Doigts / Poing : {0}%", 100);
                 ApplyAnimationPose(_animTime);
                 glControl.Invalidate();
             };
             tbFingerFlex.Scroll += (s, e) =>
             {
                 _fingerFlexAmount = tbFingerFlex.Value / 100f;
-                lblFingerFlex.Text = $"✋ Test Flexion Doigts / Poing : {tbFingerFlex.Value}%";
+                lblFingerFlex.Text = Localization.TrFmt("rig_lbl_finger_flex_pct", "✋ Test Flexion Doigts / Poing : {0}%", tbFingerFlex.Value);
                 ApplyAnimationPose(_animTime);
                 glControl.Invalidate();
             };
@@ -948,7 +1003,7 @@ namespace UoFiddler.Plugin.Granny3D
             // 6. Validation Action Group
             var grpAction = new GroupBox
             {
-                Text = "6. Enregistrement",
+                Text = Localization.Tr("rig_grp_action", "6. Enregistrement"),
                 Dock = DockStyle.Top,
                 Height = 90,
                 ForeColor = Color.White,
@@ -958,7 +1013,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             btnValidate = new Button
             {
-                Text = "⚡ Valider & Générer le Character UO (.char)",
+                Text = Localization.Tr("rig_btn_validate", "⚡ Valider & Générer le Character UO (.char)"),
                 Dock = DockStyle.Fill,
                 BackColor = Color.FromArgb(24, 120, 56),
                 ForeColor = Color.White,
@@ -1135,6 +1190,24 @@ namespace UoFiddler.Plugin.Granny3D
             if (currentH > 1e-4f)
             {
                 float targetH = 1.75f; // Standard UO Biped humanoid height
+                if (rbCustom != null && rbCustom.Checked && _refBones != null && _refBones.Count > 0)
+                {
+                    float refMinZ = float.MaxValue, refMaxZ = float.MinValue;
+                    foreach (var b in _refBones)
+                    {
+                        if (Math.Abs(b.InverseBindMatrix.Determinant) > 1e-5f)
+                        {
+                            float bz = Matrix4.Invert(b.InverseBindMatrix).Row3.Z;
+                            refMinZ = Math.Min(refMinZ, bz);
+                            refMaxZ = Math.Max(refMaxZ, bz);
+                        }
+                    }
+                    if (refMaxZ > refMinZ + 0.1f)
+                    {
+                        targetH = (refMaxZ - refMinZ) * 1.1f;
+                    }
+                }
+
                 float factor = targetH / currentH;
                 _scale *= factor;
                 if (nudScale != null) nudScale.Value = (decimal)MathHelper.Clamp(_scale, 0.0001f, 1000f);
@@ -1325,6 +1398,26 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        private void ChooseCustomSkeleton()
+        {
+            using var dlg = new VdChooseMapDialog(_basePath);
+            if (dlg.ShowDialog(this) == DialogResult.OK && dlg.SelectedModel != null)
+            {
+                _customSkeletonPath = dlg.SelectedModel.MeshPath;
+                _customSkeletonName = dlg.SelectedModel.DisplayName;
+                rbCustom.Text = $"Créature : {_customSkeletonName}";
+                rbCustom.Checked = true;
+                OnSkeletonChangedCreature(_customSkeletonPath, _customSkeletonName);
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(_customSkeletonPath))
+                {
+                    rbMale.Checked = true;
+                }
+            }
+        }
+
         private void OnSkeletonChanged(bool isFemale)
         {
             string maleRef = Path.Combine(_basePath, "Humans", "H_Male_Lod2.grn");
@@ -1333,9 +1426,156 @@ namespace UoFiddler.Plugin.Granny3D
             if (!File.Exists(femaleRef)) femaleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Female_Lod2.grn");
 
             _refPath = isFemale && File.Exists(femaleRef) ? femaleRef : maleRef;
+            InitializeDefaultMarkers();
             LoadReferenceBones();
-            PopulateTestAnimations();
+            _previewModel = null;
             EnsurePreviewModel();
+            PopulateTestAnimations();
+            glControl.Invalidate();
+        }
+
+        private void OnSkeletonChangedCreature(string meshPath, string displayName)
+        {
+            if (string.IsNullOrEmpty(meshPath) || !File.Exists(meshPath)) return;
+
+            _refPath = meshPath;
+            _customSkeletonPath = meshPath;
+            _customSkeletonName = !string.IsNullOrEmpty(displayName) ? displayName : Path.GetFileNameWithoutExtension(meshPath);
+
+            if (lblSkeletonName != null)
+            {
+                lblSkeletonName.Text = $"Squelette actif : {_customSkeletonName} ({Path.GetFileName(meshPath)})";
+            }
+
+            LoadReferenceBones();
+            InitializeMarkersFromCreatureBones(_refBones);
+            _previewModel = null;
+            EnsurePreviewModel();
+            PopulateTestAnimations();
+            glControl.Invalidate();
+        }
+
+        private void InitializeMarkersFromCreatureBones(List<GrannyBone> bones)
+        {
+            _markers.Clear();
+            if (bones == null || bones.Count == 0) return;
+
+            int nb = bones.Count;
+            for (int i = 0; i < nb; i++) bones[i].Id = i;
+
+            var worldPos = new Vector3[nb];
+            var worldMat = new Matrix4[nb];
+
+            for (int i = 0; i < nb; i++)
+            {
+                var inv = bones[i].InverseBindMatrix;
+                if (Math.Abs(inv.Determinant) > 1e-5f)
+                {
+                    worldMat[i] = Matrix4.Invert(inv);
+                    worldPos[i] = worldMat[i].Row3.Xyz;
+                }
+            }
+
+            var children = new List<int>[nb];
+            for (int i = 0; i < nb; i++) children[i] = new List<int>();
+            var roots = new List<int>();
+
+            for (int i = 0; i < nb; i++)
+            {
+                int p = GetParentIndex(bones, i);
+                if (p >= 0 && p < nb && p != i)
+                    children[p].Add(i);
+                else
+                    roots.Add(i);
+            }
+
+            void ComputeFk(int idx)
+            {
+                if (worldPos[idx] == Vector3.Zero && Math.Abs(bones[idx].InverseBindMatrix.Determinant) <= 1e-5f)
+                {
+                    int p = GetParentIndex(bones, idx);
+                    var local = Matrix4.CreateFromQuaternion(bones[idx].LocalRotation) * Matrix4.CreateTranslation(bones[idx].LocalPosition);
+                    if (p >= 0 && p < nb && p != idx)
+                        worldMat[idx] = local * worldMat[p];
+                    else
+                        worldMat[idx] = local;
+                    worldPos[idx] = worldMat[idx].Row3.Xyz;
+                }
+
+                foreach (int child in children[idx])
+                    ComputeFk(child);
+            }
+
+            foreach (int r in roots)
+                ComputeFk(r);
+
+            for (int i = 0; i < nb; i++)
+            {
+                var b = bones[i];
+                string? pName = (b.ParentId >= 0 && b.ParentId < nb) ? bones[b.ParentId].Name : null;
+
+                // Symmetry detection: L <-> R
+                string? symName = null;
+                string bName = b.Name;
+                if (bName.Contains(" L "))
+                {
+                    string cand = bName.Replace(" L ", " R ");
+                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
+                        symName = cand;
+                }
+                else if (bName.Contains(" R "))
+                {
+                    string cand = bName.Replace(" R ", " L ");
+                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
+                        symName = cand;
+                }
+                else if (bName.StartsWith("Left", StringComparison.OrdinalIgnoreCase))
+                {
+                    string cand = "Right" + bName.Substring(4);
+                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
+                        symName = cand;
+                }
+                else if (bName.StartsWith("Right", StringComparison.OrdinalIgnoreCase))
+                {
+                    string cand = "Left" + bName.Substring(5);
+                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
+                        symName = cand;
+                }
+
+                Color col = GetCreatureMarkerColor(bName, i, nb);
+
+                _markers.Add(new JointMarker
+                {
+                    BoneName = b.Name,
+                    DisplayName = b.Name,
+                    Position = worldPos[i],
+                    ParentName = pName,
+                    SymmetricBoneName = symName,
+                    Color = col
+                });
+            }
+
+            RefreshJointsCombo();
+        }
+
+        private static Color GetCreatureMarkerColor(string name, int idx, int total)
+        {
+            string l = name.ToLowerInvariant();
+            if (l.Contains("head") || l.Contains("jaw") || l.Contains("neck")) return Color.FromArgb(255, 140, 0);
+            if (l.Contains("spine") || l.Contains("pelvis") || l.Contains("hips") || l.Contains("tail")) return Color.FromArgb(50, 205, 50);
+            if (l.Contains(" l ") || l.Contains("left") || l.EndsWith("_l")) return Color.FromArgb(30, 144, 255);
+            if (l.Contains(" r ") || l.Contains("right") || l.EndsWith("_r")) return Color.FromArgb(220, 20, 60);
+
+            int cIdx = idx % 6;
+            return cIdx switch
+            {
+                0 => Color.FromArgb(255, 215, 0),
+                1 => Color.FromArgb(0, 206, 209),
+                2 => Color.FromArgb(218, 112, 214),
+                3 => Color.FromArgb(255, 105, 180),
+                4 => Color.FromArgb(124, 252, 0),
+                _ => Color.FromArgb(255, 160, 122)
+            };
         }
 
         private void LoadReferenceBones()
@@ -1448,35 +1688,77 @@ namespace UoFiddler.Plugin.Granny3D
                 catch { }
             }
 
-            // 4. Standard UO Animations from Humans/
-            string humansDir = Path.Combine(_basePath, "Humans");
-            if (!Directory.Exists(humansDir)) humansDir = @"d:\Games\sphere\PROGRAMMESD_UO\Models\Humans";
-
-            if (Directory.Exists(humansDir))
+            // 4. Standard UO Animations (Humans or Custom Creature)
+            if (rbFemale.Checked || rbMale.Checked)
             {
-                var files = Directory.GetFiles(humansDir, "*.grn")
-                    .Select(Path.GetFileName)
-                    .Where(fn => fn != null &&
-                                 !fn.EndsWith("_Lod2.grn", StringComparison.OrdinalIgnoreCase) &&
-                                 !fn.EndsWith("_Lod1.grn", StringComparison.OrdinalIgnoreCase) &&
-                                 !fn.EndsWith("_Lod0.grn", StringComparison.OrdinalIgnoreCase) &&
-                                 !fn.StartsWith("Character_", StringComparison.OrdinalIgnoreCase) &&
-                                 !fn.StartsWith("Counselor_", StringComparison.OrdinalIgnoreCase) &&
-                                 !fn.StartsWith("Dawn_Girl_", StringComparison.OrdinalIgnoreCase) &&
-                                 !fn.StartsWith("H_Male_Lod", StringComparison.OrdinalIgnoreCase) &&
-                                 !fn.StartsWith("H_Female_Lod", StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(fn => fn)
-                    .ToList();
+                string humansDir = Path.Combine(_basePath, "Humans");
+                if (!Directory.Exists(humansDir)) humansDir = @"d:\Games\sphere\PROGRAMMES D_UO\Models\Humans";
 
-                foreach (var f in files)
+                if (Directory.Exists(humansDir))
                 {
-                    bool hasFingers = HasFingerMotionAnim(f);
-                    string displayName = hasFingers ? $"✨ {f} [Doigts animés]" : f;
-                    cbAnimTest.Items.Add(new AnimTestItem
+                    var files = Directory.GetFiles(humansDir, "*.grn")
+                        .Select(Path.GetFileName)
+                        .Where(fn => fn != null &&
+                                     !fn.EndsWith("_Lod2.grn", StringComparison.OrdinalIgnoreCase) &&
+                                     !fn.EndsWith("_Lod1.grn", StringComparison.OrdinalIgnoreCase) &&
+                                     !fn.EndsWith("_Lod0.grn", StringComparison.OrdinalIgnoreCase) &&
+                                     !fn.StartsWith("Character_", StringComparison.OrdinalIgnoreCase) &&
+                                     !fn.StartsWith("Counselor_", StringComparison.OrdinalIgnoreCase) &&
+                                     !fn.StartsWith("Dawn_Girl_", StringComparison.OrdinalIgnoreCase) &&
+                                     !fn.StartsWith("H_Male_Lod", StringComparison.OrdinalIgnoreCase) &&
+                                     !fn.StartsWith("H_Female_Lod", StringComparison.OrdinalIgnoreCase))
+                        .OrderBy(fn => fn)
+                        .ToList();
+
+                    foreach (var f in files)
                     {
-                        DisplayName = displayName,
-                        FilePath = Path.Combine(humansDir, f)
-                    });
+                        bool hasFingers = HasFingerMotionAnim(f);
+                        string displayName = hasFingers ? $"✨ {f} [Doigts animés]" : f;
+                        cbAnimTest.Items.Add(new AnimTestItem
+                        {
+                            DisplayName = displayName,
+                            FilePath = Path.Combine(humansDir, f)
+                        });
+                    }
+                }
+            }
+            else
+            {
+                // Custom creature animations (e.g. Centaurs_centaur, Monsters, Animals, etc.)
+                string creatureFolder = Path.GetDirectoryName(_refPath) ?? string.Empty;
+                if (!string.IsNullOrEmpty(creatureFolder) && Directory.Exists(creatureFolder))
+                {
+                    string refFn = Path.GetFileNameWithoutExtension(_refPath);
+                    string cleanName = refFn;
+                    int lodPos = cleanName.IndexOf("_Lod", StringComparison.OrdinalIgnoreCase);
+                    if (lodPos < 0) lodPos = cleanName.IndexOf("_lod", StringComparison.OrdinalIgnoreCase);
+                    if (lodPos >= 0) cleanName = cleanName.Substring(0, lodPos);
+
+                    try
+                    {
+                        var grnFiles = Directory.GetFiles(creatureFolder, "*.grn")
+                            .Select(Path.GetFileName)
+                            .Where(fn => fn != null &&
+                                         !fn.EndsWith("_Lod2.grn", StringComparison.OrdinalIgnoreCase) &&
+                                         !fn.EndsWith("_Lod1.grn", StringComparison.OrdinalIgnoreCase) &&
+                                         !fn.EndsWith("_Lod0.grn", StringComparison.OrdinalIgnoreCase) &&
+                                         !fn.EndsWith("_lod2.grn", StringComparison.OrdinalIgnoreCase) &&
+                                         !fn.EndsWith("_lod1.grn", StringComparison.OrdinalIgnoreCase) &&
+                                         !fn.EndsWith("_lod0.grn", StringComparison.OrdinalIgnoreCase) &&
+                                         fn.StartsWith(cleanName, StringComparison.OrdinalIgnoreCase))
+                            .OrderBy(fn => fn)
+                            .ToList();
+
+                        foreach (var f in grnFiles)
+                        {
+                            cbAnimTest.Items.Add(new AnimTestItem
+                            {
+                                DisplayName = $"🐾 [{cleanName}] {f}",
+                                FilePath = Path.Combine(creatureFolder, f)
+                            });
+                        }
+                    }
+                    catch { }
                 }
             }
 
@@ -1490,7 +1772,7 @@ namespace UoFiddler.Plugin.Granny3D
                     break;
                 }
             }
-            if (defaultIdx < 0)
+            if (defaultIdx < 0 && (rbFemale.Checked || rbMale.Checked))
             {
                 string prefix = rbFemale.Checked ? "H_Female_" : "H_Male_";
                 string walkTarget = prefix + "Walk_01.grn";
@@ -1505,13 +1787,18 @@ namespace UoFiddler.Plugin.Granny3D
             }
             if (defaultIdx < 0)
             {
-                for (int i = 0; i < cbAnimTest.Items.Count; i++)
+                string[] targets = { "Walk", "Run", "Idle", "Attack1", "Attack", "Die" };
+                foreach (var t in targets)
                 {
-                    if (cbAnimTest.Items[i] is AnimTestItem item && item.DisplayName.IndexOf("Walk", StringComparison.OrdinalIgnoreCase) >= 0)
+                    for (int i = 0; i < cbAnimTest.Items.Count; i++)
                     {
-                        defaultIdx = i;
-                        break;
+                        if (cbAnimTest.Items[i] is AnimTestItem item && item.DisplayName.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            defaultIdx = i;
+                            break;
+                        }
                     }
+                    if (defaultIdx >= 0) break;
                 }
             }
 

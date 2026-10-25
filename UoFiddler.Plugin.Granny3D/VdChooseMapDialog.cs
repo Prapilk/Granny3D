@@ -36,9 +36,9 @@ namespace UoFiddler.Plugin.Granny3D
         {
             _basePath = !string.IsNullOrEmpty(basePath) ? basePath : Granny3DControl.BasePath;
 
-            Text = "Choose map — Sélectionner un modèle";
-            ClientSize = new Size(400, 560);
-            MinimumSize = new Size(340, 420);
+            Text = Localization.Tr("map_dlg_title", "Sélectionner un modèle ou créature");
+            ClientSize = new Size(480, 560);
+            MinimumSize = new Size(380, 420);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(40, 40, 44);
             ForeColor = Color.Gainsboro;
@@ -57,7 +57,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var lblPrompt = new Label
             {
-                Text = "Modèle ou créature de référence pour le mapping :",
+                Text = Localization.Tr("map_dlg_prompt", "Modèle ou créature de référence pour le mapping :"),
                 Dock = DockStyle.Top,
                 Height = 20,
                 ForeColor = Color.Gainsboro
@@ -134,7 +134,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             _btnCancel = new Button
             {
-                Text = "Annuler",
+                Text = Localization.Tr("cancel", "Annuler"),
                 Width = 90,
                 Height = 28,
                 BackColor = Color.FromArgb(60, 60, 62),
@@ -145,7 +145,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             _btnOk = new Button
             {
-                Text = "Sélectionner",
+                Text = Localization.Tr("map_dlg_select", "Sélectionner"),
                 Width = 105,
                 Height = 28,
                 BackColor = Color.FromArgb(70, 95, 75),
@@ -155,8 +155,42 @@ namespace UoFiddler.Plugin.Granny3D
             };
             _btnOk.Click += (s, e) => AcceptChoice();
 
+            var btnBrowseFile = new Button
+            {
+                Text = Localization.Tr("map_dlg_browse", "📁 Parcourir fichier .grn / .char..."),
+                AutoSize = true,
+                Height = 28,
+                BackColor = Color.FromArgb(50, 70, 95),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnBrowseFile.Click += (s, e) =>
+            {
+                using var ofd = new OpenFileDialog
+                {
+                    Title = Localization.Tr("map_dlg_browse", "Sélectionner un modèle ou squelette .grn / .char"),
+                    Filter = "Fichiers Meshs / Squelettes (*.grn;*.char)|*.grn;*.char|Tous les fichiers (*.*)|*.*",
+                    InitialDirectory = Directory.Exists(_basePath) ? _basePath : AppDomain.CurrentDomain.BaseDirectory
+                };
+                if (ofd.ShowDialog(this) == DialogResult.OK)
+                {
+                    string fn = Path.GetFileNameWithoutExtension(ofd.FileName);
+                    SelectedModel = new ModelEntry
+                    {
+                        DisplayName = fn,
+                        Category = "Custom",
+                        Folder = Path.GetDirectoryName(ofd.FileName) ?? string.Empty,
+                        MeshPath = ofd.FileName,
+                        Prefix = fn + "_"
+                    };
+                    DialogResult = DialogResult.OK;
+                    Close();
+                }
+            };
+
             pnlBottom.Controls.Add(_btnCancel);
             pnlBottom.Controls.Add(_btnOk);
+            pnlBottom.Controls.Add(btnBrowseFile);
 
             Controls.Add(pnlCenter);
             Controls.Add(pnlBottom);

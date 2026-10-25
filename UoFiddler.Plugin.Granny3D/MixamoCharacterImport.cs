@@ -39,11 +39,12 @@ namespace UoFiddler.Plugin.Granny3D
             out GrannyModelFile? model,
             out string? error,
             IReadOnlyDictionary<string, Vector3>? customJointPositions = null,
-            bool forceAutoSkin = false)
+            bool forceAutoSkin = false,
+            bool asStaticAccessory = false)
         {
             try
             {
-                model = Import(fbxPath, null, outFolder, uoRefPath, customJointPositions, forceAutoSkin);
+                model = Import(fbxPath, null, outFolder, uoRefPath, customJointPositions, forceAutoSkin, asStaticAccessory);
                 if (model == null || model.Parts.Count == 0)
                 {
                     error = "Aucun mesh valide trouvé dans le fichier 3D.";
@@ -66,15 +67,16 @@ namespace UoFiddler.Plugin.Granny3D
             string? outFolder = null,
             string? uoRefPath = null,
             IReadOnlyDictionary<string, Vector3>? customJointPositions = null,
-            bool forceAutoSkin = false)
+            bool forceAutoSkin = false,
+            bool asStaticAccessory = false)
         {
             if (string.IsNullOrEmpty(fbxPath) || !File.Exists(fbxPath)) return null;
 
             if (string.IsNullOrEmpty(outFolder))
                 outFolder = Path.GetDirectoryName(fbxPath) ?? string.Empty;
 
-            // 1) Find and load the reference UO Biped skeleton (H_Male_Lod2.grn or H_Female_Lod2.grn)
-            var refBones = LoadReferenceBones(uoRefPath, outFolder);
+            // 1) Find and load reference skeleton (only if not an unrigged static accessory)
+            var refBones = asStaticAccessory ? null : LoadReferenceBones(uoRefPath, outFolder);
 
             using var ctx = new AssimpContext();
             var scene = ctx.ImportFile(fbxPath,
@@ -462,6 +464,10 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int i = 0; i < model.Bones.Count; i++)
                     uoBoneByName[model.Bones[i].Name] = i;
             }
+            else if (asStaticAccessory)
+            {
+                model.Bones = new List<GrannyBone>();
+            }
             else
             {
                 BuildFallbackSkeleton(scene, nodes, nodeParent, nameToNode, model, wU);
@@ -753,19 +759,27 @@ namespace UoFiddler.Plugin.Granny3D
 
 
 
-                    bool hasSkin = false;
-                    for (int v = 0; v < part.Skin.Length; v++)
+                    if (asStaticAccessory)
                     {
-                        if (part.Skin[v] != null && part.Skin[v].Length > 0)
-                        {
-                            hasSkin = true;
-                            break;
-                        }
+                        part.Skin = null;
+                        part.CutoutRole = MeshCutoutRole.Accessory;
                     }
-
-                    if (!hasSkin || forceAutoSkin)
+                    else
                     {
-                        ComputeVolumetricSkinning(part, model.Bones);
+                        bool hasSkin = false;
+                        for (int v = 0; v < part.Skin.Length; v++)
+                        {
+                            if (part.Skin[v] != null && part.Skin[v].Length > 0)
+                            {
+                                hasSkin = true;
+                                break;
+                            }
+                        }
+
+                        if (!hasSkin || forceAutoSkin)
+                        {
+                            ComputeVolumetricSkinning(part, model.Bones);
+                        }
                     }
 
                     model.Parts.Add(part);

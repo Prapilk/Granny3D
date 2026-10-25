@@ -56,7 +56,7 @@ namespace UoFiddler.Plugin.Granny3D
         private void InitializeComponentCustom()
         {
             string charName = Path.GetFileNameWithoutExtension(_charPath);
-            Text = $"Textures du Character : {charName}";
+            Text = Localization.TrFmt("tex_dlg_title_fmt", "Textures du Character : {0}", charName);
             Size = new Size(880, 520);
             MinimumSize = new Size(720, 400);
             StartPosition = FormStartPosition.CenterParent;
@@ -74,7 +74,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var lblTitle = new Label
             {
-                Text = $"Modèle : {charName}  ({_model.Parts.Count} mesh{(_model.Parts.Count > 1 ? "es" : "")})",
+                Text = Localization.TrFmt("tex_dlg_model_info_fmt", "Modèle : {0}  ({1} mesh{2})", charName, _model.Parts.Count, (_model.Parts.Count > 1 ? "es" : "")),
                 Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
                 ForeColor = Color.White,
                 Dock = DockStyle.Top,
@@ -83,7 +83,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var lblSubtitle = new Label
             {
-                Text = "Assignez une texture BaseColor / Diffuse (PNG, TGA, JPG, BMP) à chaque mesh du modèle, ou extrayez-les d'un FBX.",
+                Text = Localization.Tr("tex_dlg_subtitle", "Assignez une texture BaseColor / Diffuse (PNG, TGA, JPG, BMP) à chaque mesh du modèle, ou extrayez-les d'un FBX."),
                 Font = new Font("Segoe UI", 8.5f),
                 ForeColor = Color.Silver,
                 Dock = DockStyle.Top,
@@ -104,7 +104,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var lblPreviewHeader = new Label
             {
-                Text = "Aperçu de la texture :",
+                Text = Localization.Tr("tex_dlg_preview_header", "Aperçu de la texture :"),
                 ForeColor = Color.Gainsboro,
                 Dock = DockStyle.Top,
                 Height = 22,
@@ -163,7 +163,7 @@ namespace UoFiddler.Plugin.Granny3D
             var colMesh = new DataGridViewTextBoxColumn
             {
                 Name = "colMesh",
-                HeaderText = "Mesh",
+                HeaderText = Localization.Tr("tex_col_mesh", "Mesh"),
                 Width = 140,
                 ReadOnly = true
             };
@@ -171,7 +171,7 @@ namespace UoFiddler.Plugin.Granny3D
             var colMat = new DataGridViewTextBoxColumn
             {
                 Name = "colMat",
-                HeaderText = "Matériau FBX",
+                HeaderText = Localization.Tr("tex_col_material", "Matériau FBX"),
                 Width = 120,
                 ReadOnly = true
             };
@@ -179,7 +179,7 @@ namespace UoFiddler.Plugin.Granny3D
             var colTex = new DataGridViewTextBoxColumn
             {
                 Name = "colTex",
-                HeaderText = "Fichier Texture",
+                HeaderText = Localization.Tr("tex_col_texture_file", "Fichier Texture"),
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
                 ReadOnly = true
             };
@@ -187,8 +187,8 @@ namespace UoFiddler.Plugin.Granny3D
             var colBrowse = new DataGridViewButtonColumn
             {
                 Name = "colBrowse",
-                HeaderText = "Action",
-                Text = "Parcourir...",
+                HeaderText = Localization.Tr("tex_col_action", "Action"),
+                Text = Localization.Tr("tex_col_browse", "Parcourir..."),
                 UseColumnTextForButtonValue = true,
                 Width = 95,
                 FlatStyle = FlatStyle.Flat
@@ -198,7 +198,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Name = "colClear",
                 HeaderText = "",
-                Text = "Retirer",
+                Text = Localization.Tr("tex_col_clear", "Retirer"),
                 UseColumnTextForButtonValue = true,
                 Width = 70,
                 FlatStyle = FlatStyle.Flat
@@ -220,7 +220,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             _btnApply = new Button
             {
-                Text = "Appliquer et Enregistrer",
+                Text = Localization.Tr("btn_apply_save", "Appliquer et Enregistrer"),
                 DialogResult = DialogResult.OK,
                 Dock = DockStyle.Right,
                 Width = 170,
@@ -233,7 +233,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             _btnCancel = new Button
             {
-                Text = "Annuler",
+                Text = Localization.Tr("btn_cancel", "Annuler"),
                 DialogResult = DialogResult.Cancel,
                 Dock = DockStyle.Right,
                 Width = 90,
@@ -244,7 +244,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnExtractFbx = new Button
             {
-                Text = "Extraire textures d'un FBX...",
+                Text = Localization.Tr("btn_extract_fbx_tex", "Extraire textures d'un FBX..."),
                 Dock = DockStyle.Left,
                 Width = 200,
                 BackColor = Color.FromArgb(40, 75, 120),
@@ -256,7 +256,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnOpenFolder = new Button
             {
-                Text = "Ouvrir dossier modèle...",
+                Text = Localization.Tr("btn_open_model_folder", "Ouvrir dossier modèle..."),
                 Dock = DockStyle.Left,
                 Width = 160,
                 BackColor = Color.FromArgb(50, 50, 50),
@@ -283,7 +283,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 var btnExtractMesh = new Button
                 {
-                    Text = "Extraire pièces vers 'Meshs custom'...",
+                    Text = Localization.Tr("menu_extract_parts", "Extraire des pièces vers 'Meshs custom'..."),
                     Dock = DockStyle.Left,
                     Width = 240,
                     BackColor = Color.FromArgb(35, 120, 75),
