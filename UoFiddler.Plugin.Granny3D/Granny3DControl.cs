@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Windows.Forms;
 using OpenTK.Graphics.OpenGL;
 using OpenTK.Mathematics;
@@ -1969,7 +1970,69 @@ namespace UoFiddler.Plugin.Granny3D
             grpChar.Controls.Add(new Label { Text = "Peau (corps)", Location = new Point(8, 234), Width = 232, ForeColor = Color.Gainsboro });
             cbCharSkin = MakeSlotCombo(252);
             cbCharSkin.SelectedIndexChanged += CharSkin_Changed;
-            grpChar.Controls.AddRange(new Control[] { lblCharInfo, cbCharFace, cbCharHair, cbCharBeard, cbCharTorso, cbCharSkin });
+            // Multipart character preset buttons (Save / Load / Reset / Unified .char export)
+            var btnSaveChar = new Button
+            {
+                Text = "💾 Sauver personnage…",
+                Location = new Point(8, 286),
+                Width = 232,
+                Height = 28,
+                BackColor = Color.FromArgb(40, 70, 95),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnSaveChar.Click += (s, e) => SaveCharacterPresetDialog();
+
+            var btnLoadChar = new Button
+            {
+                Text = "📂 Charger personnage…",
+                Location = new Point(8, 318),
+                Width = 232,
+                Height = 28,
+                BackColor = Color.FromArgb(45, 75, 55),
+                ForeColor = Color.LightGreen,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnLoadChar.Click += (s, e) => LoadCharacterPresetDialog();
+
+            var btnResetChar = new Button
+            {
+                Text = "↺ Réinitialiser personnage",
+                Location = new Point(8, 350),
+                Width = 232,
+                Height = 26,
+                BackColor = Color.FromArgb(60, 60, 62),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnResetChar.Click += (s, e) => ResetCharacterToDefault();
+
+            var btnExportCharFile = new Button
+            {
+                Text = "📦 Exporter en .char unifié…",
+                Location = new Point(8, 380),
+                Width = 232,
+                Height = 28,
+                BackColor = Color.FromArgb(85, 60, 45),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnExportCharFile.Click += (s, e) => ExportUnifiedCharModelDialog();
+
+            var lblCharPresetInfo = new Label
+            {
+                Text = "Sauve & recharge : visage, coiffure, barbe, torse, peau, accessoires attachés (os, offsets, teintes, cutout).",
+                Location = new Point(8, 414),
+                Width = 232,
+                Height = 44,
+                ForeColor = Color.DarkGray,
+                Font = new Font("Segoe UI", 7.5f)
+            };
+
+            grpChar.Controls.AddRange(new Control[] {
+                lblCharInfo, cbCharFace, cbCharHair, cbCharBeard, cbCharTorso, cbCharSkin,
+                btnSaveChar, btnLoadChar, btnResetChar, btnExportCharFile, lblCharPresetInfo
+            });
 
             // ---- Camera / UO render options (docked right of the character menu) ----
             grpCamera = new GroupBox
@@ -1981,77 +2044,159 @@ namespace UoFiddler.Plugin.Granny3D
                 Padding = new Padding(8)
             };
 
-            chkUoView = new CheckBox { Text = "Afficher le rendu UO", Location = new Point(8, 22), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
+            chkUoView = new CheckBox { Text = "Afficher le rendu UO", Location = new Point(8, 20), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
             chkUoView.CheckedChanged += (s, e) => { _uoView = chkUoView.Checked; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Mode", Location = new Point(8, 52), Width = 232, ForeColor = Color.Gray });
-            cmbUoMode = new ComboBox { Location = new Point(8, 70), Width = 232, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
-            cmbUoMode.Items.AddRange(new object[] { "Vue UO (1 direction)", "Planche (5 vues)" });
+            grpCamera.Controls.Add(new Label { Text = "Mode", Location = new Point(8, 42), Width = 110, ForeColor = Color.Gray });
+            cmbUoMode = new ComboBox { Location = new Point(8, 58), Width = 110, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
+            cmbUoMode.Items.AddRange(new object[] { "Vue 1 dir.", "Planche 5" });
             cmbUoMode.SelectedIndex = 0;
             cmbUoMode.SelectedIndexChanged += (s, e) => { _uoSheet = cmbUoMode.SelectedIndex == 1; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Direction", Location = new Point(8, 100), Width = 232, ForeColor = Color.Gray });
-            cmbUoDir = new ComboBox { Location = new Point(8, 118), Width = 232, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
+            grpCamera.Controls.Add(new Label { Text = "Direction", Location = new Point(124, 42), Width = 114, ForeColor = Color.Gray });
+            cmbUoDir = new ComboBox { Location = new Point(124, 58), Width = 114, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro };
             cmbUoDir.Items.AddRange(new object[] { "N (0)", "NE (1)", "E (2)", "SE (3)", "S (4)" });
             cmbUoDir.SelectedIndex = 4;
             cmbUoDir.SelectedIndexChanged += (s, e) => { _uoDirection = cmbUoDir.SelectedIndex; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Zoom", Location = new Point(8, 150), Width = 100, ForeColor = Color.Gray });
-            nudUoZoom = new NumericUpDown { Location = new Point(8, 168), Width = 100, Minimum = 0.1m, Maximum = 6m, Increment = 0.1m, DecimalPlaces = 2, Value = 0.27m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Zoom", Location = new Point(8, 84), Width = 110, ForeColor = Color.Gray });
+            nudUoZoom = new NumericUpDown { Location = new Point(8, 100), Width = 110, Minimum = 0.05m, Maximum = 6m, Increment = 0.02m, DecimalPlaces = 2, Value = 0.27m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoZoom.ValueChanged += (s, e) => { _uoZoom = (float)nudUoZoom.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Inclinaison (°)", Location = new Point(120, 150), Width = 120, ForeColor = Color.Gray });
-            nudUoElev = new NumericUpDown { Location = new Point(120, 168), Width = 100, Minimum = 5m, Maximum = 60m, Increment = 0.5m, DecimalPlaces = 2, Value = 26.565m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Inclinaison (°)", Location = new Point(124, 84), Width = 114, ForeColor = Color.Gray });
+            nudUoElev = new NumericUpDown { Location = new Point(124, 100), Width = 114, Minimum = 5m, Maximum = 60m, Increment = 0.5m, DecimalPlaces = 2, Value = 26.565m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoElev.ValueChanged += (s, e) => { _uoElevationDeg = (float)nudUoElev.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Échelle verticale", Location = new Point(8, 200), Width = 120, ForeColor = Color.Gray });
-            nudUoVert = new NumericUpDown { Location = new Point(8, 218), Width = 100, Minimum = 0.2m, Maximum = 3m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Éch. verticale", Location = new Point(8, 126), Width = 110, ForeColor = Color.Gray });
+            nudUoVert = new NumericUpDown { Location = new Point(8, 142), Width = 110, Minimum = 0.2m, Maximum = 3m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoVert.ValueChanged += (s, e) => { _uoVertScale = (float)nudUoVert.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Luminosité", Location = new Point(120, 200), Width = 110, ForeColor = Color.Gray });
-            nudUoBright = new NumericUpDown { Location = new Point(120, 218), Width = 100, Minimum = 0.2m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.8m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Luminosité", Location = new Point(124, 126), Width = 114, ForeColor = Color.Gray });
+            nudUoBright = new NumericUpDown { Location = new Point(124, 142), Width = 114, Minimum = 0.2m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.8m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoBright.ValueChanged += (s, e) => { _uoBrightness = (float)nudUoBright.Value; if (glControl != null) glControl.Invalidate(); };
 
-            chkUoFeet = new CheckBox { Text = "Pieds sur la ligne", Location = new Point(8, 248), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
+            chkUoFeet = new CheckBox { Text = "Pieds sur la ligne rouge", Location = new Point(8, 168), Width = 232, Checked = true, ForeColor = Color.Gainsboro };
             chkUoFeet.CheckedChanged += (s, e) => { _uoFeetOnLine = chkUoFeet.Checked; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Décalage X", Location = new Point(8, 276), Width = 110, ForeColor = Color.Gray });
-            nudUoOffX = new NumericUpDown { Location = new Point(8, 294), Width = 100, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Décalage X", Location = new Point(8, 190), Width = 110, ForeColor = Color.Gray });
+            nudUoOffX = new NumericUpDown { Location = new Point(8, 206), Width = 110, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoOffX.ValueChanged += (s, e) => { _uoOffX = (float)nudUoOffX.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Décalage Y", Location = new Point(120, 276), Width = 110, ForeColor = Color.Gray });
-            nudUoOffY = new NumericUpDown { Location = new Point(120, 294), Width = 100, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = -0.080m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Décalage Y", Location = new Point(124, 190), Width = 114, ForeColor = Color.Gray });
+            nudUoOffY = new NumericUpDown { Location = new Point(124, 206), Width = 114, Minimum = -2m, Maximum = 2m, Increment = 0.02m, DecimalPlaces = 3, Value = -0.080m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoOffY.ValueChanged += (s, e) => { _uoOffY = (float)nudUoOffY.Value; if (glControl != null) glControl.Invalidate(); };
 
-            // Reference overlay (UOFiddler animation, body 400 = c_man).
-            chkUoRef = new CheckBox { Text = "Référence c_man (superposée)", Location = new Point(8, 328), Width = 232, Checked = false, ForeColor = Color.Gainsboro };
-            chkUoRef.CheckedChanged += (s, e) => { _uoRefShow = chkUoRef.Checked; if (glControl != null) glControl.Invalidate(); };
-
-            grpCamera.Controls.Add(new Label { Text = "Action", Location = new Point(8, 356), Width = 100, ForeColor = Color.Gray });
-            nudUoRefAction = new NumericUpDown { Location = new Point(8, 374), Width = 100, Minimum = 0m, Maximum = 34m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
-            nudUoRefAction.ValueChanged += (s, e) => { _uoRefAction = (int)nudUoRefAction.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
-
-            grpCamera.Controls.Add(new Label { Text = "Frame", Location = new Point(120, 356), Width = 110, ForeColor = Color.Gray });
-            nudUoRefFrame = new NumericUpDown { Location = new Point(120, 374), Width = 100, Minimum = 0m, Maximum = 40m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
-            nudUoRefFrame.ValueChanged += (s, e) => { _uoRefFrame = (int)nudUoRefFrame.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
-
-            grpCamera.Controls.Add(new Label { Text = "Éch. réf.", Location = new Point(8, 406), Width = 100, ForeColor = Color.Gray });
-            nudUoRefScale = new NumericUpDown { Location = new Point(8, 424), Width = 100, Minimum = 0.05m, Maximum = 40m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
-            nudUoRefScale.ValueChanged += (s, e) => { _uoRefScale = (float)nudUoRefScale.Value; if (glControl != null) glControl.Invalidate(); };
-
-            grpCamera.Controls.Add(new Label { Text = "Opacité %", Location = new Point(120, 406), Width = 110, ForeColor = Color.Gray });
-            nudUoRefOpacity = new NumericUpDown { Location = new Point(120, 424), Width = 100, Minimum = 0m, Maximum = 100m, Increment = 5m, DecimalPlaces = 0, Value = 55m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
-            nudUoRefOpacity.ValueChanged += (s, e) => { _uoRefOpacity = (float)nudUoRefOpacity.Value / 100f; if (glControl != null) glControl.Invalidate(); };
-
-            grpCamera.Controls.Add(new Label { Text = "Rotation (°)", Location = new Point(8, 452), Width = 100, ForeColor = Color.Gray });
-            nudUoYaw = new NumericUpDown { Location = new Point(8, 470), Width = 100, Minimum = -180m, Maximum = 180m, Increment = 5m, DecimalPlaces = 0, Value = 180m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Rotation (°)", Location = new Point(8, 232), Width = 110, ForeColor = Color.Gray });
+            nudUoYaw = new NumericUpDown { Location = new Point(8, 248), Width = 110, Minimum = -180m, Maximum = 180m, Increment = 5m, DecimalPlaces = 0, Value = 180m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoYaw.ValueChanged += (s, e) => { _uoYawOffsetDeg = (float)nudUoYaw.Value; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.Add(new Label { Text = "Zoom global %", Location = new Point(120, 452), Width = 110, ForeColor = Color.Gray });
-            nudUoGlobal = new NumericUpDown { Location = new Point(120, 470), Width = 100, Minimum = 10m, Maximum = 500m, Increment = 25m, DecimalPlaces = 0, Value = 100m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            grpCamera.Controls.Add(new Label { Text = "Zoom global %", Location = new Point(124, 232), Width = 114, ForeColor = Color.Gray });
+            nudUoGlobal = new NumericUpDown { Location = new Point(124, 248), Width = 114, Minimum = 10m, Maximum = 500m, Increment = 25m, DecimalPlaces = 0, Value = 100m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudUoGlobal.ValueChanged += (s, e) => { _uoGlobalZoom = (float)nudUoGlobal.Value / 100f; if (glControl != null) glControl.Invalidate(); };
 
-            grpCamera.Controls.AddRange(new Control[] { chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert, nudUoBright, chkUoFeet, nudUoOffX, nudUoOffY, chkUoRef, nudUoRefAction, nudUoRefFrame, nudUoRefScale, nudUoRefOpacity, nudUoYaw, nudUoGlobal });
+            // Reference overlay (UOFiddler animation, body 400 = c_man).
+            chkUoRef = new CheckBox { Text = "Réf. c_man (superposée)", Location = new Point(8, 276), Width = 232, Checked = false, ForeColor = Color.Gainsboro };
+            chkUoRef.CheckedChanged += (s, e) => { _uoRefShow = chkUoRef.Checked; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Action réf.", Location = new Point(8, 298), Width = 110, ForeColor = Color.Gray });
+            nudUoRefAction = new NumericUpDown { Location = new Point(8, 314), Width = 110, Minimum = 0m, Maximum = 34m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefAction.ValueChanged += (s, e) => { _uoRefAction = (int)nudUoRefAction.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Frame réf.", Location = new Point(124, 298), Width = 114, ForeColor = Color.Gray });
+            nudUoRefFrame = new NumericUpDown { Location = new Point(124, 314), Width = 114, Minimum = 0m, Maximum = 40m, Increment = 1m, DecimalPlaces = 0, Value = 0m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefFrame.ValueChanged += (s, e) => { _uoRefFrame = (int)nudUoRefFrame.Value; _uoRefKey = int.MinValue; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Éch. réf.", Location = new Point(8, 340), Width = 110, ForeColor = Color.Gray });
+            nudUoRefScale = new NumericUpDown { Location = new Point(8, 356), Width = 110, Minimum = 0.05m, Maximum = 40m, Increment = 0.05m, DecimalPlaces = 2, Value = 1m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefScale.ValueChanged += (s, e) => { _uoRefScale = (float)nudUoRefScale.Value; if (glControl != null) glControl.Invalidate(); };
+
+            grpCamera.Controls.Add(new Label { Text = "Opacité %", Location = new Point(124, 340), Width = 114, ForeColor = Color.Gray });
+            nudUoRefOpacity = new NumericUpDown { Location = new Point(124, 356), Width = 114, Minimum = 0m, Maximum = 100m, Increment = 5m, DecimalPlaces = 0, Value = 55m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudUoRefOpacity.ValueChanged += (s, e) => { _uoRefOpacity = (float)nudUoRefOpacity.Value / 100f; if (glControl != null) glControl.Invalidate(); };
+
+            // Camera Quick Presets (Perso / Monstre / Défaut)
+            var btnPresetPerso = new Button
+            {
+                Text = "Perso",
+                Location = new Point(8, 386),
+                Width = 72,
+                Height = 25,
+                BackColor = Color.FromArgb(40, 70, 95),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8f)
+            };
+            btnPresetPerso.Click += (s, e) => ApplyCameraPreset(new UoCameraPreset { Zoom = 0.27f, ElevationDeg = 26.565f, VertScale = 1.0f, Brightness = 0.8f, FeetOnLine = true, OffX = 0f, OffY = -0.080f, YawOffsetDeg = 180f, GlobalZoom = 1.0f });
+
+            var btnPresetMonstre = new Button
+            {
+                Text = "Monstre",
+                Location = new Point(84, 386),
+                Width = 74,
+                Height = 25,
+                BackColor = Color.FromArgb(60, 50, 75),
+                ForeColor = Color.LightSkyBlue,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8f)
+            };
+            btnPresetMonstre.Click += (s, e) => ApplyCameraPreset(new UoCameraPreset { Zoom = 0.18f, ElevationDeg = 26.565f, VertScale = 1.0f, Brightness = 0.8f, FeetOnLine = true, OffX = 0f, OffY = -0.050f, YawOffsetDeg = 180f, GlobalZoom = 1.0f });
+
+            var btnResetCamera = new Button
+            {
+                Text = "↺ Défaut",
+                Location = new Point(162, 386),
+                Width = 76,
+                Height = 25,
+                BackColor = Color.FromArgb(60, 60, 62),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8f)
+            };
+            btnResetCamera.Click += (s, e) => ApplyCameraPreset(new UoCameraPreset());
+
+            // Camera Save / Load buttons
+            var btnSaveCamera = new Button
+            {
+                Text = "💾 Sauver caméra…",
+                Location = new Point(8, 416),
+                Width = 112,
+                Height = 26,
+                BackColor = Color.FromArgb(45, 60, 75),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8f)
+            };
+            btnSaveCamera.Click += (s, e) => SaveCameraPresetDialog();
+
+            var btnLoadCamera = new Button
+            {
+                Text = "📂 Charger caméra…",
+                Location = new Point(124, 416),
+                Width = 114,
+                Height = 26,
+                BackColor = Color.FromArgb(45, 60, 75),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8f)
+            };
+            btnLoadCamera.Click += (s, e) => LoadCameraPresetDialog();
+
+            var lblCamInfo = new Label
+            {
+                Text = "Préréglages caméra & rendu UO",
+                Location = new Point(8, 448),
+                Width = 230,
+                Height = 20,
+                ForeColor = Color.DarkGray,
+                Font = new Font("Segoe UI", 7.5f)
+            };
+
+            grpCamera.Controls.AddRange(new Control[] {
+                chkUoView, cmbUoMode, cmbUoDir, nudUoZoom, nudUoElev, nudUoVert, nudUoBright,
+                chkUoFeet, nudUoOffX, nudUoOffY, chkUoRef, nudUoRefAction, nudUoRefFrame,
+                nudUoRefScale, nudUoRefOpacity, nudUoYaw, nudUoGlobal,
+                btnPresetPerso, btnPresetMonstre, btnResetCamera, btnSaveCamera, btnLoadCamera, lblCamInfo
+            });
 
             var pnlPlayRow = new Panel { Dock = DockStyle.Top, Height = 540 };
             pnlPlayRow.Controls.Add(tabEquip);     // Fill (tabs : Équipement | Personnage)
@@ -14499,5 +14644,531 @@ void main(){
             }
             base.OnHandleDestroyed(e);
         }
+
+        private void ApplyCameraPreset(UoCameraPreset p)
+        {
+            if (p == null) return;
+            _uoZoom = p.Zoom;
+            if (nudUoZoom != null) nudUoZoom.Value = (decimal)Math.Max(nudUoZoom.Minimum, Math.Min(nudUoZoom.Maximum, (decimal)p.Zoom));
+
+            _uoElevationDeg = p.ElevationDeg;
+            if (nudUoElev != null) nudUoElev.Value = (decimal)Math.Max(nudUoElev.Minimum, Math.Min(nudUoElev.Maximum, (decimal)p.ElevationDeg));
+
+            _uoVertScale = p.VertScale;
+            if (nudUoVert != null) nudUoVert.Value = (decimal)Math.Max(nudUoVert.Minimum, Math.Min(nudUoVert.Maximum, (decimal)p.VertScale));
+
+            _uoBrightness = p.Brightness;
+            if (nudUoBright != null) nudUoBright.Value = (decimal)Math.Max(nudUoBright.Minimum, Math.Min(nudUoBright.Maximum, (decimal)p.Brightness));
+
+            _uoFeetOnLine = p.FeetOnLine;
+            if (chkUoFeet != null) chkUoFeet.Checked = p.FeetOnLine;
+
+            _uoOffX = p.OffX;
+            if (nudUoOffX != null) nudUoOffX.Value = (decimal)Math.Max(nudUoOffX.Minimum, Math.Min(nudUoOffX.Maximum, (decimal)p.OffX));
+
+            _uoOffY = p.OffY;
+            if (nudUoOffY != null) nudUoOffY.Value = (decimal)Math.Max(nudUoOffY.Minimum, Math.Min(nudUoOffY.Maximum, (decimal)p.OffY));
+
+            _uoYawOffsetDeg = p.YawOffsetDeg;
+            if (nudUoYaw != null) nudUoYaw.Value = (decimal)Math.Max(nudUoYaw.Minimum, Math.Min(nudUoYaw.Maximum, (decimal)p.YawOffsetDeg));
+
+            _uoGlobalZoom = p.GlobalZoom;
+            if (nudUoGlobal != null) nudUoGlobal.Value = (decimal)Math.Max(nudUoGlobal.Minimum, Math.Min(nudUoGlobal.Maximum, (decimal)(p.GlobalZoom * 100f)));
+
+            if (p.Direction >= 0 && cmbUoDir != null && p.Direction < cmbUoDir.Items.Count)
+            {
+                cmbUoDir.SelectedIndex = p.Direction;
+            }
+
+            if (p.Mode >= 0 && cmbUoMode != null && p.Mode < cmbUoMode.Items.Count)
+            {
+                cmbUoMode.SelectedIndex = p.Mode;
+            }
+
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+        }
+
+        private UoCameraPreset CaptureCameraPreset()
+        {
+            return new UoCameraPreset
+            {
+                Zoom = _uoZoom,
+                ElevationDeg = _uoElevationDeg,
+                VertScale = _uoVertScale,
+                Brightness = _uoBrightness,
+                FeetOnLine = _uoFeetOnLine,
+                OffX = _uoOffX,
+                OffY = _uoOffY,
+                YawOffsetDeg = _uoYawOffsetDeg,
+                GlobalZoom = _uoGlobalZoom,
+                Direction = _uoDirection,
+                Mode = _uoSheet ? 1 : 0
+            };
+        }
+
+        private void SaveCameraPresetDialog()
+        {
+            using var sfd = new SaveFileDialog
+            {
+                Title = "Sauvegarder les réglages de la caméra UO",
+                Filter = "Caméra UO (*.uocam;*.json)|*.uocam;*.json|Tous les fichiers (*.*)|*.*",
+                DefaultExt = "uocam",
+                FileName = "camera_uo.uocam"
+            };
+
+            if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                var preset = CaptureCameraPreset();
+                string json = JsonSerializer.Serialize(preset, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(sfd.FileName, json, Encoding.UTF8);
+                MessageBox.Show(this, $"Réglages caméra enregistrés :\n{Path.GetFileName(sfd.FileName)}",
+                    "Sauvegarde Caméra", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors de la sauvegarde : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LoadCameraPresetDialog()
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Charger les réglages de la caméra UO",
+                Filter = "Caméra UO (*.uocam;*.json)|*.uocam;*.json|Tous les fichiers (*.*)|*.*",
+                DefaultExt = "uocam"
+            };
+
+            if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                string json = File.ReadAllText(ofd.FileName, Encoding.UTF8);
+                var preset = JsonSerializer.Deserialize<UoCameraPreset>(json);
+                if (preset == null) throw new InvalidOperationException("Fichier caméra invalide ou vide.");
+                ApplyCameraPreset(preset);
+                MessageBox.Show(this, $"Réglages caméra appliqués avec succès depuis :\n{Path.GetFileName(ofd.FileName)}",
+                    "Chargement Caméra", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors du chargement : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private string ResolveResourcePath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            if (File.Exists(path)) return path;
+
+            string fn = Path.GetFileName(path);
+            if (string.IsNullOrEmpty(fn)) return null;
+
+            if (!string.IsNullOrEmpty(BasePath) && Directory.Exists(BasePath))
+            {
+                string direct = Path.Combine(BasePath, fn);
+                if (File.Exists(direct)) return direct;
+
+                string others = Path.Combine(BasePath, "Others", fn);
+                if (File.Exists(others)) return others;
+
+                string equips = Path.Combine(BasePath, "Equipments", fn);
+                if (File.Exists(equips)) return equips;
+
+                string monsters = Path.Combine(BasePath, "Monsters", fn);
+                if (File.Exists(monsters)) return monsters;
+
+                try
+                {
+                    var found = Directory.GetFiles(BasePath, fn, SearchOption.AllDirectories);
+                    if (found != null && found.Length > 0) return found[0];
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private void SaveCharacterPresetDialog()
+        {
+            using var sfd = new SaveFileDialog
+            {
+                Title = "Sauvegarder le personnage multipartie",
+                Filter = "Préréglage Personnage (*.charpreset;*.json)|*.charpreset;*.json|Tous les fichiers (*.*)|*.*",
+                DefaultExt = "charpreset",
+                FileName = $"perso_{(_charGender == 2 ? "female" : (_charGender == 1 ? "male" : "custom"))}.charpreset"
+            };
+
+            if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                var preset = new CharacterPreset
+                {
+                    Name = Path.GetFileNameWithoutExtension(sfd.FileName),
+                    Gender = _charGender,
+                    BaseModelPath = _currentModelPath,
+                    SkinBase = _skinOverride
+                };
+
+                if (cbCharFace?.SelectedItem is PartItem pFace) preset.FacePath = pFace.Path;
+                if (cbCharHair?.SelectedItem is PartItem pHair) preset.HairPath = pHair.Path;
+                if (cbCharBeard?.SelectedItem is PartItem pBeard) preset.BeardPath = pBeard.Path;
+                if (cbCharTorso?.SelectedItem is PartItem pTorso) preset.TorsoPath = pTorso.Path;
+
+                // Save attached accessories / equipment meshes
+                foreach (var lm in _loadedMeshes)
+                {
+                    if (lm.Hidden) continue;
+                    // Skip base human slot parts (they are restored via slot paths)
+                    if (!string.IsNullOrEmpty(lm.CharSlot))
+                    {
+                        string s = lm.CharSlot.ToLowerInvariant();
+                        if (s == "face" || s == "hair" || s == "beard" || s == "torso") continue;
+                    }
+
+                    var p = new CharacterPresetPart
+                    {
+                        Name = lm.Name,
+                        SourcePath = lm.SourcePath,
+                        CharSlot = lm.CharSlot,
+                        AttachBoneName = lm.AttachBoneName,
+                        AttachInBindSpace = lm.AttachInBindSpace,
+                        MirrorX = lm.MirrorX,
+                        MirrorY = lm.MirrorY,
+                        MirrorZ = lm.MirrorZ,
+                        MirrorArms = lm.MirrorArms,
+                        AttachRotX = lm.AttachRotation.X,
+                        AttachRotY = lm.AttachRotation.Y,
+                        AttachRotZ = lm.AttachRotation.Z,
+                        AttachOffX = lm.AttachOffset.X,
+                        AttachOffY = lm.AttachOffset.Y,
+                        AttachOffZ = lm.AttachOffset.Z,
+                        PartScale = lm.PartScale,
+                        Thickness = lm.Thickness,
+                        CutoutRole = (int)lm.CutoutRole,
+                        HueId = lm.HueId,
+                        PartialHue = lm.PartialHue,
+                        Desaturate = lm.Desaturate,
+                        MountOffX = lm.MountOffset.X,
+                        MountOffY = lm.MountOffset.Y,
+                        MountOffZ = lm.MountOffset.Z,
+                        MountScale = lm.MountScale
+                    };
+                    preset.Equipment.Add(p);
+                }
+
+                string json = JsonSerializer.Serialize(preset, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(sfd.FileName, json, Encoding.UTF8);
+                MessageBox.Show(this, $"Personnage sauvegardé avec succès !\n{preset.Equipment.Count} équipements/accessoires inclus.",
+                    "Sauvegarde personnage", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors de la sauvegarde : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LoadCharacterPresetDialog()
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Charger un personnage multipartie",
+                Filter = "Préréglage Personnage (*.charpreset;*.json)|*.charpreset;*.json|Tous les fichiers (*.*)|*.*",
+                DefaultExt = "charpreset"
+            };
+
+            if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                string json = File.ReadAllText(ofd.FileName, Encoding.UTF8);
+                var preset = JsonSerializer.Deserialize<CharacterPreset>(json);
+                if (preset == null) throw new InvalidOperationException("Fichier personnage invalide ou vide.");
+
+                // 1) Load base model
+                string basePath = ResolveResourcePath(preset.BaseModelPath);
+                if (basePath == null && preset.Gender > 0)
+                {
+                    string targetGrn = preset.Gender == 2 ? "H_Female.grn" : "H_Male.grn";
+                    basePath = ResolveResourcePath(targetGrn);
+                }
+
+                if (!string.IsNullOrEmpty(basePath) && File.Exists(basePath))
+                {
+                    LoadModel(basePath);
+                }
+
+                // 2) Restore slots
+                if (!string.IsNullOrEmpty(preset.FacePath))
+                {
+                    string p = ResolveResourcePath(preset.FacePath);
+                    if (p != null) SetCharacterPart("face", p);
+                }
+                if (!string.IsNullOrEmpty(preset.HairPath))
+                {
+                    string p = ResolveResourcePath(preset.HairPath);
+                    if (p != null) SetCharacterPart("hair", p);
+                }
+                if (!string.IsNullOrEmpty(preset.BeardPath))
+                {
+                    string p = ResolveResourcePath(preset.BeardPath);
+                    if (p != null) SetCharacterPart("beard", p);
+                }
+                if (!string.IsNullOrEmpty(preset.TorsoPath))
+                {
+                    string p = ResolveResourcePath(preset.TorsoPath);
+                    if (p != null) SetCharacterPart("torso", p);
+                }
+                if (!string.IsNullOrEmpty(preset.SkinBase))
+                {
+                    ApplySkin(preset.SkinBase);
+                }
+
+                // Refresh slot combos
+                PreselectSlot(cbCharFace, "face");
+                PreselectSlot(cbCharHair, "hair");
+                PreselectSlot(cbCharBeard, "beard");
+                PreselectSlot(cbCharTorso, "torso");
+                if (cbCharSkin != null && !string.IsNullOrEmpty(preset.SkinBase))
+                {
+                    for (int i = 0; i < cbCharSkin.Items.Count; i++)
+                    {
+                        if (cbCharSkin.Items[i] is SkinItem si && string.Equals(si.Base, preset.SkinBase, StringComparison.OrdinalIgnoreCase))
+                        {
+                            cbCharSkin.SelectedIndex = i;
+                            break;
+                        }
+                    }
+                }
+
+                // 3) Restore equipment / attached meshes
+                int equipLoaded = 0;
+                if (preset.Equipment != null)
+                {
+                    foreach (var ep in preset.Equipment)
+                    {
+                        string epPath = ResolveResourcePath(ep.SourcePath);
+                        if (string.IsNullOrEmpty(epPath) || !File.Exists(epPath)) continue;
+
+                        int startIdx = _loadedMeshes.Count;
+                        AddToScene(epPath, (MeshCutoutRole)ep.CutoutRole);
+
+                        for (int k = startIdx; k < _loadedMeshes.Count; k++)
+                        {
+                            var lm = _loadedMeshes[k];
+                            lm.AttachBoneName = ep.AttachBoneName;
+                            lm.AttachInBindSpace = ep.AttachInBindSpace;
+                            lm.MirrorX = ep.MirrorX;
+                            lm.MirrorY = ep.MirrorY;
+                            lm.MirrorZ = ep.MirrorZ;
+                            lm.MirrorArms = ep.MirrorArms;
+                            lm.AttachRotation = new Vector3(ep.AttachRotX, ep.AttachRotY, ep.AttachRotZ);
+                            lm.AttachOffset = new Vector3(ep.AttachOffX, ep.AttachOffY, ep.AttachOffZ);
+                            lm.PartScale = ep.PartScale;
+                            lm.Thickness = ep.Thickness;
+                            lm.CutoutRole = (MeshCutoutRole)ep.CutoutRole;
+                            lm.HueId = ep.HueId;
+                            lm.PartialHue = ep.PartialHue;
+                            lm.Desaturate = ep.Desaturate;
+                            if (ep.HueId > 0 || ep.Desaturate)
+                            {
+                                ApplyHueToMesh(lm, ep.HueId, ep.PartialHue, ep.Desaturate);
+                            }
+                            lm.MountOffset = new Vector3(ep.MountOffX, ep.MountOffY, ep.MountOffZ);
+                            lm.MountScale = ep.MountScale > 0 ? ep.MountScale : 1f;
+                        }
+                        equipLoaded++;
+                    }
+                }
+
+                RefreshLoadedList();
+                PopulateBoneCombo();
+                if (_currentAnimation != null) EnsureAnimationBindings(_currentAnimation);
+                ApplyAnimationPose(_currentTime);
+                ComputeReferenceBounds();
+                RefreshVertexBuffers(true);
+                UpdateModelInfo();
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+
+                MessageBox.Show(this, $"Personnage chargé avec succès !\n{equipLoaded} pièces d'équipement attachées.",
+                    "Chargement Personnage", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors du chargement : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ResetCharacterToDefault()
+        {
+            try
+            {
+                string targetPath = null;
+                if (_charGender == 1) targetPath = ResolveResourcePath("H_Male.grn");
+                else if (_charGender == 2) targetPath = ResolveResourcePath("H_Female.grn");
+                else if (!string.IsNullOrEmpty(_currentModelPath)) targetPath = _currentModelPath;
+
+                if (!string.IsNullOrEmpty(targetPath) && File.Exists(targetPath))
+                {
+                    LoadModel(targetPath);
+                    MessageBox.Show(this, "Personnage réinitialisé à l'état par défaut.", "Réinitialisation", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    MessageBox.Show(this, "Impossible de trouver le modèle de base pour réinitialiser.", "Réinitialisation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors de la réinitialisation : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ExportUnifiedCharModelDialog()
+        {
+            if (_loadedMeshes == null || _loadedMeshes.Count == 0)
+            {
+                MessageBox.Show(this, "Aucun mesh chargé à exporter.", "Export .char", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            using var sfd = new SaveFileDialog
+            {
+                Title = "Exporter le personnage en modèle unifié .char",
+                Filter = "Modèle UO unifié (*.char)|*.char|Tous les fichiers (*.*)|*.*",
+                DefaultExt = "char",
+                FileName = $"{(_charGender == 2 ? "H_Female" : (_charGender == 1 ? "H_Male" : "Character"))}_assembled.char"
+            };
+
+            if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                var model = new GrannyModelFile
+                {
+                    Name = Path.GetFileNameWithoutExtension(sfd.FileName)
+                };
+
+                // Find skeleton from host or full humanoid
+                LoadedMesh skeletonHost = _loadedMeshes.Find(m => m.Bones != null && m.Bones.Count >= 20)
+                    ?? _loadedMeshes.Find(m => m.Bones != null && m.Bones.Count > 0);
+
+                if (skeletonHost != null && skeletonHost.Bones != null)
+                {
+                    model.Bones = new List<GrannyBone>(skeletonHost.Bones);
+                }
+
+                // Add visible meshes as parts
+                int partsCount = 0;
+                foreach (var lm in _loadedMeshes)
+                {
+                    if (lm.Hidden) continue;
+                    if (lm.BaseVertices == null || lm.BaseVertices.Length == 0) continue;
+
+                    var part = new GrannyModelPart
+                    {
+                        Name = lm.Name,
+                        MaterialName = !string.IsNullOrEmpty(lm.TextureName) ? lm.TextureName : "DefaultMaterial",
+                        TextureName = lm.TextureName,
+                        Color = lm.MeshColor,
+                        Vertices = lm.BaseVertices,
+                        Normals = lm.BaseVertexNormals ?? Array.Empty<Vector3>(),
+                        Indices = lm.Indices,
+                        Skin = lm.Skin ?? Array.Empty<VertexInfluence[]>(),
+                        AttachBoneName = lm.AttachBoneName ?? string.Empty,
+                        AttachInBindSpace = lm.AttachInBindSpace,
+                        CutoutRole = lm.CutoutRole
+                    };
+
+                    if (lm.CornerUVs != null && lm.CornerVertex != null && lm.CornerVertex.Length > 0)
+                    {
+                        var uvs = new Vector2[lm.BaseVertices.Length];
+                        for (int c = 0; c < lm.CornerVertex.Length && c < lm.CornerUVs.Length; c++)
+                        {
+                            int vIdx = lm.CornerVertex[c];
+                            if (vIdx >= 0 && vIdx < uvs.Length)
+                                uvs[vIdx] = lm.CornerUVs[c];
+                        }
+                        part.UVs = uvs;
+                    }
+
+                    model.Parts.Add(part);
+                    partsCount++;
+                }
+
+                if (GrannyModelFile.Save(model, sfd.FileName))
+                {
+                    MessageBox.Show(this, $"Modèle .char exporté avec succès !\n{partsCount} parties et {model.Bones?.Count ?? 0} os enregistrés dans :\n{Path.GetFileName(sfd.FileName)}",
+                        "Export .char unifié", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    MessageBox.Show(this, "Échec de l'enregistrement du fichier .char.", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors de l'export .char : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    public class UoCameraPreset
+    {
+        public float Zoom { get; set; } = 0.27f;
+        public float ElevationDeg { get; set; } = 26.565f;
+        public float VertScale { get; set; } = 1.0f;
+        public float Brightness { get; set; } = 0.8f;
+        public bool FeetOnLine { get; set; } = true;
+        public float OffX { get; set; } = 0f;
+        public float OffY { get; set; } = -0.080f;
+        public float YawOffsetDeg { get; set; } = 180f;
+        public float GlobalZoom { get; set; } = 1.0f;
+        public int Direction { get; set; } = 4;
+        public int Mode { get; set; } = 0;
+    }
+
+    public class CharacterPresetPart
+    {
+        public string Name { get; set; } = string.Empty;
+        public string SourcePath { get; set; } = string.Empty;
+        public string CharSlot { get; set; }
+        public string AttachBoneName { get; set; }
+        public bool AttachInBindSpace { get; set; }
+        public bool MirrorX { get; set; }
+        public bool MirrorY { get; set; }
+        public bool MirrorZ { get; set; }
+        public bool MirrorArms { get; set; }
+        public float AttachRotX { get; set; }
+        public float AttachRotY { get; set; }
+        public float AttachRotZ { get; set; }
+        public float AttachOffX { get; set; }
+        public float AttachOffY { get; set; }
+        public float AttachOffZ { get; set; }
+        public float PartScale { get; set; } = 1f;
+        public float Thickness { get; set; } = 0f;
+        public int CutoutRole { get; set; } = 1;
+        public int HueId { get; set; } = 0;
+        public bool PartialHue { get; set; } = true;
+        public bool Desaturate { get; set; } = false;
+        public float MountOffX { get; set; }
+        public float MountOffY { get; set; }
+        public float MountOffZ { get; set; }
+        public float MountScale { get; set; } = 1f;
+    }
+
+    public class CharacterPreset
+    {
+        public string Name { get; set; } = "Character";
+        public int Gender { get; set; } = 1;
+        public string BaseModelPath { get; set; }
+        public string FacePath { get; set; }
+        public string HairPath { get; set; }
+        public string BeardPath { get; set; }
+        public string TorsoPath { get; set; }
+        public string SkinBase { get; set; }
+        public List<CharacterPresetPart> Equipment { get; set; } = new List<CharacterPresetPart>();
     }
 }

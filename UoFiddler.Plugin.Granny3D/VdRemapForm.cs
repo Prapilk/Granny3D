@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Windows.Forms;
 using OpenTK.Mathematics;
 
@@ -92,7 +93,7 @@ namespace UoFiddler.Plugin.Granny3D
             MaximizeBox = false;
             FormBorderStyle = FormBorderStyle.Sizable;
 
-            var top = new Panel { Dock = DockStyle.Top, Height = 74, Padding = new Padding(8) };
+            var top = new Panel { Dock = DockStyle.Top, Height = 106, Padding = new Padding(8) };
 
             top.Controls.Add(new Label { Text = "Cible (type UO) :", Location = new Point(8, 10), Width = 110, ForeColor = Color.Gainsboro });
             _cmbTarget = new ComboBox
@@ -204,6 +205,59 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnResetOffsets.Click += (s, e) => ResetAllOffsets();
             top.Controls.Add(btnResetOffsets);
+
+            // Row 3: Save / Load / Reset / Clear mapping
+            var btnSaveMap = new Button
+            {
+                Text = "💾 Sauver mapping…",
+                Location = new Point(8, 71),
+                Width = 145,
+                Height = 26,
+                BackColor = Color.FromArgb(40, 70, 95),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnSaveMap.Click += (s, e) => SaveMappingDialog();
+            top.Controls.Add(btnSaveMap);
+
+            var btnLoadMap = new Button
+            {
+                Text = "📂 Charger mapping…",
+                Location = new Point(159, 71),
+                Width = 145,
+                Height = 26,
+                BackColor = Color.FromArgb(45, 75, 55),
+                ForeColor = Color.LightGreen,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnLoadMap.Click += (s, e) => LoadMappingDialog();
+            top.Controls.Add(btnLoadMap);
+
+            var btnResetMap = new Button
+            {
+                Text = "↺ Réinit. mapping",
+                Location = new Point(310, 71),
+                Width = 140,
+                Height = 26,
+                BackColor = Color.FromArgb(60, 60, 62),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnResetMap.Click += (s, e) => ResetMapping();
+            top.Controls.Add(btnResetMap);
+
+            var btnClearAll = new Button
+            {
+                Text = "🗑 Vider tout",
+                Location = new Point(456, 71),
+                Width = 95,
+                Height = 26,
+                BackColor = Color.FromArgb(70, 45, 45),
+                ForeColor = Color.FromArgb(255, 170, 170),
+                FlatStyle = FlatStyle.Flat
+            };
+            btnClearAll.Click += (s, e) => ClearAllMapping();
+            top.Controls.Add(btnClearAll);
 
             var hdr = new Panel { Dock = DockStyle.Top, Height = 22, BackColor = Color.FromArgb(32, 32, 35), Padding = new Padding(8, 2, 8, 2) };
             hdr.Controls.Add(new Label { Text = "Action", Location = new Point(14, 4), Width = 130, ForeColor = Color.DarkGray, Font = new Font(Font.FontFamily, 8.25f, FontStyle.Bold) });
@@ -986,5 +1040,217 @@ namespace UoFiddler.Plugin.Granny3D
             }
             return result;
         }
+
+        private void SaveMappingDialog()
+        {
+            using var sfd = new SaveFileDialog
+            {
+                Title = "Sauvegarder le mapping d'animations",
+                Filter = "Mapping VD (*.vdmap;*.json)|*.vdmap;*.json|Tous les fichiers (*.*)|*.*",
+                DefaultExt = "vdmap",
+                FileName = $"mapping_{Normalize(_cmbTarget.SelectedItem?.ToString() ?? "anim")}.vdmap"
+            };
+
+            if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                var target = _cmbTarget.SelectedItem as VdTargetDef;
+                var sources = ActiveSources();
+                var preset = new VdMappingPreset
+                {
+                    TargetName = target?.Key ?? target?.Label,
+                    TargetActionCount = target?.ActionCount ?? _combos.Count,
+                    Fps = (int)_nudFps.Value,
+                    Size = (int)_nudSize.Value,
+                    OffsetY = (int)_nudOffY.Value
+                };
+
+                for (int i = 0; i < _combos.Count; i++)
+                {
+                    var cb = _combos[i];
+                    int actIdx = (int)cb.Tag;
+                    int sel = cb.SelectedIndex - 1;
+                    string path = (sel >= 0 && sel < sources.Count) ? sources[sel] : null;
+                    string actionName = (target != null && actIdx < target.ActionNames.Length) ? target.ActionNames[actIdx] : $"Action {actIdx:D2}";
+                    float ox = (i < _nudX.Count) ? (float)_nudX[i].Value : 0f;
+                    float oy = (i < _nudY.Count) ? (float)_nudY[i].Value : 0f;
+                    float oz = (i < _nudZ.Count) ? (float)_nudZ[i].Value : 0f;
+
+                    preset.Actions.Add(new VdActionMapItem
+                    {
+                        ActionIndex = actIdx,
+                        ActionName = actionName,
+                        AnimPath = path,
+                        AnimFileName = !string.IsNullOrEmpty(path) ? Path.GetFileName(path) : null,
+                        OffsetX = ox,
+                        OffsetY = oy,
+                        OffsetZ = oz
+                    });
+                }
+
+                string json = JsonSerializer.Serialize(preset, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(sfd.FileName, json, Encoding.UTF8);
+                MessageBox.Show(this, $"Mapping sauvegardé avec succès ({preset.Actions.Count} actions) :\n{Path.GetFileName(sfd.FileName)}",
+                    "Sauvegarde mapping", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors de la sauvegarde : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LoadMappingDialog()
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Charger un mapping d'animations",
+                Filter = "Mapping VD (*.vdmap;*.json)|*.vdmap;*.json|Tous les fichiers (*.*)|*.*",
+                DefaultExt = "vdmap"
+            };
+
+            if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                string json = File.ReadAllText(ofd.FileName, Encoding.UTF8);
+                var preset = JsonSerializer.Deserialize<VdMappingPreset>(json);
+                if (preset == null) throw new InvalidOperationException("Fichier mapping invalide ou vide.");
+
+                // 1) Match target type if needed
+                if (!string.IsNullOrEmpty(preset.TargetName))
+                {
+                    foreach (var item in _cmbTarget.Items)
+                    {
+                        if (item is VdTargetDef td && (string.Equals(td.Key, preset.TargetName, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(td.Label, preset.TargetName, StringComparison.OrdinalIgnoreCase) ||
+                            (preset.TargetActionCount > 0 && td.ActionCount == preset.TargetActionCount)))
+                        {
+                            if (_cmbTarget.SelectedItem != td)
+                            {
+                                _cmbTarget.SelectedItem = td;
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                if (preset.Fps >= _nudFps.Minimum && preset.Fps <= _nudFps.Maximum) _nudFps.Value = preset.Fps;
+                if (preset.Size >= _nudSize.Minimum && preset.Size <= _nudSize.Maximum) _nudSize.Value = preset.Size;
+                if (preset.OffsetY >= _nudOffY.Minimum && preset.OffsetY <= _nudOffY.Maximum) _nudOffY.Value = preset.OffsetY;
+
+                var sources = ActiveSources();
+                int matchedCount = 0;
+
+                // Check if we need to switch to "ALL anim" mode if some files exist only in _allSources
+                if (!_useAll && preset.Actions != null)
+                {
+                    bool needAll = false;
+                    foreach (var a in preset.Actions)
+                    {
+                        if (!string.IsNullOrEmpty(a.AnimFileName) && !sources.Any(s => string.Equals(Path.GetFileName(s), a.AnimFileName, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            if (_allSources.Any(s => string.Equals(Path.GetFileName(s), a.AnimFileName, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                needAll = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (needAll)
+                    {
+                        ToggleAllSources();
+                        sources = ActiveSources();
+                    }
+                }
+
+                if (preset.Actions != null)
+                {
+                    foreach (var item in preset.Actions)
+                    {
+                        int actIdx = item.ActionIndex;
+                        if (actIdx < 0 || actIdx >= _combos.Count) continue;
+
+                        int foundIdx = -1;
+                        if (!string.IsNullOrEmpty(item.AnimPath))
+                            foundIdx = sources.FindIndex(s => string.Equals(s, item.AnimPath, StringComparison.OrdinalIgnoreCase));
+                        if (foundIdx < 0 && !string.IsNullOrEmpty(item.AnimFileName))
+                            foundIdx = sources.FindIndex(s => string.Equals(Path.GetFileName(s), item.AnimFileName, StringComparison.OrdinalIgnoreCase));
+                        if (foundIdx < 0 && !string.IsNullOrEmpty(item.AnimFileName))
+                        {
+                            string norm = Normalize(Path.GetFileNameWithoutExtension(item.AnimFileName));
+                            foundIdx = sources.FindIndex(s => Normalize(Path.GetFileNameWithoutExtension(s)) == norm);
+                        }
+
+                        if (foundIdx >= 0)
+                        {
+                            _combos[actIdx].SelectedIndex = foundIdx + 1;
+                            matchedCount++;
+                        }
+                        else if (string.IsNullOrEmpty(item.AnimPath) && string.IsNullOrEmpty(item.AnimFileName))
+                        {
+                            _combos[actIdx].SelectedIndex = 0;
+                        }
+
+                        if (actIdx < _nudX.Count) _nudX[actIdx].Value = Math.Max(_nudX[actIdx].Minimum, Math.Min(_nudX[actIdx].Maximum, (decimal)item.OffsetX));
+                        if (actIdx < _nudY.Count) _nudY[actIdx].Value = Math.Max(_nudY[actIdx].Minimum, Math.Min(_nudY[actIdx].Maximum, (decimal)item.OffsetY));
+                        if (actIdx < _nudZ.Count) _nudZ[actIdx].Value = Math.Max(_nudZ[actIdx].Minimum, Math.Min(_nudZ[actIdx].Maximum, (decimal)item.OffsetZ));
+                    }
+                }
+
+                UpdatePreview();
+                MessageBox.Show(this, $"Mapping chargé avec succès !\n{matchedCount} animations associées sur {_combos.Count} actions.",
+                    "Chargement mapping", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors du chargement : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ResetMapping()
+        {
+            var target = _cmbTarget.SelectedItem as VdTargetDef;
+            if (target == null) return;
+
+            for (int i = 0; i < _combos.Count; i++)
+            {
+                string actionName = (i < target.ActionNames.Length) ? target.ActionNames[i] : "";
+                _combos[i].SelectedIndex = PrefillIndex(i, actionName, target);
+            }
+            ResetAllOffsets();
+            UpdatePreview();
+        }
+
+        private void ClearAllMapping()
+        {
+            for (int i = 0; i < _combos.Count; i++)
+            {
+                _combos[i].SelectedIndex = 0;
+            }
+            ResetAllOffsets();
+            UpdatePreview();
+        }
+    }
+
+    public class VdActionMapItem
+    {
+        public int ActionIndex { get; set; }
+        public string ActionName { get; set; }
+        public string AnimPath { get; set; }
+        public string AnimFileName { get; set; }
+        public float OffsetX { get; set; }
+        public float OffsetY { get; set; }
+        public float OffsetZ { get; set; }
+    }
+
+    public class VdMappingPreset
+    {
+        public string TargetName { get; set; }
+        public int TargetActionCount { get; set; }
+        public int Fps { get; set; } = 10;
+        public int Size { get; set; } = 0;
+        public int OffsetY { get; set; } = 0;
+        public List<VdActionMapItem> Actions { get; set; } = new List<VdActionMapItem>();
     }
 }
