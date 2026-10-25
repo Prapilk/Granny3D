@@ -195,6 +195,15 @@ namespace UoFiddler.Plugin.Granny3D
         public Matrix4 OriginalAttachMatrix = Matrix4.Identity;
         public MeshCutoutRole OriginalCutoutRole = MeshCutoutRole.Accessory;
         public bool HasOriginalWrapBackup;
+
+        public bool PushOutOfBody;
+        public bool ShrinkSew;
+        public List<LoadedMesh> CollisionBody;
+        public Vector3[] ClothPushPos;
+        public Vector3[] ClothPushDir;
+        public Vector3[] ClothPushBase; // last frame pushed position to dampen jitter
+        public object ClothPushCapturedGrid;
+        public List<Vector3[]> ClothPushCapturedBodyTris;
     }
 
     // Camera controller for orbit / pan / zoom.
@@ -203,7 +212,7 @@ namespace UoFiddler.Plugin.Granny3D
         public Vector3 Target = Vector3.Zero;
         public float Distance = 5f;
         public float Yaw = 0f;
-        public float Pitch = -0.35f;
+        public float Pitch = 0f;
         public float MinDistance = 1f;
         public float MaxDistance = 200f;
 
@@ -627,6 +636,12 @@ namespace UoFiddler.Plugin.Granny3D
         private float _currentTime;
         private float _clothDt = 1f / 60f;
         private int _clothDbg;
+        private float _pushOutMargin = 0.005f;                                                              
+        private float _sewShrinkForce = 0.6f;                                                               
+        private NumericUpDown _nudPushMargin;
+        private NumericUpDown _nudSewForce;
+        private Button _btnPushOutBody;
+        private Button _btnShrinkSew;
         private float _playbackSpeed = 1f;
         private bool _playing;
         private bool _looping = true;
@@ -1490,6 +1505,28 @@ namespace UoFiddler.Plugin.Granny3D
             btnForceBase.Click += (s, e) => ToggleForceBaseDisplay();
             grpEquip.Controls.Add(btnForceBase);
 
+            _btnPushOutBody = new Button { Text = "Repousser hors du corps (mesh-mesh)", Location = new Point(440, 326), Width = 320, Height = 26, BackColor = Color.FromArgb(90, 60, 60), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            _btnPushOutBody.Click += (s, e) => TogglePushOutOfBodySelected();
+            grpEquip.Controls.Add(_btnPushOutBody);
+
+            _btnShrinkSew = new Button { Text = "Rétrécir / Coudre (Shrink/Sew)", Location = new Point(440, 356), Width = 320, Height = 26, BackColor = Color.FromArgb(70, 80, 90), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            _btnShrinkSew.Click += (s, e) => ToggleShrinkSewSelected();
+            grpEquip.Controls.Add(_btnShrinkSew);
+
+            var lblPushMargin = new Label { Text = "Marge (repousser) :", Location = new Point(440, 388), Width = 110, ForeColor = Color.Gray };
+            grpEquip.Controls.Add(lblPushMargin);
+            var nudPushMargin = new NumericUpDown { Location = new Point(550, 386), Width = 70, Minimum = 0m, Maximum = 0.05m, Increment = 0.0005m, DecimalPlaces = 4, Value = 0.005m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudPushMargin.ValueChanged += (s, e) => { _pushOutMargin = (float)nudPushMargin.Value; OnClothingEffectParameterChanged(); };
+            grpEquip.Controls.Add(nudPushMargin);
+            _nudPushMargin = nudPushMargin;
+
+            var lblSewShrink = new Label { Text = "Force (resserrer) :", Location = new Point(630, 388), Width = 90, ForeColor = Color.Gray };
+            grpEquip.Controls.Add(lblSewShrink);
+            var nudSewForce = new NumericUpDown { Location = new Point(720, 386), Width = 40, Minimum = 0m, Maximum = 1.0m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.3m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            nudSewForce.ValueChanged += (s, e) => { _sewShrinkForce = (float)nudSewForce.Value; OnClothingEffectParameterChanged(); };
+            grpEquip.Controls.Add(nudSewForce);
+            _nudSewForce = nudSewForce;
+
             btnEquipReset = new Button { Text = "Réinitialiser", Location = new Point(30, 342), Width = 115, Height = 24, BackColor = Color.FromArgb(60, 60, 62), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
             btnEquipReset.Click += (s, e) => ResetEquipControls();
             grpEquip.Controls.Add(btnEquipReset);
@@ -1498,9 +1535,13 @@ namespace UoFiddler.Plugin.Granny3D
             btnDuplicateMirror.Click += (s, e) => DuplicateMirrorSelectedMesh();
             grpEquip.Controls.Add(btnDuplicateMirror);
 
-            btnSubdiv = new Button { Text = "Subdiviser (1 → 4)  [plus de verts]", Location = new Point(30, 372), Width = 250, Height = 24, BackColor = Color.FromArgb(60, 70, 60), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
-            btnSubdiv.Click += (s, e) => SubdivideSelectedMesh();
+            btnSubdiv = new Button { Text = "Subdiviser (1 → 4)  [plus de verts]", Location = new Point(30, 372), Width = 122, Height = 24, BackColor = Color.FromArgb(60, 70, 60), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            btnSubdiv.Click += (s, e) => SubdivideSelectedMesh(false);
             grpEquip.Controls.Add(btnSubdiv);
+
+            var btnSubdivSmooth = new Button { Text = "Subdiviser + Arrondir", Location = new Point(158, 372), Width = 122, Height = 24, BackColor = Color.FromArgb(65, 75, 65), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            btnSubdivSmooth.Click += (s, e) => SubdivideSelectedMesh(true);
+            grpEquip.Controls.Add(btnSubdivSmooth);
 
             // Bake the cloth once over the whole animation, then replay the cache.
             grpEquip.Controls.Add(new Label { Text = "Calcul : frames/s", Location = new Point(8, 404), Width = 120, ForeColor = Color.Gray });
@@ -5279,7 +5320,7 @@ namespace UoFiddler.Plugin.Granny3D
             _camera.Target = Vector3.Zero;
             _camera.Distance = 5f;
             _camera.Yaw = 0f;
-            _camera.Pitch = -0.35f;
+            _camera.Pitch = 0f;
             UpdateModelInfo();
             Log($"  done meshes={_loadedMeshes.Count} refCenter={_refCenter} refScale={_refScale} camDist={_camera.Distance} vp={glControl.Width}x{glControl.Height}");
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
@@ -5362,7 +5403,7 @@ namespace UoFiddler.Plugin.Granny3D
             _camera.Target = Vector3.Zero;
             _camera.Distance = 5f;
             _camera.Yaw = 0f;
-            _camera.Pitch = -0.35f;
+            _camera.Pitch = 0f;
             UpdateModelInfo();
             Log($"  custom character loaded: meshes={_loadedMeshes.Count} refCenter={_refCenter} refScale={_refScale}");
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
@@ -5545,7 +5586,7 @@ namespace UoFiddler.Plugin.Granny3D
         // more particles so it folds/drapes instead of moving a handful of big
         // triangles. Positions, skin weights and per-corner UVs are interpolated;
         // the VBO and (if enabled) the cloth are rebuilt.
-        private void SubdivideSelectedMesh()
+        private void SubdivideSelectedMesh(bool smooth)
         {
             var idxs = GetSelectedMeshIndices();
             int si = idxs.Count > 0 ? idxs[0] : -1;
@@ -5623,6 +5664,54 @@ namespace UoFiddler.Plugin.Granny3D
             if (newOrigSkin != null) lm.OriginalSkin = newOrigSkin.ToArray();
             lm.Indices = outIdx.ToArray();
             lm.CornerUVs = outUV.ToArray();
+
+            if (smooth)
+            {
+                int nV = lm.BaseVertices.Length;
+                if (nV > V)
+                {
+                    var verts = lm.BaseVertices;
+                    int cc2 = lm.CornerVertex?.Length ?? 0;
+                    // Build adjacency
+                    var adj = new HashSet<int>[nV];
+                    for (int i = 0; i < nV; i++) adj[i] = new HashSet<int>();
+                    for (int c = 0; c < cc2; c += 3)
+                    {
+                        int a = lm.CornerVertex[c], b = lm.CornerVertex[c+1], c2v = lm.CornerVertex[c+2];
+                        if (a>=0&&a<nV&&b>=0&&b<nV){ adj[a].Add(b); adj[b].Add(a); }
+                        if (b>=0&&b<nV&&c2v>=0&&c2v<nV){ adj[b].Add(c2v); adj[c2v].Add(b); }
+                        if (c2v>=0&&c2v<nV&&a>=0&&a<nV){ adj[c2v].Add(a); adj[a].Add(c2v); }
+                    }
+                    // Compute edge lengths and detect boundary
+                    var newPos = new Vector3[nV];
+                    for (int i = 0; i < nV; i++)
+                    {
+                        var list = adj[i];
+                        if (list.Count == 0) { newPos[i] = verts[i]; continue; }
+                        // boundary if degree unusual? or just smooth less on boundary
+                        bool boundary = list.Count < 4; // rough for UO cloth
+                        if (i < V)
+                        {
+                            // original verts - only smooth interior faces, less on edges
+                            Vector3 avg = Vector3.Zero;
+                            foreach (int nb in list) avg += verts[nb];
+                            avg /= list.Count;
+                            float t = boundary ? 0.12f : 0.18f;
+                            newPos[i] = Vector3.Lerp(verts[i], avg, t);
+                        }
+                        else
+                        {
+                            // midpoints - gentle, skip heavy smoothing near boundary
+                            Vector3 avg = Vector3.Zero;
+                            foreach (int nb in list) avg += verts[nb];
+                            avg /= list.Count;
+                            float t = boundary ? 0.08f : 0.14f;
+                            newPos[i] = Vector3.Lerp(verts[i], avg, t);
+                        }
+                    }
+                    lm.BaseVertices = newPos;
+                }
+            }
 
             if (lm.SourceMesh != null)
             {
@@ -7657,6 +7746,496 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        // ==================== MESH-MESH CLOTHING COLLISION ====================
+        // "Repousser hors du corps" and "Rétrécir / Coudre" work on the CURRENT
+        // deformed (skinned/animated) geometry, every frame. The selected clothing
+        // piece is tested against the DEFORMED BODY MESH (triangles), not just bone
+        // capsules, so torso/abdomen/back poke-through is removed in T-pose and in
+        // every animation frame.
+
+        private static bool LooksLikeEquipment(LoadedMesh lm)
+        {
+            if (lm == null) return false;
+            string s = ((lm.Name ?? "") + " " + Path.GetFileNameWithoutExtension(lm.SourcePath ?? "")).ToLowerInvariant();
+            return s.StartsWith("e_") || s.Contains(" robe") || s.StartsWith("e ") ||
+                   s.Contains("robe") || s.Contains("armor") || s.Contains("armour") ||
+                   s.Contains("cloak") || s.Contains("cape") || s.Contains("dress") ||
+                   s.Contains("skirt") || s.Contains("equip") || s.Contains("tunic") ||
+                   s.Contains("pants") || s.Contains("legging") || s.Contains("glove") ||
+                   s.Contains("boot") || s.Contains("bracer") || s.Contains("helmet") ||
+                   s.Contains("hat") || s.Contains("hood");
+        }
+
+        // Selected clothing targets + the body collision set captured at button time.
+        private List<LoadedMesh> ResolveClothingTargets(out List<LoadedMesh> body, out string error)
+        {
+            error = null;
+            body = new List<LoadedMesh>();
+            var idxs = GetSelectedMeshIndices();
+            var selected = new List<LoadedMesh>();
+            foreach (int i in idxs)
+                if (i >= 0 && i < _loadedMeshes.Count && !selected.Contains(_loadedMeshes[i]))
+                    selected.Add(_loadedMeshes[i]);
+
+            if (selected.Count == 0)
+            {
+                error = "Sélectionnez d'abord le vêtement/équipement (et éventuellement le skin/corps) dans « Meshes affichés ».";
+                return selected;
+            }
+
+            var targets = new List<LoadedMesh>();
+            foreach (var m in selected)
+                if (m.CutoutRole != MeshCutoutRole.Body && m.Indices != null && m.BaseVertices != null && m.BaseVertices.Length > 0)
+                    targets.Add(m);
+            if (targets.Count == 0)
+                foreach (var m in selected)
+                    if (LooksLikeEquipment(m) && m.Indices != null && m.BaseVertices != null && m.BaseVertices.Length > 0)
+                        targets.Add(m);
+            if (targets.Count == 0 && selected.Count == 1)
+            {
+                var m = selected[0];
+                if (m.Indices != null && m.BaseVertices != null && m.BaseVertices.Length > 0) targets.Add(m);
+            }
+            if (targets.Count == 0)
+            {
+                error = "Aucun vêtement reconnu dans la sélection. Sélectionnez le mesh de robe/équipement (rôle Accessory) avec le skin.";
+                return targets;
+            }
+
+            // Body = explicitly selected non-target meshes first (exact control),
+            // else every visible Body-role skinned mesh, else any other visible mesh.
+            foreach (var m in selected)
+                if (!targets.Contains(m) && !m.Hidden && m.Indices != null && m.BaseVertices != null && m.BaseVertices.Length > 0)
+                    body.Add(m);
+            if (body.Count == 0)
+                foreach (var m in _loadedMeshes)
+                    if (!targets.Contains(m) && !m.Hidden && m.Indices != null && m.BaseVertices != null && m.BaseVertices.Length > 0
+                        && m.CutoutRole == MeshCutoutRole.Body)
+                        body.Add(m);
+            if (body.Count == 0)
+                foreach (var m in _loadedMeshes)
+                    if (!targets.Contains(m) && !m.Hidden && m.Indices != null && m.BaseVertices != null && m.BaseVertices.Length > 0
+                        && !m.IsCloth)
+                        body.Add(m);
+
+            if (body.Count == 0)
+                error = "Aucun corps/skin de collision visible. Chargez le H_Male/H_Female (ou sélectionnez-le avec le vêtement).";
+            return targets;
+        }
+
+        private void TogglePushOutOfBodySelected()
+        {
+            var body = new List<LoadedMesh>();
+            var targets = ResolveClothingTargets(out body, out string error);
+            if (error != null) { MessageBox.Show(error, "Repousser hors du corps", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+
+            bool enable = !targets.Exists(m => m.PushOutOfBody);
+            foreach (var m in targets)
+            {
+                m.PushOutOfBody = enable;
+                if (enable) 
+                { 
+                    m.ShrinkSew = false;
+                    m.ClothPushBase = null;
+                    // Capture body in current pose
+                    m.ClothPushCapturedGrid = null;
+                    m.ClothPushCapturedBodyTris = null;
+                }
+                m.CollisionBody = enable ? new List<LoadedMesh>(body) : null;
+            }
+
+            ApplyAnimationPose(_currentTime);
+            RefreshVertexBuffers(true);
+            UpdateClothingEffectButtons();
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            Log($"Mesh-mesh : repousser hors du corps {(enable ? "activé" : "désactivé")} sur {string.Join(", ", targets.ConvertAll(t => t.Name))} (corps: {body.Count} mesh(es), marge={_pushOutMargin:F4}).");
+        }
+
+        private void ToggleShrinkSewSelected()
+        {
+            var body = new List<LoadedMesh>();
+            var targets = ResolveClothingTargets(out body, out string error);
+            if (error != null) { MessageBox.Show(error, "Rétrécir / Coudre", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+
+            bool enable = !targets.Exists(m => m.ShrinkSew);
+            foreach (var m in targets)
+            {
+                m.ShrinkSew = enable;
+                if (enable) m.PushOutOfBody = false;
+                m.CollisionBody = enable ? new List<LoadedMesh>(body) : null;
+            }
+
+            ApplyAnimationPose(_currentTime);
+            RefreshVertexBuffers(true);
+            UpdateClothingEffectButtons();
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            Log($"Mesh-mesh : rétrécir/coudre {(enable ? "activé" : "désactivé")} sur {string.Join(", ", targets.ConvertAll(t => t.Name))} (corps: {body.Count} mesh(es), force={_sewShrinkForce:F2}).");
+        }
+
+        private void UpdateClothingEffectButtons()
+        {
+            bool push = false, sew = false;
+            foreach (var m in _loadedMeshes) { if (m.PushOutOfBody) push = true; if (m.ShrinkSew) sew = true; }
+            if (_btnPushOutBody != null)
+            {
+                _btnPushOutBody.Text = (push ? "● " : "") + "Repousser hors du corps (mesh-mesh)";
+                _btnPushOutBody.BackColor = push ? Color.FromArgb(120, 55, 55) : Color.FromArgb(90, 60, 60);
+            }
+            if (_btnShrinkSew != null)
+            {
+                _btnShrinkSew.Text = (sew ? "● " : "") + "Rétrécir / Coudre (Shrink/Sew)";
+                _btnShrinkSew.BackColor = sew ? Color.FromArgb(55, 95, 120) : Color.FromArgb(70, 80, 90);
+            }
+        }
+
+        private void OnClothingEffectParameterChanged()
+        {
+            if (glControl == null || !glControl.IsHandleCreated) return;
+            bool active = _loadedMeshes != null && _loadedMeshes.Exists(m => m.PushOutOfBody || m.ShrinkSew);
+            if (active)
+            {
+                // clear cached pushed positions to apply new margin immediately
+                foreach (var m in _loadedMeshes)
+                    if (m.PushOutOfBody)
+                        m.ClothPushBase = null;
+                ApplyAnimationPose(_currentTime);
+                RefreshVertexBuffers(true);
+            }
+            glControl.Invalidate();
+        }
+
+        // One body triangle used by the mesh-mesh collision.
+        private struct CollisionTri
+        {
+            public Vector3 A, B, C;
+            public Vector3 N;          // Geometric face normal
+            public Vector3 NA, NB, NC; // Smooth vertex normals
+        }
+
+        private sealed class CollisionGrid
+        {
+            public float Cell = 0.08f;
+            public readonly List<CollisionTri> Tris = new List<CollisionTri>();
+            public readonly Dictionary<long, List<int>> Cells = new Dictionary<long, List<int>>();
+            public int[] Stamp = Array.Empty<int>();
+            public int QueryId;
+            public Vector3 BoundsMin = new Vector3(float.MaxValue);
+            public Vector3 BoundsMax = new Vector3(float.MinValue);
+
+            public static long Key(int x, int y, int z)
+            {
+                return (((long)(x + 0x20000) & 0x7FFFF) << 38)
+                     | (((long)(y + 0x20000) & 0x7FFFF) << 19)
+                     | (((long)(z + 0x20000) & 0x7FFFF));
+            }
+
+            public void Add(CollisionTri t)
+            {
+                int idx = Tris.Count;
+                Tris.Add(t);
+
+                float minX = Math.Min(t.A.X, Math.Min(t.B.X, t.C.X));
+                float minY = Math.Min(t.A.Y, Math.Min(t.B.Y, t.C.Y));
+                float minZ = Math.Min(t.A.Z, Math.Min(t.B.Z, t.C.Z));
+                float maxX = Math.Max(t.A.X, Math.Max(t.B.X, t.C.X));
+                float maxY = Math.Max(t.A.Y, Math.Max(t.B.Y, t.C.Y));
+                float maxZ = Math.Max(t.A.Z, Math.Max(t.B.Z, t.C.Z));
+
+                if (minX < BoundsMin.X) BoundsMin.X = minX;
+                if (minY < BoundsMin.Y) BoundsMin.Y = minY;
+                if (minZ < BoundsMin.Z) BoundsMin.Z = minZ;
+                if (maxX > BoundsMax.X) BoundsMax.X = maxX;
+                if (maxY > BoundsMax.Y) BoundsMax.Y = maxY;
+                if (maxZ > BoundsMax.Z) BoundsMax.Z = maxZ;
+
+                int x0 = (int)Math.Floor(minX / Cell), x1 = (int)Math.Floor(maxX / Cell);
+                int y0 = (int)Math.Floor(minY / Cell), y1 = (int)Math.Floor(maxY / Cell);
+                int z0 = (int)Math.Floor(minZ / Cell), z1 = (int)Math.Floor(maxZ / Cell);
+
+                if (x1 - x0 > 4) x1 = x0 + 4;
+                if (y1 - y0 > 4) y1 = y0 + 4;
+                if (z1 - z0 > 4) z1 = z0 + 4;
+
+                for (int x = x0; x <= x1; x++)
+                    for (int y = y0; y <= y1; y++)
+                        for (int z = z0; z <= z1; z++)
+                        {
+                            long k = Key(x, y, z);
+                            if (!Cells.TryGetValue(k, out var list))
+                            {
+                                list = new List<int>(4);
+                                Cells[k] = list;
+                            }
+                            list.Add(idx);
+                        }
+            }
+        }
+
+        private static bool FindClosestBodyPoint(CollisionGrid grid, Vector3 p, float maxR,
+            out CollisionTri bestTri, out Vector3 bestPoint, out float bestDist)
+        {
+            bestTri = default;
+            bestPoint = p;
+            bestDist = float.MaxValue;
+            if (grid.Tris.Count == 0) return false;
+
+            // Bounding box early rejection
+            if (p.X < grid.BoundsMin.X - maxR || p.X > grid.BoundsMax.X + maxR ||
+                p.Y < grid.BoundsMin.Y - maxR || p.Y > grid.BoundsMax.Y + maxR ||
+                p.Z < grid.BoundsMin.Z - maxR || p.Z > grid.BoundsMax.Z + maxR)
+            {
+                return false;
+            }
+
+            float bestDistSq = maxR * maxR;
+
+            if (grid.Stamp.Length != grid.Tris.Count)
+            {
+                grid.Stamp = new int[grid.Tris.Count];
+                grid.QueryId = 0;
+            }
+            grid.QueryId++;
+            if (grid.QueryId == int.MaxValue)
+            {
+                Array.Clear(grid.Stamp, 0, grid.Stamp.Length);
+                grid.QueryId = 1;
+            }
+            int stamp = grid.QueryId;
+
+            int cx = (int)Math.Floor(p.X / grid.Cell);
+            int cy = (int)Math.Floor(p.Y / grid.Cell);
+            int cz = (int)Math.Floor(p.Z / grid.Cell);
+
+            int span = (int)Math.Ceiling(maxR / grid.Cell);
+            if (span > 3) span = 3;
+
+            for (int dx = -span; dx <= span; dx++)
+            {
+                int x = cx + dx;
+                for (int dy = -span; dy <= span; dy++)
+                {
+                    int y = cy + dy;
+                    for (int dz = -span; dz <= span; dz++)
+                    {
+                        int z = cz + dz;
+                        if (!grid.Cells.TryGetValue(CollisionGrid.Key(x, y, z), out var list)) continue;
+                        int cnt = list.Count;
+                        for (int k = 0; k < cnt; k++)
+                        {
+                            int ti = list[k];
+                            if (ti < 0 || ti >= grid.Tris.Count || grid.Stamp[ti] == stamp) continue;
+                            grid.Stamp[ti] = stamp;
+
+                            var t = grid.Tris[ti];
+                            Vector3 q = ClosestPointOnTriangle(p, t.A, t.B, t.C);
+                            float dsq = (p - q).LengthSquared;
+                            if (dsq < bestDistSq)
+                            {
+                                bestDistSq = dsq;
+                                bestTri = t;
+                                bestPoint = q;
+                                float d = (float)Math.Sqrt(dsq);
+                                int newSpan = (int)Math.Ceiling(d / grid.Cell);
+                                if (newSpan < span) span = newSpan;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (bestDistSq <= maxR * maxR)
+            {
+                bestDist = (float)Math.Sqrt(bestDistSq);
+                return true;
+            }
+            return false;
+        }
+
+        private CollisionGrid BuildBodyCollisionGrid(List<LoadedMesh> body)
+        {
+            var grid = new CollisionGrid();
+            var seen = new HashSet<LoadedMesh>();
+
+            foreach (var bm in body)
+            {
+                if (bm == null || bm.DeformedCache == null || bm.Indices == null || bm.Indices.Length < 3) continue;
+                if (!seen.Add(bm)) continue;
+                var dc = bm.DeformedCache;
+                var idx = bm.Indices;
+                int vc = dc.Length;
+
+                // 1. Compute smooth vertex normals on the deformed body mesh
+                Vector3[] vNormals = new Vector3[vc];
+                for (int t = 0; t + 2 < idx.Length; t += 3)
+                {
+                    int ia = idx[t], ib = idx[t + 1], ic = idx[t + 2];
+                    if (ia < 0 || ib < 0 || ic < 0 || ia >= vc || ib >= vc || ic >= vc) continue;
+                    Vector3 a = dc[ia], b = dc[ib], c = dc[ic];
+                    Vector3 fn = Vector3.Cross(b - a, c - a);
+                    if (fn.LengthSquared < 1e-12f) continue;
+                    vNormals[ia] += fn;
+                    vNormals[ib] += fn;
+                    vNormals[ic] += fn;
+                }
+                for (int i = 0; i < vc; i++)
+                {
+                    if (vNormals[i].LengthSquared > 1e-12f)
+                        vNormals[i] = Vector3.Normalize(vNormals[i]);
+                    else
+                        vNormals[i] = Vector3.UnitZ;
+                }
+
+                // 2. Add each triangle with its geometric face normal & smooth vertex normals
+                for (int t = 0; t + 2 < idx.Length; t += 3)
+                {
+                    int ia = idx[t], ib = idx[t + 1], ic = idx[t + 2];
+                    if (ia < 0 || ib < 0 || ic < 0 || ia >= vc || ib >= vc || ic >= vc) continue;
+                    Vector3 a = dc[ia], b = dc[ib], c = dc[ic];
+                    Vector3 fn = Vector3.Cross(b - a, c - a);
+                    if (fn.LengthSquared < 1e-12f) continue;
+                    fn = Vector3.Normalize(fn);
+
+                    var tri = new CollisionTri
+                    {
+                        A = a, B = b, C = c,
+                        N = fn,
+                        NA = vNormals[ia], NB = vNormals[ib], NC = vNormals[ic]
+                    };
+                    grid.Add(tri);
+                }
+            }
+
+            return grid;
+        }
+
+        // Applies the enabled mesh-mesh effects to the deformed clothing geometry.
+        // Called at the end of RefreshVertexBuffers, after every mesh's DeformedCache
+        // has been built for the current pose/animation frame.
+        private void ApplyClothingBodyCollision(bool includeNormals)
+        {
+            if (_loadedMeshes == null || _loadedMeshes.Count == 0) return;
+            bool any = false;
+            foreach (var m in _loadedMeshes) if (m != null && (m.PushOutOfBody || m.ShrinkSew)) { any = true; break; }
+            if (!any) return;
+
+            var grids = new Dictionary<LoadedMesh, CollisionGrid>();
+            foreach (var lm in _loadedMeshes)
+            {
+                if (lm == null || (!lm.PushOutOfBody && !lm.ShrinkSew)) continue;
+                if (lm.DeformedCache == null || lm.Indices == null || lm.Indices.Length < 3 || lm.Hidden) continue;
+                if (lm.IsCloth || lm.ForceBaseDisplay) continue;
+
+                List<LoadedMesh> body = lm.CollisionBody;
+                if (body == null || body.Count == 0)
+                {
+                    body = new List<LoadedMesh>();
+                    foreach (var m in _loadedMeshes)
+                        if (m != null && !ReferenceEquals(m, lm) && !m.Hidden && m.Indices != null
+                            && m.DeformedCache != null && !m.IsCloth && !m.PushOutOfBody && !m.ShrinkSew)
+                            body.Add(m);
+                    if (body.Count == 0)
+                        foreach (var m in _loadedMeshes)
+                            if (m != null && !ReferenceEquals(m, lm) && !m.Hidden && m.Indices != null
+                                && m.DeformedCache != null && !m.PushOutOfBody && !m.ShrinkSew)
+                                body.Add(m);
+                }
+
+                if (body.Count == 0) continue;
+
+                CollisionGrid grid;
+                if (!grids.TryGetValue(lm, out grid))
+                {
+                    grid = BuildBodyCollisionGrid(body);
+                    grids[lm] = grid;
+                }
+                if (grid.Tris.Count == 0) continue;
+
+                float margin = _pushOutMargin;
+                if (margin < 0.001f) margin = 0.001f;
+                if (margin > 0.05f) margin = 0.05f;
+
+                // PushOutOfBody only needs to look within reach of penetration or margin (e.g. 5-6 cm)
+                // ShrinkSew wants a wider reach (20 cm) to gather loose fabric
+                float maxR = lm.ShrinkSew ? 0.20f : Math.Max(margin * 3.0f, 0.06f);
+                var dc = lm.DeformedCache;
+                int moved = 0;
+
+                for (int v = 0; v < dc.Length; v++)
+                {
+                    Vector3 p = dc[v];
+                    if (!FindClosestBodyPoint(grid, p, maxR, out var tri, out var q, out float dist))
+                    {
+                        continue;
+                    }
+
+                    // Smooth outward surface normal at contact point q
+                    Vector3 bary = Barycentric(q, tri.A, tri.B, tri.C);
+                    Vector3 n = bary.X * tri.NA + bary.Y * tri.NB + bary.Z * tri.NC;
+                    if (n.LengthSquared > 1e-12f) n = Vector3.Normalize(n);
+                    else n = tri.N;
+
+                    Vector3 diff = p - q;
+                    float signed = Vector3.Dot(diff, n);
+
+                    Vector3 target = p;
+                    bool modify = false;
+
+                    if (lm.PushOutOfBody)
+                    {
+                        // ONLY push out if the vertex is penetrating (signed < 0) or closer than margin.
+                        // Vertices that are outside with signed >= margin are NEVER touched (loose sleeves & hood preserved!).
+                        // Vertices deeper than 6 cm inside are ignored (belong to other body parts/sides).
+                        if (signed < margin && signed >= -0.06f)
+                        {
+                            float pushDist = margin - signed;
+                            target = p + n * pushDist;
+                            modify = true;
+                        }
+                    }
+                    else if (lm.ShrinkSew)
+                    {
+                        if (signed < margin && signed >= -0.06f)
+                        {
+                            // Never allow clothing to penetrate body during shrink
+                            float pushDist = margin - signed;
+                            target = p + n * pushDist;
+                            modify = true;
+                        }
+                        else if (signed > margin && dist > 1e-6f && _sewShrinkForce > 0.01f)
+                        {
+                            // Pull excess fabric towards the surface
+                            float excess = signed - margin;
+                            float pull = Math.Min(excess, 0.10f) * Math.Clamp(_sewShrinkForce, 0.05f, 1.0f);
+                            target = p - (diff / dist) * pull;
+                            modify = true;
+                        }
+                    }
+
+                    if (modify && (target - p).LengthSquared > 1e-10f)
+                    {
+                        dc[v] = target;
+                        moved++;
+                    }
+                }
+
+                if (moved == 0) continue;
+
+                // Push the adjusted positions back into the de-indexed VBO.
+                int cn = lm.CornerVertex?.Length ?? 0;
+                for (int c = 0; c < cn; c++)
+                {
+                    int vi = lm.CornerVertex[c];
+                    Vector3 p = (vi >= 0 && vi < dc.Length) ? dc[vi] : Vector3.Zero;
+                    lm.Interleaved[c * 8 + 0] = (p.X - _refCenter.X) * _refScale;
+                    lm.Interleaved[c * 8 + 1] = (p.Y - _refCenter.Y) * _refScale;
+                    lm.Interleaved[c * 8 + 2] = (p.Z - _refCenter.Z) * _refScale;
+                }
+                GL.BindBuffer(BufferTarget.ArrayBuffer, lm.Vbo);
+                GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, lm.Interleaved.Length * sizeof(float), lm.Interleaved);
+            }
+        }
+
+
         // Silhouette profile: X extent per Z slice. T-pose -> widest band at shoulder height;
         // A-pose -> widest band low (hips) and narrow towards the top (arms hanging down).
         private static void LogProfile(string name, Vector3[] pts)
@@ -7764,6 +8343,7 @@ namespace UoFiddler.Plugin.Granny3D
         private static bool IsMeshTweaked(LoadedMesh m)
         {
             if (m == null) return false;
+            if (m.PushOutOfBody || m.ShrinkSew) return true;
             if (m.Thickness != 0f) return true;
             if (m.PartScale != 1f) return true;
             if (m.PartScaleVec.X != 1f || m.PartScaleVec.Y != 1f || m.PartScaleVec.Z != 1f) return true;
@@ -10741,6 +11321,10 @@ namespace UoFiddler.Plugin.Granny3D
                 GL.BindBuffer(BufferTarget.ArrayBuffer, lm.Vbo);
                 GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, lm.Interleaved.Length * sizeof(float), lm.Interleaved);
             }
+
+            // Mesh-mesh clothing collision runs after every DeformedCache is built, so
+            // it can test the garment against the CURRENT (animated) body surface.
+            ApplyClothingBodyCollision(includeNormals);
         }
 
         // ==================== RENDERING ====================
@@ -12544,7 +13128,7 @@ void main(){
                 _camera.Target = Vector3.Zero;
                 _camera.Distance = 5f;
                 _camera.Yaw = 0f;
-                _camera.Pitch = -0.35f;
+                _camera.Pitch = 0f;
                 glControl.Invalidate();
             });
 

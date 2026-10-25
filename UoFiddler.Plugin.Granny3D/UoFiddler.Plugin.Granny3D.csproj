@@ -48,7 +48,15 @@
 			<NativeLibs Include="$(OutDir)runtimes\win-x64\native\glfw3.dll" />
 			<NativeLibs Include="$(PkgAssimpNet)\runtimes\win-x64\native\assimp.dll" />
 		</ItemGroup>
-		<Copy SourceFiles="@(NativeLibs)" DestinationFolder="..\UoFiddler\bin\$(Configuration)\" />
+		<Copy SourceFiles="@(NativeLibs)" DestinationFolder="..\UoFiddler\bin\$(Configuration)\" Condition="Exists('..\UoFiddler\bin\$(Configuration)\')" />
+		<Copy SourceFiles="@(NativeLibs)" DestinationFolder="$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\" Condition="Exists('$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\')" />
+	</Target>
+
+	<Target Name="SyncPluginToUOFiddlerMaster" AfterTargets="Build">
+		<ItemGroup>
+			<PluginOutputFiles Include="$(TargetDir)*.*" />
+		</ItemGroup>
+		<Copy SourceFiles="@(PluginOutputFiles)" DestinationFolder="$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\plugins\" Condition="Exists('$(MSBuildThisFileDirectory)..\UOFiddler-master\UoFiddler\bin\$(Configuration)\plugins\')" />
 	</Target>
 
 </Project>
