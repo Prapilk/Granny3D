@@ -98,6 +98,7 @@ namespace UoFiddler.Plugin.Granny3D
         public GrannyAnimation Animation { get; private set; }
         // Name of the texture referenced inside the .grn (e.g. "orcs_orc_v03"), if any.
         public string TextureName { get; private set; }
+        public List<GrannyChunk> FlatChunks => _flatChunks;
         private List<GrannyChunk> _flatChunks;
 
         // Debug fields
@@ -109,6 +110,8 @@ namespace UoFiddler.Plugin.Granny3D
         private List<string> _strings = new List<string>();
         private Dictionary<string, int> _textKeys = new Dictionary<string, int>();
         private List<(int id, int key, int value)> _objects = new List<(int, int, int)>();
+        public List<int> BoneObjPtrs => _boneObjPtrs;
+        public List<int> BoneObjPtrs2 => _boneObjPtrs2;
         private List<int> _boneObjPtrs = new List<int>();
         private List<int> _boneObjPtrs2 = new List<int>();
         private List<int> _boneObjects = new List<int>();
@@ -707,6 +710,10 @@ namespace UoFiddler.Plugin.Granny3D
                             Animation.SkeletonByName[sb.Name] = sb;
                     }
                 }
+                var h0ToBoneIndex = new Dictionary<int, int>();
+                for (int b = 0; b < _boneObjPtrs2.Count; b++)
+                    h0ToBoneIndex[_boneObjPtrs2[b]] = b;
+
                 float maxDuration = 0;
 
                 for (int trackIdx = 0; trackIdx < trackChunks.Count; trackIdx++)
@@ -721,21 +728,32 @@ namespace UoFiddler.Plugin.Granny3D
                     for (int skip = 0; skip < 4; skip++) reader.ReadInt32();
 
                     string trackName = $"Track_{trackIdx}";
-                    // Same two-step object indirection as the skeleton bones: the per-bone
-                    // pointer list (0xCA5E0C02) indexed by track order, then the bone-object
-                    // list, then the object-name list.
-                    int objPtrB = trackIdx < _boneObjPtrs2.Count ? _boneObjPtrs2[trackIdx] - 1
-                                  : (h0 - 1);
-                    if (objPtrB >= 0 && objPtrB < _boneObjPtrs.Count)
+                    int resolvedBoneIdx = -1;
+                    // In Granny file format, chunk 0xCA5E0C02 (_boneObjPtrs2) maps bone index -> h0 track key!
+                    if (h0ToBoneIndex.TryGetValue(h0, out int bIdx) && bIdx >= 0 && bIdx < Bones.Count)
                     {
-                        int objIdxB = _boneObjPtrs[objPtrB] - 1;
-                        if (objIdxB >= 0 && objIdxB < objectNames.Count)
-                            trackName = objectNames[objIdxB];
+                        resolvedBoneIdx = bIdx;
+                        trackName = Bones[bIdx].Name;
+                    }
+                    else
+                    {
+                        int objPtrB = h0 - 1;
+                        if (objPtrB < 0 || objPtrB >= _boneObjPtrs.Count)
+                        {
+                            if (trackIdx < _boneObjPtrs2.Count)
+                                objPtrB = _boneObjPtrs2[trackIdx] - 1;
+                        }
+                        if (objPtrB >= 0 && objPtrB < _boneObjPtrs.Count)
+                        {
+                            int objIdxB = _boneObjPtrs[objPtrB] - 1;
+                            if (objIdxB >= 0 && objIdxB < objectNames.Count)
+                                trackName = objectNames[objIdxB];
+                        }
                     }
 
                     var track = new GrannyTrack
                     {
-                        BoneId = trackIdx,
+                        BoneId = resolvedBoneIdx >= 0 ? resolvedBoneIdx : trackIdx,
                         Name = trackName
                     };
 

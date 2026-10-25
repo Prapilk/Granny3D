@@ -512,7 +512,11 @@ namespace UoFiddler.Plugin.Granny3D
         private Button btnForceBase;
         private Label lblWrapInfo;
         private bool _wrapPreviewBusy;
-        private CheckBox chkCloth;
+        private CheckBox chkCloth, chkShowColliders, chkShowBones, chkClothHeatmap;
+        private NumericUpDown nudClothClearance;
+        private bool _showColliders, _showBones, _showClothHeatmap;
+        private float _clothClearance = 0.008f; // 0.8 cm collision margin by default
+        private int _debugLinesVao, _debugLinesVbo;
         private NumericUpDown nudBakeFps, nudLoopBlend;
         private bool _suppressEquip;
         // ---- Pose studio ("Personnage (déplacement / pose)" tab) ----
@@ -1430,12 +1434,41 @@ namespace UoFiddler.Plugin.Granny3D
             grpEquip.Controls.Add(new Label { Text = "0 = aucune", Location = new Point(240, 258), Width = 120, ForeColor = Color.Gray });
 
             // Real-time cloth simulation (capes / robes / skirts).
-            chkCloth = new CheckBox { Text = "Tissu (simulation)", Location = new Point(8, 284), Width = 170, ForeColor = Color.Gainsboro };
+            chkCloth = new CheckBox { Text = "Tissu (simulation)", Location = new Point(8, 284), Width = 135, ForeColor = Color.Gainsboro };
             chkCloth.CheckedChanged += (s, e) => { if (!_suppressEquip) SetClothSelected(chkCloth.Checked); };
             grpEquip.Controls.Add(chkCloth);
-            grpEquip.Controls.Add(new Label { Text = "Grav.", Location = new Point(190, 286), Width = 34, ForeColor = Color.Gray });
-            nudClothGrav = MakeNud(230, 281, 0m, 30m, 0.5m, 2);
+
+            grpEquip.Controls.Add(new Label { Text = "Grav.", Location = new Point(148, 286), Width = 34, ForeColor = Color.Gray });
+            nudClothGrav = MakeNud(182, 281, 0m, 30m, 0.5m, 2);
+            nudClothGrav.Width = 48;
             nudClothGrav.Value = 9.8m;
+
+            grpEquip.Controls.Add(new Label { Text = "Marge (cm) :", Location = new Point(236, 286), Width = 68, ForeColor = Color.Gray });
+            nudClothClearance = new NumericUpDown
+            {
+                Location = new Point(306, 282), Width = 55,
+                Minimum = 0m, Maximum = 15m, Increment = 0.5m, DecimalPlaces = 1,
+                Value = 0.8m,
+                BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle
+            };
+            nudClothClearance.ValueChanged += (s, e) =>
+            {
+                _clothClearance = (float)nudClothClearance.Value / 100f;
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            };
+            grpEquip.Controls.Add(nudClothClearance);
+
+            chkShowColliders = new CheckBox { Text = "👁 Colliders", Location = new Point(8, 312), Width = 100, ForeColor = Color.LightGreen };
+            chkShowColliders.CheckedChanged += (s, e) => { _showColliders = chkShowColliders.Checked; if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate(); };
+            grpEquip.Controls.Add(chkShowColliders);
+
+            chkShowBones = new CheckBox { Text = "🦴 Squelette", Location = new Point(112, 312), Width = 105, ForeColor = Color.Gold };
+            chkShowBones.CheckedChanged += (s, e) => { _showBones = chkShowBones.Checked; if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate(); };
+            grpEquip.Controls.Add(chkShowBones);
+
+            chkClothHeatmap = new CheckBox { Text = "🎨 Zones Tissu", Location = new Point(222, 312), Width = 145, ForeColor = Color.Cyan };
+            chkClothHeatmap.CheckedChanged += (s, e) => { _showClothHeatmap = chkClothHeatmap.Checked; if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate(); };
+            grpEquip.Controls.Add(chkClothHeatmap);
 
             // ---- Advanced Skin Wrap panel (moved to the free space right of the mirror
             //      checkbox, where the old "Recaler" button was). "Skin wrap" applies the
@@ -5108,10 +5141,14 @@ namespace UoFiddler.Plugin.Granny3D
                 string baseMesh = NaturalBaseMesh(animPath);
                 if (!string.IsNullOrEmpty(baseMesh) && !File.Exists(baseMesh)) baseMesh = null;
 
-                // Only auto-load a base mesh when the scene is empty. If a character
-                // (and its equipment) is already displayed, play the animation on it
-                // instead of resetting the scene.
-                if (_loadedMeshes.Count == 0 && baseMesh != null)
+                // Auto-load base mesh if scene is empty, or if an animation for a DIFFERENT creature is clicked
+                // (e.g. clicking Blackthorn or a monster/animal while a Human or another creature is displayed).
+                string currCreature = !string.IsNullOrEmpty(_currentModelPath) ? DeriveCreature(Path.GetFileNameWithoutExtension(_currentModelPath)) : null;
+                string animCreature = DeriveCreature(Path.GetFileNameWithoutExtension(animPath));
+                bool isDifferentCreature = !string.IsNullOrEmpty(currCreature) && !string.IsNullOrEmpty(animCreature) &&
+                                          !string.Equals(currCreature, animCreature, StringComparison.OrdinalIgnoreCase);
+
+                if (baseMesh != null && (_loadedMeshes.Count == 0 || isDifferentCreature))
                     LoadModel(baseMesh);
 
                 LoadAnimation(animPath);
@@ -5304,6 +5341,12 @@ namespace UoFiddler.Plugin.Granny3D
             _sceneExtras.Clear();
             if (tvLoaded != null) tvLoaded.Nodes.Clear();
             _currentModelPath = path;
+
+            // Stop and reset any running animation when loading a new model
+            _currentAnimation = null;
+            _animParser = null;
+            _playing = false;
+            _currentTime = 0f;
 
             // H_Male_Lod2 / H_Female_Lod2 only contain the 43-bone skeleton and a
             // 19-vertex placeholder box; the real body is assembled from parts.
@@ -5707,13 +5750,13 @@ namespace UoFiddler.Plugin.Granny3D
                 if (nV > V)
                 {
                     var verts = lm.BaseVertices;
-                    int cc2 = lm.CornerVertex?.Length ?? 0;
+                    int cc2 = outIdx.Count;
                     // Build adjacency
                     var adj = new HashSet<int>[nV];
                     for (int i = 0; i < nV; i++) adj[i] = new HashSet<int>();
                     for (int c = 0; c < cc2; c += 3)
                     {
-                        int a = lm.CornerVertex[c], b = lm.CornerVertex[c+1], c2v = lm.CornerVertex[c+2];
+                        int a = outIdx[c], b = outIdx[c+1], c2v = outIdx[c+2];
                         if (a>=0&&a<nV&&b>=0&&b<nV){ adj[a].Add(b); adj[b].Add(a); }
                         if (b>=0&&b<nV&&c2v>=0&&c2v<nV){ adj[b].Add(c2v); adj[c2v].Add(b); }
                         if (c2v>=0&&c2v<nV&&a>=0&&a<nV){ adj[c2v].Add(a); adj[a].Add(c2v); }
@@ -9842,6 +9885,21 @@ namespace UoFiddler.Plugin.Granny3D
 
         // ==================== ANIMATION ====================
 
+        private static string NormalizeBoneName(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            var parts = s.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            return string.Join(" ", parts).Trim();
+        }
+
+        private static string StripBipPrefix(string s)
+        {
+            s = NormalizeBoneName(s);
+            if (s.StartsWith("Bip01 ", StringComparison.OrdinalIgnoreCase)) return s.Substring(6).Trim();
+            if (s.StartsWith("Bip01", StringComparison.OrdinalIgnoreCase)) return s.Substring(5).Trim();
+            return s;
+        }
+
         // Name-only binding: map each track to the model bone with the same name.
         // Returns the number of bones matched.
         private int BindMeshToAnimation(LoadedMesh lm, GrannyAnimation anim)
@@ -9852,8 +9910,15 @@ namespace UoFiddler.Plugin.Granny3D
 
             var modelBoneByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < boneCount; i++)
-                if (!string.IsNullOrEmpty(lm.Bones[i].Name))
-                    modelBoneByName[lm.Bones[i].Name] = i;
+            {
+                string raw = lm.Bones[i].Name;
+                if (string.IsNullOrEmpty(raw)) continue;
+                string norm = NormalizeBoneName(raw);
+                string stripped = StripBipPrefix(raw);
+                if (!modelBoneByName.ContainsKey(raw)) modelBoneByName[raw] = i;
+                if (!modelBoneByName.ContainsKey(norm)) modelBoneByName[norm] = i;
+                if (!string.IsNullOrEmpty(stripped) && !modelBoneByName.ContainsKey(stripped)) modelBoneByName[stripped] = i;
+            }
 
             int matched = 0;
             for (int trackIdx = 0; trackIdx < anim.Tracks.Count; trackIdx++)
@@ -9861,13 +9926,15 @@ namespace UoFiddler.Plugin.Granny3D
                 var track = anim.Tracks[trackIdx];
                 if (string.IsNullOrEmpty(track.Name)) continue;
 
-                if (modelBoneByName.TryGetValue(track.Name, out int modelBoneIdx))
-                {
-                    lm.BoneToAnimTrack[modelBoneIdx] = trackIdx;
-                    matched++;
-                }
-                else if (MixamoRetarget.TryGetBoneAlias(track.Name, out string alias) &&
-                         modelBoneByName.TryGetValue(alias, out modelBoneIdx))
+                string tName = track.Name;
+                string tNorm = NormalizeBoneName(tName);
+                string tStrip = StripBipPrefix(tName);
+
+                if (modelBoneByName.TryGetValue(tName, out int modelBoneIdx) ||
+                    modelBoneByName.TryGetValue(tNorm, out modelBoneIdx) ||
+                    modelBoneByName.TryGetValue(tStrip, out modelBoneIdx) ||
+                    modelBoneByName.TryGetValue("Bip01 " + tStrip, out modelBoneIdx) ||
+                    (MixamoRetarget.TryGetBoneAlias(tName, out string alias) && modelBoneByName.TryGetValue(alias, out modelBoneIdx)))
                 {
                     lm.BoneToAnimTrack[modelBoneIdx] = trackIdx;
                     matched++;
@@ -10032,31 +10099,20 @@ namespace UoFiddler.Plugin.Granny3D
                                                                    lm.Bones[p].Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase)));
 
                         Vector3 pos;
-                        if (!isCustomModel)
+                        if (b.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
                         {
-                            pos = tr.EvaluatePos(meshT);
+                            Vector3 trPos = tr.EvaluatePos(meshT);
+                            Vector3 restPos = tr.Pos != null && tr.Pos.Length > 0 ? tr.Pos[0] : trPos;
+                            if (anim.SkeletonByName.TryGetValue("Bip01", out var skelBip)) restPos = skelBip.LocalPosition;
+                            Vector3 delta = trPos - restPos;
+                            pos = b.LocalPosition + delta;
                         }
                         else
                         {
-                            // Custom imported models (e.g. Mixamo characters with custom limb/finger lengths):
-                            // Root/pelvis (Bip01), attachment sockets (CP_*), and bones with actual position animation
-                            // evaluate their animated track, while static limb bones preserve the custom model's local bone lengths.
-                            if (b.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
-                            {
-                                float refBindZ = 0.937f;
-                                if (anim.SkeletonByName.TryGetValue("Bip01", out var skelBip))
-                                    refBindZ = skelBip.LocalPosition.Z;
-                                Vector3 trPos = tr.EvaluatePos(meshT);
-                                float deltaZ = trPos.Z - refBindZ;
-                                pos = new Vector3(b.LocalPosition.X, b.LocalPosition.Y, b.LocalPosition.Z + deltaZ);
-                            }
-                            else
-                            {
-                                bool useAnimPos = isRoot ||
-                                                  b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
-                                                  TrackPositionVaries(tr, 0.002f);
-                                pos = useAnimPos ? tr.EvaluatePos(meshT) : b.LocalPosition;
-                            }
+                            bool useAnimPos = isRoot ||
+                                              b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
+                                              TrackPositionVaries(tr, 0.002f);
+                            pos = useAnimPos ? tr.EvaluatePos(meshT) : b.LocalPosition;
                         }
 
                         lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(meshT)) * Matrix4.CreateTranslation(pos);
@@ -10608,7 +10664,7 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (lm.BaseVertices == null || lm.BaseVertices.Length == 0) return;
             if (lm.BaseVertexNormals == null || lm.BaseVertexNormals.Length != lm.BaseVertices.Length) BuildCornerData(lm);
-            if (lm.Weld == null) BuildWeld(lm);
+            if (lm.Weld == null || lm.Weld.Length != lm.BaseVertices.Length) BuildWeld(lm);
             int P = Math.Max(1, lm.WeldCount);
 
             // Representative original vertex + rest position for each particle.
@@ -10618,12 +10674,20 @@ namespace UoFiddler.Plugin.Granny3D
             for (int v = 0; v < lm.Weld.Length; v++)
             {
                 int p = lm.Weld[v];
-                if (rep[p] < 0)
+                if (p >= 0 && p < P && rep[p] < 0)
                 {
                     rep[p] = v;
                     Vector3 orig = lm.BaseVertices[v];
                     Vector3 norm = (lm.BaseVertexNormals != null && v < lm.BaseVertexNormals.Length) ? lm.BaseVertexNormals[v] : Vector3.Zero;
                     rest[p] = ApplyMeshTweak(lm, orig, true, norm);
+                }
+            }
+            for (int p = 0; p < P; p++)
+            {
+                if (rep[p] < 0)
+                {
+                    rep[p] = 0;
+                    rest[p] = lm.BaseVertices.Length > 0 ? lm.BaseVertices[0] : Vector3.Zero;
                 }
             }
             lm.ClothRep = rep;
@@ -10787,15 +10851,44 @@ namespace UoFiddler.Plugin.Granny3D
                 int w0 = WeldOf(lm, lm.CornerVertex[t]);
                 int w1 = WeldOf(lm, lm.CornerVertex[t + 1]);
                 int w2 = WeldOf(lm, lm.CornerVertex[t + 2]);
+                if (w0 < 0 || w1 < 0 || w2 < 0 || w0 >= P || w1 >= P || w2 >= P) continue;
                 AddClothEdge(edges, a, b, w0, w1);
                 AddClothEdge(edges, a, b, w1, w2);
                 AddClothEdge(edges, a, b, w2, w0);
             }
-            lm.ClothEdgeA = a.ToArray();
-            lm.ClothEdgeB = b.ToArray();
-            lm.ClothRest = new float[a.Count];
+            var restLengths = new List<float>();
+            var validA = new List<int>();
+            var validB = new List<int>();
             for (int e = 0; e < a.Count; e++)
-                lm.ClothRest[e] = Vector3.Distance(rest[a[e]], rest[b[e]]);
+            {
+                float d = Vector3.Distance(rest[a[e]], rest[b[e]]);
+                if (d > 1e-5f && !float.IsNaN(d) && !float.IsInfinity(d))
+                {
+                    validA.Add(a[e]);
+                    validB.Add(b[e]);
+                    restLengths.Add(d);
+                }
+            }
+            lm.ClothEdgeA = validA.ToArray();
+            lm.ClothEdgeB = validB.ToArray();
+            lm.ClothRest = restLengths.ToArray();
+
+            // Detect isolated particles (particles with no cloth edges) and pin them 100%
+            // to their skin target so they never drift or wander into space!
+            var edgeCountPerParticle = new int[P];
+            for (int e = 0; e < lm.ClothEdgeA.Length; e++)
+            {
+                edgeCountPerParticle[lm.ClothEdgeA[e]]++;
+                edgeCountPerParticle[lm.ClothEdgeB[e]]++;
+            }
+            for (int p = 0; p < P; p++)
+            {
+                if (edgeCountPerParticle[p] == 0)
+                {
+                    lm.ClothPin[p] = true;
+                    lm.ClothPinWeight[p] = 1.0f;
+                }
+            }
         }
 
         private static bool IsPelvisBone(string s)
@@ -10953,10 +11046,21 @@ namespace UoFiddler.Plugin.Granny3D
                 if (mats == null)
                 {
                     var host = _loadedMeshes.Find(m => !ReferenceEquals(m, lm) && m.SkinMatrices != null && m.SkinMatrices.Length >= 2);
-                    if (host != null)
+                    if (host != null && lm.Bones != null && host.Bones != null)
                     {
-                        mats = host.SkinMatrices;
-                        bc = host.Bones != null ? host.Bones.Count : mats.Length;
+                        // Map each bone of lm by NAME to host's bone matrices!
+                        // This prevents wearable dummy nodes (__Description, .max, .tga) from mapping to wrong character bones!
+                        mats = new Matrix4[lm.Bones.Count];
+                        for (int bi = 0; bi < lm.Bones.Count; bi++)
+                        {
+                            string bn = lm.Bones[bi].Name;
+                            int hi = host.Bones.FindIndex(hb => hb.Name.Equals(bn, StringComparison.OrdinalIgnoreCase));
+                            if (hi >= 0 && hi < host.SkinMatrices.Length)
+                                mats[bi] = host.SkinMatrices[hi];
+                            else
+                                mats[bi] = Matrix4.Identity;
+                        }
+                        bc = lm.Bones.Count;
                     }
                 }
 
@@ -10970,8 +11074,10 @@ namespace UoFiddler.Plugin.Granny3D
                         int bid = inf[k].BoneId;
                         if (bid >= 0 && bid < bc && bid < mats.Length)
                         {
-                            def += Vector3.TransformPosition(orig, mats[bid]) * inf[k].Weight;
-                            if (thick) dn += Vector3.TransformNormal(baseN, mats[bid]) * inf[k].Weight;
+                            Matrix4 bm = mats[bid];
+                            if (bm.M44 == 0f && bm.M11 == 0f) continue;
+                            def += Vector3.TransformPosition(orig, bm) * inf[k].Weight;
+                            if (thick) dn += Vector3.TransformNormal(baseN, bm) * inf[k].Weight;
                             tw += inf[k].Weight;
                         }
                     }
@@ -10980,12 +11086,27 @@ namespace UoFiddler.Plugin.Granny3D
                         skinnedPos = def / tw;
                         dnorm = dn;
                     }
+                    else if (orig.LengthSquared > 0.01f)
+                    {
+                        var host = _loadedMeshes.Find(m => !ReferenceEquals(m, lm) && m.SkinMatrices != null && m.SkinMatrices.Length >= 2);
+                        if (host != null && host.SkinMatrices != null)
+                        {
+                            int spineIdx = host.Bones != null ? host.Bones.FindIndex(b => IsTorsoBone(b.Name)) : -1;
+                            if (spineIdx >= 0 && spineIdx < host.SkinMatrices.Length)
+                                skinnedPos = Vector3.TransformPosition(orig, host.SkinMatrices[spineIdx]);
+                        }
+                    }
                 }
             }
             // 3. Rigid attach
             else if (lm.HasAttachMatrix)
             {
                 return Vector3.TransformPosition(orig, lm.AttachMatrix);
+            }
+
+            if (skinnedPos.LengthSquared < 1e-4f && orig.LengthSquared > 0.01f)
+            {
+                skinnedPos = orig;
             }
 
             return ApplyMeshTweak(lm, skinnedPos, thick, dnorm);
@@ -11038,14 +11159,24 @@ namespace UoFiddler.Plugin.Granny3D
                     Log($"Tissu : '{lm.Name}' - placement T-pose figé dans la géométrie.");
                 }
 
-                // If mesh is NOT skinned and has NO bone attachment, automatically link it (SkinWrap)
-                // to the character body so the sleeves, torso, and legs follow the skeleton!
-                if (lm.WrapSkin == null && (lm.Skin == null || lm.Skin.Length == 0) && !lm.HasAttachMatrix)
+                // If mesh is NOT skinned or has dummy/placeholder wearable bones (__Description, .max, .tga),
+                // automatically link it (SkinWrap) to the character body so the sleeves, torso, and legs follow cleanly.
+                // Properly skinned official gear (like Robe with 22 bones) preserves its native artist rig!
+                bool isDummyBone(string nm) =>
+                    string.IsNullOrEmpty(nm) ||
+                    nm.StartsWith("__Description", StringComparison.OrdinalIgnoreCase) ||
+                    nm.EndsWith(".max", StringComparison.OrdinalIgnoreCase) ||
+                    nm.EndsWith(".tga", StringComparison.OrdinalIgnoreCase);
+
+                int realBones = lm.Bones != null ? lm.Bones.Count(b => !isDummyBone(b.Name)) : 0;
+                bool isProperlySkinned = lm.Skin != null && lm.Skin.Length > 0 && realBones >= 10;
+                bool needsWrap = !isProperlySkinned && lm.WrapSkin == null && !lm.HasAttachMatrix;
+                if (needsWrap && lm.WrapSource == null)
                 {
                     bool hasHostBody = _loadedMeshes.Exists(m => !ReferenceEquals(m, lm) && m.Bones != null && m.Bones.Count >= 2);
                     if (hasHostBody)
                     {
-                        Log($"Tissu : '{lm.Name}' n'a pas de peau. Liaison automatique (skin wrap) au squelette du corps...");
+                        Log($"Tissu : '{lm.Name}' - harmonisation de la peau (skin wrap) au squelette du corps...");
                         SkinWrapSelected();
                     }
                 }
@@ -11085,12 +11216,14 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             var seenSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            float clearance = Math.Max(0.015f, clothMesh != null ? clothMesh.Thickness : 0.015f);
+            float clearance = Math.Max(0.005f, clothMesh != null ? clothMesh.Thickness : 0.005f);
 
             foreach (var m in targetMeshes)
             {
                 if (m.WorldMatrices == null || m.Bones == null || m.Bones.Count < 2) continue;
                 int bn = m.Bones.Count;
+                bool hasHeadSegment = false;
+
                 for (int i = 0; i < bn; i++)
                 {
                     int p = m.Bones[i].ParentId;
@@ -11104,7 +11237,8 @@ namespace UoFiddler.Plugin.Granny3D
                     if (pName.StartsWith("__") || pName.StartsWith("master", StringComparison.OrdinalIgnoreCase)) continue;
                     if (bName.Contains("Skin") || pName.Contains("Skin")) continue;
                     if (bName.StartsWith("CP_") || pName.StartsWith("CP_")) continue;
-                    if (bName.Contains("Nub") || pName.Contains("Nub")) continue;
+                    if (pName.Contains("Nub")) continue;
+                    if (bName.Contains("Nub") && !bName.ToLowerInvariant().Contains("head")) continue;
 
                     // Keep full harmonized skeleton segments (legs, hips, spine/chest, neck/head, arms)
                     if (!IsBodyCapsuleSegment(pName, bName)) continue;
@@ -11121,12 +11255,77 @@ namespace UoFiddler.Plugin.Granny3D
                     float rA = CapsuleRadiusFor(pName, clearance);
                     float rB = CapsuleRadiusFor(bName, clearance);
 
+                    // Anatomical leg tapering based on actual UO male leg mesh dimensions:
+                    // Thigh -> Calf: hip (0.095m) tapering to knee (0.090m)
+                    if (IsThighBone(pName) && IsCalfBone(bName))
+                    {
+                        rA = 0.095f + clearance + _clothClearance;
+                        rB = 0.090f + clearance + _clothClearance;
+                    }
+                    // Calf -> Foot: knee (0.090m) tapering to ankle (0.065m)
+                    else if (IsCalfBone(pName) && IsFootBone(bName))
+                    {
+                        rA = 0.090f + clearance + _clothClearance;
+                        rB = 0.065f + clearance + _clothClearance;
+                    }
+                    // Foot -> Toe: ankle (0.065m) tapering to toe (0.060m)
+                    else if (IsFootBone(pName))
+                    {
+                        rA = 0.065f + clearance + _clothClearance;
+                        rB = 0.060f + clearance + _clothClearance;
+                    }
+
+                    // For the neck segment (Neck -> Head), keep the neck slender along its full length!
+                    // This creates a clear, distinct neck indentation between shoulders and head.
+                    if (pName.ToLowerInvariant().Contains("neck") && bName.ToLowerInvariant().Contains("head"))
+                    {
+                        rA = CapsuleRadiusFor("neck", clearance); // 0.045f + clearance
+                        rB = 0.048f + clearance + _clothClearance; // 0.048f + clearance at jaw level
+                    }
+
+                    if ((pName.ToLowerInvariant().Contains("head") || bName.ToLowerInvariant().Contains("head")) && IsNeckBone(bName))
+                    {
+                        hasHeadSegment = true;
+                    }
+
                     caps.Add(new ClothCapsule
                     {
                         A = A, B = B,
                         RA = rA, RB = rB,
                         Name = bName
                     });
+                }
+
+                // If this mesh has a Head bone but NO child HeadNub / Head_End bone, synthesize the head capsule
+                // extending upwards from the jaw/head joint into the cranium!
+                if (!hasHeadSegment)
+                {
+                    int headIdx = m.Bones.FindIndex(b => b.Name.IndexOf("head", StringComparison.OrdinalIgnoreCase) >= 0 && b.Name.IndexOf("nub", StringComparison.OrdinalIgnoreCase) < 0);
+                    if (headIdx >= 0 && headIdx < m.WorldMatrices.Length)
+                    {
+                        int neckIdx = m.Bones[headIdx].ParentId;
+                        Vector3 hPos = new Vector3(m.WorldMatrices[headIdx].M41, m.WorldMatrices[headIdx].M42, m.WorldMatrices[headIdx].M43);
+                        Vector3 hDir = Vector3.UnitY;
+                        if (neckIdx >= 0 && neckIdx < m.WorldMatrices.Length)
+                        {
+                            Vector3 nPos = new Vector3(m.WorldMatrices[neckIdx].M41, m.WorldMatrices[neckIdx].M42, m.WorldMatrices[neckIdx].M43);
+                            Vector3 diff = hPos - nPos;
+                            if (diff.LengthSquared > 1e-4f) hDir = Vector3.Normalize(diff);
+                        }
+                        string headKey = $"{m.Bones[headIdx].Name}->HeadTop";
+                        if (seenSegments.Add(headKey))
+                        {
+                            float rHead = CapsuleRadiusFor("head", clearance);
+                            caps.Add(new ClothCapsule
+                            {
+                                A = hPos,
+                                B = hPos + hDir * 0.14f,
+                                RA = rHead,
+                                RB = rHead,
+                                Name = m.Bones[headIdx].Name + "_Cranium"
+                            });
+                        }
+                    }
                 }
             }
             return caps;
@@ -11145,7 +11344,7 @@ namespace UoFiddler.Plugin.Granny3D
             // Torso & Spine (Spine chain protects abdomen, chest, ribs)
             if (IsPelvisBone(pName) && IsTorsoBone(bName)) return true;
             if (IsTorsoBone(pName) && (IsTorsoBone(bName) || IsNeckBone(bName) || IsShoulderBone(bName))) return true;
-            if (IsNeckBone(pName) && IsNeckBone(bName)) return true;
+            if (IsNeckBone(pName) && (IsNeckBone(bName) || bName.ToLowerInvariant().Contains("head"))) return true;
 
             // Arms: Shoulder -> UpperArm, UpperArm -> Forearm, Forearm -> Hand, Hand -> Fingers
             if ((IsShoulderBone(pName) || IsTorsoBone(pName)) && IsUpperArmBone(bName)) return true;
@@ -11157,61 +11356,62 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         // Harmonized anatomical radii for character collision capsules.
-        private static float CapsuleRadiusFor(string boneName, float clearance = 0f)
+        private float CapsuleRadiusFor(string boneName, float clearance = 0f)
         {
-            if (string.IsNullOrEmpty(boneName)) return 0.080f + clearance;
+            float totalClearance = clearance + _clothClearance;
+            if (string.IsNullOrEmpty(boneName)) return 0.070f + totalClearance;
 
-            // Knee / Calf / Shin / LowerLeg: 0.175m completely encloses patella, bent knee skin, and boots!
-            if (IsCalfBone(boneName)) return 0.175f + clearance;
+            // Knee / Calf / Shin / LowerLeg: 16 cm diameter
+            if (IsCalfBone(boneName)) return 0.080f + totalClearance;
 
-            // Thigh (hip / groin / femur / upperleg): 0.160m completely encloses quadriceps & hamstrings
-            if (IsThighBone(boneName)) return 0.160f + clearance;
+            // Thigh (hip / groin / femur / upperleg): 18.4 cm diameter
+            if (IsThighBone(boneName)) return 0.092f + totalClearance;
 
-            // Ankle (Foot) / Toe: prevents feet & heavy boots popping out of robe hem
-            if (IsFootBone(boneName)) return 0.110f + clearance;
+            // Ankle (Foot) / Toe: 12 cm diameter
+            if (IsFootBone(boneName)) return 0.060f + totalClearance;
 
-            // Pelvis / Hips / Buttocks: 0.175m covers buttocks & hips comfortably
-            if (IsPelvisBone(boneName)) return 0.175f + clearance;
+            // Pelvis / Hips / Buttocks: covers pelvis core without protruding into thighs
+            if (IsPelvisBone(boneName)) return 0.115f + totalClearance;
 
-            // Spine / Chest / Ribs: 0.165m covers ribs & chest
-            if (IsTorsoBone(boneName)) return 0.165f + clearance;
+            // Spine / Chest / Ribs: covers torso & chest comfortably (user: "pour le torse et les bras ça semble bien")
+            if (IsTorsoBone(boneName)) return 0.150f + totalClearance;
 
             // Neck & Head
             if (IsNeckBone(boneName))
             {
-                if (boneName.ToLowerInvariant().Contains("head")) return 0.130f + clearance;
-                return 0.095f + clearance;
+                // Head / cranium capsule: 15-16 cm diameter located in the skull
+                if (boneName.ToLowerInvariant().Contains("head")) return 0.075f + totalClearance;
+                // Slender neck: 9 cm diameter so the neck is distinct and does not swallow the throat/shoulders!
+                return 0.045f + totalClearance;
             }
 
-            // Arms & Shoulders: slender cylinders so bell sleeves can hang and drape freely around them!
-            if (IsShoulderBone(boneName)) return 0.085f + clearance;
-            if (IsUpperArmBone(boneName)) return 0.070f + clearance;
-            if (IsForearmBone(boneName)) return 0.060f + clearance;
-            if (IsHandBone(boneName)) return 0.045f + clearance;
+            // Arms & Shoulders (user: "pour le torse et les bras ça semble bien")
+            if (IsShoulderBone(boneName)) return 0.080f + totalClearance;
+            if (IsUpperArmBone(boneName)) return 0.065f + totalClearance;
+            if (IsForearmBone(boneName)) return 0.055f + totalClearance;
+            if (IsHandBone(boneName)) return 0.040f + totalClearance;
 
-            return 0.080f + clearance;
+            return 0.070f + totalClearance;
         }
 
         // Analytical tapered capsule collision: projects particle onto cylinder axis AB,
         // and pushes radially outward if distance is less than interpolated radius r(t).
-        // Cancels inward velocity to prevent particles from rebounding inside the collider.
-        private static void PushOutOfCapsules(LoadedMesh lm, List<ClothCapsule> caps)
+        // Uses pure idempotent position projection on ClothPos without modifying ClothPrev inside the iteration loop.
+        private void PushOutOfCapsules(LoadedMesh lm, List<ClothCapsule> caps)
         {
             if (lm == null || lm.ClothPos == null || caps == null || caps.Count == 0) return;
             int count = lm.ClothPos.Length;
 
+            // 1. Particle vs Capsule (Vertex collision: true radial outward projection)
             Parallel.For(0, count, v =>
             {
                 float pinW = lm.ClothPinWeight != null && v < lm.ClothPinWeight.Length ? lm.ClothPinWeight[v] : (lm.ClothPin != null && lm.ClothPin[v] ? 1f : 0f);
-                if (pinW >= 0.999f) return; // Only skip 100% rigid neck anchors; test sleeves, torso, ribs & skirt!
+                if (pinW >= 0.999f) return; // Only skip 100% rigid neck anchors
                 Vector3 p = lm.ClothPos[v];
                 if (float.IsNaN(p.X) || float.IsInfinity(p.X))
                 {
                     p = (lm.ClothPos0 != null && v < lm.ClothPos0.Length) ? lm.ClothPos0[v] : Vector3.Zero;
                 }
-                Vector3 pBefore = p;
-                bool collided = false;
-                Vector3 lastPushDir = Vector3.Zero;
 
                 for (int c = 0; c < caps.Count; c++)
                 {
@@ -11234,34 +11434,11 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                         else
                         {
-                            // Degenerate on-axis point: push perpendicular to bone axis
-                            Vector3 ortho = Vector3.Cross(ab, Vector3.UnitZ);
-                            if (ortho.LengthSquared < 1e-4f) ortho = Vector3.Cross(ab, Vector3.UnitY);
-                            pushDir = ortho.LengthSquared > 1e-4f ? Vector3.Normalize(ortho) : Vector3.UnitY;
+                            Vector3 temp = Math.Abs(ab.Z) < 0.9f * (float)Math.Sqrt(abLen2) ? Vector3.UnitZ : Vector3.UnitY;
+                            pushDir = Vector3.Normalize(Vector3.Cross(ab, temp));
                         }
 
                         p = closest + pushDir * r;
-                        collided = true;
-                        lastPushDir = pushDir;
-                    }
-                }
-
-                if (collided)
-                {
-                    // Inelastic collision against body: cancel inward velocity component so fabric glides smoothly
-                    if (lm.ClothPrev != null && v < lm.ClothPrev.Length)
-                    {
-                        Vector3 vOld = pBefore - lm.ClothPrev[v];
-                        float vNorm = Vector3.Dot(vOld, lastPushDir);
-                        if (vNorm < 0f)
-                        {
-                            Vector3 vTang = vOld - lastPushDir * vNorm;
-                            lm.ClothPrev[v] = p - vTang * 0.6f;
-                        }
-                        else
-                        {
-                            lm.ClothPrev[v] = p - vOld * 0.8f;
-                        }
                     }
                 }
 
@@ -11272,6 +11449,43 @@ namespace UoFiddler.Plugin.Granny3D
 
                 lm.ClothPos[v] = p;
             });
+
+            // 2. Edge vs Capsule: Midpoint collision prevents knees/legs from passing between triangle vertices
+            if (lm.ClothEdgeA != null && lm.ClothEdgeB != null)
+            {
+                int edgeCount = lm.ClothEdgeA.Length;
+                for (int e = 0; e < edgeCount; e++)
+                {
+                    int ia = lm.ClothEdgeA[e], ib = lm.ClothEdgeB[e];
+                    if (ia < 0 || ib < 0 || ia >= count || ib >= count) continue;
+                    Vector3 pa = lm.ClothPos[ia], pb = lm.ClothPos[ib];
+                    Vector3 mid = (pa + pb) * 0.5f;
+
+                    for (int c = 0; c < caps.Count; c++)
+                    {
+                        Vector3 ab = caps[c].B - caps[c].A;
+                        float abLen2 = ab.LengthSquared;
+                        if (abLen2 < 1e-8f) continue;
+                        float t = Vector3.Dot(mid - caps[c].A, ab) / abLen2;
+                        if (t < 0f) t = 0f; else if (t > 1f) t = 1f;
+                        Vector3 closest = caps[c].A + ab * t;
+                        Vector3 d = mid - closest;
+                        float dist = d.Length;
+                        float r = caps[c].RA + (caps[c].RB - caps[c].RA) * t;
+
+                        if (dist < r)
+                        {
+                            Vector3 pushDir = dist > 1e-4f ? (d / dist) : Vector3.UnitY;
+                            float pen = r - dist;
+                            Vector3 corr = pushDir * (pen * 0.5f);
+                            float wa = lm.ClothPinWeight != null && ia < lm.ClothPinWeight.Length ? lm.ClothPinWeight[ia] : 0f;
+                            float wb = lm.ClothPinWeight != null && ib < lm.ClothPinWeight.Length ? lm.ClothPinWeight[ib] : 0f;
+                            if (wa < 0.999f) lm.ClothPos[ia] += corr;
+                            if (wb < 0.999f) lm.ClothPos[ib] += corr;
+                        }
+                    }
+                }
+            }
         }
 
         // Bake the cloth solver ONCE over the whole animation: pose + collision at
@@ -11502,7 +11716,7 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 });
 
-                // 2. Distance constraints across the whole body
+                // 2. Distance constraints + coupled capsule collision
                 for (int it = 0; it < subIter; it++)
                 {
                     for (int e = 0; e < lm.ClothEdgeA.Length; e++)
@@ -11533,6 +11747,9 @@ namespace UoFiddler.Plugin.Granny3D
                             lm.ClothPos[ib] = pb;
                         }
                     }
+
+                    // Coupled collision enforcement: immediately push vertices out so edges cannot drag them inside bones!
+                    if (caps.Count > 0) PushOutOfCapsules(lm, caps);
                 }
 
                 // Enforce rigid neck anchors
@@ -11544,13 +11761,45 @@ namespace UoFiddler.Plugin.Granny3D
                         lm.ClothPos[v] = ClothPinTarget(lm, v);
                     }
                 }
-
-                // Push out of capsules once per sub-step (multithreaded across all CPU cores)
-                if (caps.Count > 0) PushOutOfCapsules(lm, caps);
             }
 
             // Final safety pass at the end of the frame to guarantee 0 penetration
             if (caps.Count > 0) PushOutOfCapsules(lm, caps);
+
+            // Contact velocity damping: vertices against a capsule have inward velocity zeroed and friction applied cleanly once per frame
+            if (caps.Count > 0 && lm.ClothPrev != null)
+            {
+                for (int v = 0; v < n; v++)
+                {
+                    Vector3 p = lm.ClothPos[v];
+                    Vector3 prev = lm.ClothPrev[v];
+                    for (int c = 0; c < caps.Count; c++)
+                    {
+                        Vector3 ab = caps[c].B - caps[c].A;
+                        float abLen2 = ab.LengthSquared;
+                        if (abLen2 < 1e-8f) continue;
+                        float t = Vector3.Dot(p - caps[c].A, ab) / abLen2;
+                        if (t < 0f) t = 0f; else if (t > 1f) t = 1f;
+                        Vector3 closest = caps[c].A + ab * t;
+                        Vector3 d = p - closest;
+                        float dist = d.Length;
+                        float r = caps[c].RA + (caps[c].RB - caps[c].RA) * t;
+                        if (dist <= r + 0.005f && dist > 1e-4f)
+                        {
+                            Vector3 normal = d / dist;
+                            Vector3 vel = p - prev;
+                            float vNorm = Vector3.Dot(vel, normal);
+                            if (vNorm < 0f)
+                            {
+                                vel -= normal * vNorm;
+                                vel *= 0.7f;
+                                lm.ClothPrev[v] = p - vel;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
 
@@ -11675,29 +11924,50 @@ namespace UoFiddler.Plugin.Granny3D
 
                 int cornerCount = lm.Indices.Length;
 
-                // Cloth normals are recomputed from the simulated geometry each frame
-                // (the corner-loop transform below is skipped for cloth meshes).
+                // Cloth smooth normals: accumulated across adjacent faces and welded particles
+                // to completely eliminate black facets / black seams on hoods, folds, and fabric!
                 if (cloth)
                 {
                     int cn = lm.CornerVertex.Length;
-                    int triCount = cn / 3;
-                    Parallel.For(0, triCount, triIdx =>
+                    int P = lm.ClothPos != null ? lm.ClothPos.Length : vcount;
+                    var accumNorm = new Vector3[P];
+
+                    // Pass 1: Accumulate area-weighted face normals onto coincident welded particles
+                    for (int t = 0; t + 2 < cn; t += 3)
                     {
-                        int t = triIdx * 3;
                         int i0 = lm.CornerVertex[t], i1 = lm.CornerVertex[t + 1], i2 = lm.CornerVertex[t + 2];
                         if (i0 >= 0 && i1 >= 0 && i2 >= 0 && i0 < vcount && i1 < vcount && i2 < vcount)
                         {
                             Vector3 va = lm.DeformedCache[i0], vb = lm.DeformedCache[i1], vc = lm.DeformedCache[i2];
                             Vector3 fn = Vector3.Cross(vb - va, vc - va);
-                            if (fn.LengthSquared > 1e-12f) fn = Vector3.Normalize(fn);
-                            for (int k = 0; k < 3; k++)
+                            if (fn.LengthSquared > 1e-12f)
                             {
-                                int ci = t + k;
-                                lm.Interleaved[ci * 8 + 3] = fn.X;
-                                lm.Interleaved[ci * 8 + 4] = fn.Y;
-                                lm.Interleaved[ci * 8 + 5] = fn.Z;
+                                int p0 = WeldOf(lm, i0), p1 = WeldOf(lm, i1), p2 = WeldOf(lm, i2);
+                                if (p0 >= 0 && p0 < P) accumNorm[p0] += fn;
+                                if (p1 >= 0 && p1 < P) accumNorm[p1] += fn;
+                                if (p2 >= 0 && p2 < P) accumNorm[p2] += fn;
                             }
                         }
+                    }
+
+                    // Pass 2: Normalize particle normals
+                    for (int p = 0; p < P; p++)
+                    {
+                        if (accumNorm[p].LengthSquared > 1e-12f)
+                            accumNorm[p] = Vector3.Normalize(accumNorm[p]);
+                        else
+                            accumNorm[p] = Vector3.UnitZ;
+                    }
+
+                    // Pass 3: Write smooth continuous Gouraud/Phong normals to interleaved buffer
+                    Parallel.For(0, cn, c =>
+                    {
+                        int vi = lm.CornerVertex[c];
+                        int p = WeldOf(lm, vi);
+                        Vector3 n = (p >= 0 && p < P) ? accumNorm[p] : Vector3.UnitZ;
+                        lm.Interleaved[c * 8 + 3] = n.X;
+                        lm.Interleaved[c * 8 + 4] = n.Y;
+                        lm.Interleaved[c * 8 + 5] = n.Z;
                     });
                 }
 
@@ -11932,6 +12202,11 @@ namespace UoFiddler.Plugin.Granny3D
             Matrix4 mvp = view * proj;
             DrawMeshSet(mvp, unlit: false, alphaCut: 0.15f);
 
+            // 3D Visualizers: Colliders, Skeleton, and Cloth Zones (Heatmap)
+            if (_showColliders) DrawClothColliders(mvp);
+            if (_showBones) DrawBones(mvp);
+            if (_showClothHeatmap) DrawClothHeatmap(mvp);
+
             // 3ds Max-style view cube, top-left corner of the editor view.
             DrawViewCube();
         }
@@ -11950,7 +12225,201 @@ namespace UoFiddler.Plugin.Granny3D
             if (_uoView && splitX > 1 && splitX < w - 1) w = splitX;
         }
 
-        // ==================== VIEW CUBE (standard camera presets) ====================
+                private static void AddLineVertex(List<float> data, Vector3 pos)
+        {
+            data.Add(pos.X); data.Add(pos.Y); data.Add(pos.Z);
+            data.Add(0f); data.Add(0f); data.Add(1f);
+            data.Add(0f); data.Add(0f);
+        }
+
+        private static void AddLineSegment(List<float> data, Vector3 p1, Vector3 p2)
+        {
+            AddLineVertex(data, p1);
+            AddLineVertex(data, p2);
+        }
+
+        private void DrawDebugLines(Matrix4 mvp, List<float> linesData, Vector4 color, float lineWidth = 2.0f)
+        {
+            if (linesData == null || linesData.Count == 0 || _shaderProg == 0) return;
+
+            if (_debugLinesVao == 0)
+            {
+                _debugLinesVao = GL.GenVertexArray();
+                _debugLinesVbo = GL.GenBuffer();
+                GL.BindVertexArray(_debugLinesVao);
+                GL.BindBuffer(BufferTarget.ArrayBuffer, _debugLinesVbo);
+                int stride = 8 * sizeof(float);
+                GL.EnableVertexAttribArray(0);
+                GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, 0);
+                GL.EnableVertexAttribArray(1);
+                GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, 3 * sizeof(float));
+                GL.EnableVertexAttribArray(2);
+                GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, 6 * sizeof(float));
+                GL.BindVertexArray(0);
+            }
+
+            GL.BindBuffer(BufferTarget.ArrayBuffer, _debugLinesVbo);
+            GL.BufferData(BufferTarget.ArrayBuffer, linesData.Count * sizeof(float), linesData.ToArray(), BufferUsageHint.DynamicDraw);
+
+            GL.UseProgram(_shaderProg);
+            GL.UniformMatrix4(_uMvp, false, ref mvp);
+            GL.Uniform1(_uHasTex, 0);
+            GL.Uniform1(_uUnlit, 1);
+            GL.Uniform1(_uAlphaCut, 0f);
+            GL.Uniform1(_uOpacity, color.W);
+            GL.Uniform1(_uBrightness, 1.2f);
+            GL.Uniform3(_uColor, color.X, color.Y, color.Z);
+
+            GL.LineWidth(lineWidth);
+            GL.BindVertexArray(_debugLinesVao);
+            GL.DrawArrays(PrimitiveType.Lines, 0, linesData.Count / 8);
+            GL.BindVertexArray(0);
+            GL.LineWidth(1.0f);
+            GL.UseProgram(0);
+        }
+
+        private void DrawClothColliders(Matrix4 mvp)
+        {
+            LoadedMesh clothMesh = _loadedMeshes.Find(m => m.IsCloth && m.ClothPos != null);
+            var caps = BuildBodyCapsules(clothMesh);
+            if (caps == null || caps.Count == 0) return;
+
+            var lines = new List<float>();
+            const int segs = 12;
+
+            foreach (var cap in caps)
+            {
+                Vector3 aGl = (cap.A - _refCenter) * _refScale;
+                Vector3 bGl = (cap.B - _refCenter) * _refScale;
+                float raGl = cap.RA * _refScale;
+                float rbGl = cap.RB * _refScale;
+
+                Vector3 ab = bGl - aGl;
+                float len = ab.Length;
+                if (len < 1e-4f) continue;
+                Vector3 axis = ab / len;
+
+                Vector3 temp = Math.Abs(axis.Z) < 0.9f ? Vector3.UnitZ : Vector3.UnitY;
+                Vector3 u = Vector3.Normalize(Vector3.Cross(axis, temp));
+                Vector3 w = Vector3.Normalize(Vector3.Cross(axis, u));
+
+                // Rings at A and B
+                Vector3 prevA = aGl + u * raGl;
+                Vector3 prevB = bGl + u * rbGl;
+
+                for (int k = 1; k <= segs; k++)
+                {
+                    float angle = (float)(k * 2 * Math.PI / segs);
+                    Vector3 dir = u * (float)Math.Cos(angle) + w * (float)Math.Sin(angle);
+                    Vector3 curA = aGl + dir * raGl;
+                    Vector3 curB = bGl + dir * rbGl;
+
+                    AddLineSegment(lines, prevA, curA);
+                    AddLineSegment(lines, prevB, curB);
+
+                    prevA = curA;
+                    prevB = curB;
+                }
+
+                // 4 longitudinal struts
+                AddLineSegment(lines, aGl + u * raGl, bGl + u * rbGl);
+                AddLineSegment(lines, aGl - u * raGl, bGl - u * rbGl);
+                AddLineSegment(lines, aGl + w * raGl, bGl + w * rbGl);
+                AddLineSegment(lines, aGl - w * raGl, bGl - w * rbGl);
+
+                // End caps (hemispherical arcs)
+                for (int k = 0; k < segs / 2; k++)
+                {
+                    float a0 = (float)(k * Math.PI / (segs / 2));
+                    float a1 = (float)((k + 1) * Math.PI / (segs / 2));
+                    Vector3 arc0A = aGl - axis * (float)Math.Sin(a0) * raGl + u * (float)Math.Cos(a0) * raGl;
+                    Vector3 arc1A = aGl - axis * (float)Math.Sin(a1) * raGl + u * (float)Math.Cos(a1) * raGl;
+                    AddLineSegment(lines, arc0A, arc1A);
+
+                    Vector3 arc0B = bGl + axis * (float)Math.Sin(a0) * rbGl + u * (float)Math.Cos(a0) * rbGl;
+                    Vector3 arc1B = bGl + axis * (float)Math.Sin(a1) * rbGl + u * (float)Math.Cos(a1) * rbGl;
+                    AddLineSegment(lines, arc0B, arc1B);
+                }
+            }
+
+            DrawDebugLines(mvp, lines, new Vector4(0.2f, 1.0f, 0.4f, 0.95f), 2.0f);
+        }
+
+        private void DrawBones(Matrix4 mvp)
+        {
+            var lines = new List<float>();
+
+            foreach (var m in _loadedMeshes)
+            {
+                if (m.WorldMatrices == null || m.Bones == null || m.Bones.Count < 2 || m.Hidden) continue;
+                int bn = m.Bones.Count;
+                for (int i = 0; i < bn; i++)
+                {
+                    int p = m.Bones[i].ParentId;
+                    if (p < 0 || p >= bn || p == i) continue;
+                    if (i >= m.WorldMatrices.Length || p >= m.WorldMatrices.Length) continue;
+
+                    var wa = m.WorldMatrices[p];
+                    var wb = m.WorldMatrices[i];
+                    Vector3 A = new Vector3(wa.M41, wa.M42, wa.M43);
+                    Vector3 B = new Vector3(wb.M41, wb.M42, wb.M43);
+
+                    Vector3 aGl = (A - _refCenter) * _refScale;
+                    Vector3 bGl = (B - _refCenter) * _refScale;
+
+                    AddLineSegment(lines, aGl, bGl);
+
+                    // Small joint cross
+                    float s = 0.015f;
+                    AddLineSegment(lines, bGl - Vector3.UnitX * s, bGl + Vector3.UnitX * s);
+                    AddLineSegment(lines, bGl - Vector3.UnitY * s, bGl + Vector3.UnitY * s);
+                    AddLineSegment(lines, bGl - Vector3.UnitZ * s, bGl + Vector3.UnitZ * s);
+                }
+            }
+
+            DrawDebugLines(mvp, lines, new Vector4(1.0f, 0.85f, 0.2f, 1.0f), 2.5f);
+        }
+
+        private void DrawClothHeatmap(Matrix4 mvp)
+        {
+            var clothMesh = _loadedMeshes.Find(m => m.IsCloth && m.ClothPos != null && m.ClothEdgeA != null);
+            if (clothMesh == null) return;
+
+            var redLines = new List<float>();
+            var yellowLines = new List<float>();
+            var greenLines = new List<float>();
+            var blueLines = new List<float>();
+
+            int ec = clothMesh.ClothEdgeA.Length;
+            for (int e = 0; e < ec; e++)
+            {
+                int ia = clothMesh.ClothEdgeA[e], ib = clothMesh.ClothEdgeB[e];
+                if (ia < 0 || ib < 0 || ia >= clothMesh.ClothPos.Length || ib >= clothMesh.ClothPos.Length) continue;
+
+                Vector3 paGl = (clothMesh.ClothPos[ia] - _refCenter) * _refScale;
+                Vector3 pbGl = (clothMesh.ClothPos[ib] - _refCenter) * _refScale;
+
+                float wa = clothMesh.ClothPinWeight != null && ia < clothMesh.ClothPinWeight.Length ? clothMesh.ClothPinWeight[ia] : 0f;
+                float wb = clothMesh.ClothPinWeight != null && ib < clothMesh.ClothPinWeight.Length ? clothMesh.ClothPinWeight[ib] : 0f;
+                float w = (wa + wb) * 0.5f;
+
+                if (w >= 0.90f)
+                    AddLineSegment(redLines, paGl, pbGl);
+                else if (w >= 0.65f)
+                    AddLineSegment(yellowLines, paGl, pbGl);
+                else if (w >= 0.48f)
+                    AddLineSegment(greenLines, paGl, pbGl);
+                else
+                    AddLineSegment(blueLines, paGl, pbGl);
+            }
+
+            if (redLines.Count > 0) DrawDebugLines(mvp, redLines, new Vector4(1.0f, 0.15f, 0.15f, 1.0f), 2.0f);
+            if (yellowLines.Count > 0) DrawDebugLines(mvp, yellowLines, new Vector4(1.0f, 0.85f, 0.1f, 1.0f), 2.0f);
+            if (greenLines.Count > 0) DrawDebugLines(mvp, greenLines, new Vector4(0.2f, 0.95f, 0.3f, 1.0f), 2.0f);
+            if (blueLines.Count > 0) DrawDebugLines(mvp, blueLines, new Vector4(0.1f, 0.7f, 1.0f, 1.0f), 2.0f);
+        }
+
+// ==================== VIEW CUBE (standard camera presets) ====================
         // A small clickable cube fixed in the corner of the editor view that rotates
         // with the camera. Clicking a face snaps the camera to that standard view:
         // the character faces +Y, so +Y = DEVANT, -X = GAUCHE, +Z = HAUT, etc.
