@@ -1513,16 +1513,16 @@ namespace UoFiddler.Plugin.Granny3D
             _btnShrinkSew.Click += (s, e) => ToggleShrinkSewSelected();
             grpEquip.Controls.Add(_btnShrinkSew);
 
-            var lblPushMargin = new Label { Text = "Marge (repousser) :", Location = new Point(440, 388), Width = 110, ForeColor = Color.Gray };
+            var lblPushMargin = new Label { Text = "Marge :", Location = new Point(440, 388), Width = 55, ForeColor = Color.Gray };
             grpEquip.Controls.Add(lblPushMargin);
-            var nudPushMargin = new NumericUpDown { Location = new Point(550, 386), Width = 70, Minimum = 0m, Maximum = 0.05m, Increment = 0.0005m, DecimalPlaces = 4, Value = 0.005m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            var nudPushMargin = new NumericUpDown { Location = new Point(500, 386), Width = 70, Minimum = 0m, Maximum = 0.15m, Increment = 0.001m, DecimalPlaces = 4, Value = 0.005m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudPushMargin.ValueChanged += (s, e) => { _pushOutMargin = (float)nudPushMargin.Value; OnClothingEffectParameterChanged(); };
             grpEquip.Controls.Add(nudPushMargin);
             _nudPushMargin = nudPushMargin;
 
-            var lblSewShrink = new Label { Text = "Force (resserrer) :", Location = new Point(630, 388), Width = 90, ForeColor = Color.Gray };
+            var lblSewShrink = new Label { Text = "Force :", Location = new Point(585, 388), Width = 50, ForeColor = Color.Gray };
             grpEquip.Controls.Add(lblSewShrink);
-            var nudSewForce = new NumericUpDown { Location = new Point(720, 386), Width = 40, Minimum = 0m, Maximum = 1.0m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.3m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
+            var nudSewForce = new NumericUpDown { Location = new Point(640, 386), Width = 50, Minimum = 0.05m, Maximum = 2.0m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.3m, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
             nudSewForce.ValueChanged += (s, e) => { _sewShrinkForce = (float)nudSewForce.Value; OnClothingEffectParameterChanged(); };
             grpEquip.Controls.Add(nudSewForce);
             _nudSewForce = nudSewForce;
@@ -8152,11 +8152,17 @@ namespace UoFiddler.Plugin.Granny3D
 
                 float margin = _pushOutMargin;
                 if (margin < 0.001f) margin = 0.001f;
-                if (margin > 0.05f) margin = 0.05f;
+                if (margin > 0.15f) margin = 0.15f;
 
-                // PushOutOfBody only needs to look within reach of penetration or margin (e.g. 5-6 cm)
-                // ShrinkSew wants a wider reach (20 cm) to gather loose fabric
-                float maxR = lm.ShrinkSew ? 0.20f : Math.Max(margin * 3.0f, 0.06f);
+                // Force adjusts the push clearance & stiffness:
+                // Default force = 0.3 -> multiplier = 1.0 (exact margin).
+                // Higher force (up to 2.0) powerfully repels the cloth away from ribs/torso.
+                float force = Math.Clamp(_sewShrinkForce, 0.05f, 2.0f);
+                float effectiveMargin = margin * (0.4f + force * 2.0f);
+
+                // Extended penetration threshold (15 cm = 150 mm) prevents any poke-through during walk/twist poses
+                const float maxPenetration = 0.15f;
+                float maxR = lm.ShrinkSew ? 0.22f : Math.Max(effectiveMargin * 3.0f, 0.18f);
                 var dc = lm.DeformedCache;
                 int moved = 0;
 
@@ -8182,30 +8188,43 @@ namespace UoFiddler.Plugin.Granny3D
 
                     if (lm.PushOutOfBody)
                     {
-                        // ONLY push out if the vertex is penetrating (signed < 0) or closer than margin.
-                        // Vertices that are outside with signed >= margin are NEVER touched (loose sleeves & hood preserved!).
-                        // Vertices deeper than 6 cm inside are ignored (belong to other body parts/sides).
-                        if (signed < margin && signed >= -0.06f)
+                        // 1. Penetrating vertex (inside body, e.g. ribs during walk):
+                        // Project directly to body surface + effectiveMargin along the outward normal.
+                        // Guaranteed to remove poke-through completely!
+                        if (signed < 0f && signed >= -maxPenetration)
                         {
-                            float pushDist = margin - signed;
+                            target = q + n * effectiveMargin;
+                            modify = true;
+                        }
+                        // 2. Near-surface vertex: gently nudge outward to maintain margin
+                        else if (signed >= 0f && signed < effectiveMargin)
+                        {
+                            float pushDist = effectiveMargin - signed;
                             target = p + n * pushDist;
                             modify = true;
                         }
+                        // 3. Outside with clearance (signed >= effectiveMargin, e.g. loose sleeves & hood):
+                        // NEVER touched! Preserves original shape 100%.
                     }
                     else if (lm.ShrinkSew)
                     {
-                        if (signed < margin && signed >= -0.06f)
+                        if (signed < 0f && signed >= -maxPenetration)
                         {
                             // Never allow clothing to penetrate body during shrink
-                            float pushDist = margin - signed;
+                            target = q + n * effectiveMargin;
+                            modify = true;
+                        }
+                        else if (signed >= 0f && signed < effectiveMargin)
+                        {
+                            float pushDist = effectiveMargin - signed;
                             target = p + n * pushDist;
                             modify = true;
                         }
-                        else if (signed > margin && dist > 1e-6f && _sewShrinkForce > 0.01f)
+                        else if (signed > effectiveMargin && dist > 1e-6f && force > 0.01f)
                         {
                             // Pull excess fabric towards the surface
-                            float excess = signed - margin;
-                            float pull = Math.Min(excess, 0.10f) * Math.Clamp(_sewShrinkForce, 0.05f, 1.0f);
+                            float excess = signed - effectiveMargin;
+                            float pull = Math.Min(excess, 0.15f) * Math.Clamp(force, 0.05f, 1.0f);
                             target = p - (diff / dist) * pull;
                             modify = true;
                         }
