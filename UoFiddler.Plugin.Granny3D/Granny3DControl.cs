@@ -5138,25 +5138,26 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (string.IsNullOrEmpty(animPath) || !File.Exists(animPath)) return;
 
-                string baseMesh = NaturalBaseMesh(animPath);
-                if (!string.IsNullOrEmpty(baseMesh) && !File.Exists(baseMesh)) baseMesh = null;
-
-                // Auto-load base mesh if scene is empty, or if an animation for a DIFFERENT creature is clicked
-                // (e.g. clicking Blackthorn or a monster/animal while a Human or another creature is displayed).
-                string currCreature = !string.IsNullOrEmpty(_currentModelPath) ? DeriveCreature(Path.GetFileNameWithoutExtension(_currentModelPath)) : null;
-                string animCreature = DeriveCreature(Path.GetFileNameWithoutExtension(animPath));
-                bool isDifferentCreature = !string.IsNullOrEmpty(currCreature) && !string.IsNullOrEmpty(animCreature) &&
-                                          !string.Equals(currCreature, animCreature, StringComparison.OrdinalIgnoreCase);
-
-                if (baseMesh != null && (_loadedMeshes.Count == 0 || isDifferentCreature))
-                    LoadModel(baseMesh);
+                // Auto-load base mesh ONLY if scene is empty (no model loaded yet).
+                // If a model is already loaded (e.g. NPC_Blackthorn, a human, monster, etc.),
+                // keep the loaded model so the user can freely test any animation on it.
+                if (_loadedMeshes.Count == 0)
+                {
+                    string baseMesh = NaturalBaseMesh(animPath);
+                    if (!string.IsNullOrEmpty(baseMesh) && File.Exists(baseMesh))
+                        LoadModel(baseMesh);
+                }
 
                 LoadAnimation(animPath);
 
                 if (lblAnimHeader != null)
                 {
-                    string b = Path.GetFileNameWithoutExtension(baseMesh ?? _currentModelPath ?? string.Empty);
-                    lblAnimHeader.Text = $"{Path.GetFileNameWithoutExtension(animPath)}   ({b})";
+                    string mName = !string.IsNullOrEmpty(_currentModelPath)
+                        ? Path.GetFileNameWithoutExtension(_currentModelPath)
+                        : (_loadedMeshes.Count > 0 ? _loadedMeshes[0].Name : string.Empty);
+                    lblAnimHeader.Text = string.IsNullOrEmpty(mName)
+                        ? Path.GetFileNameWithoutExtension(animPath)
+                        : $"{Path.GetFileNameWithoutExtension(animPath)}   ({mName})";
                 }
             }
             catch (Exception ex)
@@ -10085,6 +10086,10 @@ namespace UoFiddler.Plugin.Granny3D
 
                 bool isCustomModel = GrannyModelFile.IsModelFile(lm.SourcePath);
 
+                // Coordinate orientation compensation for 3ds Max Root Dummy tracks (e.g. Master_Blackthorn):
+                GrannyTrack trMaster = anim?.Tracks?.FirstOrDefault(t => t.Name != null && t.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase));
+                Quaternion rMaster = trMaster != null ? trMaster.EvaluateRot(meshT) : Quaternion.Identity;
+
                 for (int i = 0; i < boneCount; i++)
                 {
                     int trackIdx = (trackMap != null && i < trackMap.Length) ? trackMap[i] : -1;
@@ -10093,29 +10098,61 @@ namespace UoFiddler.Plugin.Granny3D
                         var tr = anim.Tracks[trackIdx];
                         var b = lm.Bones[i];
                         int p = b.ParentId;
+                        bool isDummyRoot = b.Name.Equals("__Root", StringComparison.OrdinalIgnoreCase) ||
+                                           b.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase);
+
                         bool isRoot = p < 0 || p >= boneCount || p == i ||
                                       b.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase) ||
                                       (p >= 0 && p < boneCount && (lm.Bones[p].Name.Equals("__Root", StringComparison.OrdinalIgnoreCase) ||
                                                                    lm.Bones[p].Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase)));
 
                         Vector3 pos;
-                        if (b.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
+                        Quaternion rot;
+                        if (isDummyRoot)
                         {
-                            Vector3 trPos = tr.EvaluatePos(meshT);
-                            Vector3 restPos = tr.Pos != null && tr.Pos.Length > 0 ? tr.Pos[0] : trPos;
-                            if (anim.SkeletonByName.TryGetValue("Bip01", out var skelBip)) restPos = skelBip.LocalPosition;
-                            Vector3 delta = trPos - restPos;
+                            // __Root and Master_* are 3ds Max scene helper/dummy objects without skinning weights.
+                            // In UO/Iris mesh assets, they are always identity at origin. Keeping their rest bind
+                            // prevents 3ds Max exporter coordinate flips from throwing the character off-axis.
+                            pos = b.LocalPosition;
+                            rot = b.LocalRotation;
+                        }
+                        else if (b.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // If clip had a Master_* track with coordinate orientation, compose it:
+                            rot = rMaster * tr.EvaluateRot(meshT);
+
+                            Vector3 delta = Vector3.Zero;
+                            if (tr.Pos != null && tr.Pos.Length > 0)
+                            {
+                                Vector3 trPos = tr.EvaluatePos(meshT);
+                                Vector3 restPos = tr.Pos[0];
+                                Vector3 localDelta = trPos - restPos;
+                                delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
+                            }
+                            pos = b.LocalPosition + delta;
+                        }
+                        else if (isRoot)
+                        {
+                            rot = tr.EvaluateRot(meshT);
+                            Vector3 delta = Vector3.Zero;
+                            if (tr.Pos != null && tr.Pos.Length > 0)
+                            {
+                                Vector3 trPos = tr.EvaluatePos(meshT);
+                                Vector3 restPos = tr.Pos[0];
+                                Vector3 localDelta = trPos - restPos;
+                                delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
+                            }
                             pos = b.LocalPosition + delta;
                         }
                         else
                         {
-                            bool useAnimPos = isRoot ||
-                                              b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
+                            bool useAnimPos = b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
                                               TrackPositionVaries(tr, 0.002f);
                             pos = useAnimPos ? tr.EvaluatePos(meshT) : b.LocalPosition;
+                            rot = tr.EvaluateRot(meshT);
                         }
 
-                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(tr.EvaluateRot(meshT)) * Matrix4.CreateTranslation(pos);
+                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
                     }
                     else
                     {
