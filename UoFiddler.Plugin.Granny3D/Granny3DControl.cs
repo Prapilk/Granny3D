@@ -10359,8 +10359,6 @@ namespace UoFiddler.Plugin.Granny3D
         {
             public Vector3 A, B;
             public float RA, RB;
-            public Vector3 A0, B0;
-            public Matrix4 SkinMatrix;
             public string Name;
         }
 
@@ -10639,8 +10637,8 @@ namespace UoFiddler.Plugin.Granny3D
             for (int p = 0; p < P; p++) { float z = rest[p].Z; if (z < minZ) minZ = z; if (z > maxZ) maxZ = z; }
             float height = Math.Max(1e-4f, maxZ - minZ);
 
-            bool hasSkin = (lm.WrapSkin != null && lm.WrapSource != null && lm.WrapSource.Bones != null) ||
-                           (lm.Skin != null && lm.Skin.Length > 0 && lm.Bones != null);
+            bool hasSkin = (lm.WrapSkin != null && lm.WrapSkin.Length > 0) ||
+                           (lm.Skin != null && lm.Skin.Length > 0);
 
             for (int p = 0; p < P; p++)
             {
@@ -10657,12 +10655,20 @@ namespace UoFiddler.Plugin.Granny3D
                     var infs = (lm.WrapSkin != null && v < lm.WrapSkin.Length)
                         ? lm.WrapSkin[v]
                         : (lm.Skin != null && v < lm.Skin.Length ? lm.Skin[v] : null);
-                    var boneList = (lm.WrapSkin != null) ? lm.WrapSource.Bones : lm.Bones;
+                    var boneList = (lm.WrapSkin != null && lm.WrapSource != null) ? lm.WrapSource.Bones : lm.Bones;
+                    if (boneList == null)
+                    {
+                        var host = _loadedMeshes.Find(m => !ReferenceEquals(m, lm) && m.Bones != null && m.Bones.Count >= 2);
+                        if (host != null) boneList = host.Bones;
+                    }
 
                     if (infs != null && infs.Length > 0 && boneList != null)
                     {
                         float upperBodyWeight = 0f;
-                        float armWeight = 0f;
+                        float shoulderWeight = 0f;
+                        float upperArmWeight = 0f;
+                        float forearmWeight = 0f;
+                        float handWeight = 0f;
                         float legWeight = 0f;
                         float neckWeight = 0f;
 
@@ -10671,12 +10677,18 @@ namespace UoFiddler.Plugin.Granny3D
                             int bid = infs[k].BoneId;
                             if (bid >= 0 && bid < boneList.Count)
                             {
-                                string bName = boneList[bid].Name.ToLowerInvariant();
-                                if (bName.Contains("neck") || bName.Contains("head"))
+                                string bName = boneList[bid].Name;
+                                if (IsNeckBone(bName))
                                     neckWeight += infs[k].Weight;
-                                else if (bName.Contains("arm") || bName.Contains("hand") || bName.Contains("clavicle") || bName.Contains("shoulder"))
-                                    armWeight += infs[k].Weight;
-                                else if (bName.Contains("spine") || bName.Contains("rib") || bName.Contains("chest"))
+                                else if (IsShoulderBone(bName))
+                                    shoulderWeight += infs[k].Weight;
+                                else if (IsUpperArmBone(bName))
+                                    upperArmWeight += infs[k].Weight;
+                                else if (IsForearmBone(bName))
+                                    forearmWeight += infs[k].Weight;
+                                else if (IsHandBone(bName))
+                                    handWeight += infs[k].Weight;
+                                else if (IsTorsoBone(bName) || IsPelvisBone(bName))
                                     upperBodyWeight += infs[k].Weight;
                                 else if (IsLegBone(bName))
                                     legWeight += infs[k].Weight;
@@ -10688,40 +10700,77 @@ namespace UoFiddler.Plugin.Granny3D
                         {
                             w = 1.0f; // Rigid anchor at neck/collar line / hood top
                         }
-                        else if (armWeight > 0.30f)
+                        else if (shoulderWeight > 0.35f)
                         {
-                            // Sleeves: follow arm bones with 85% drive
+                            // Shoulder seam: attached to shoulder joint
                             w = 0.85f;
+                        }
+                        else if (upperArmWeight > 0.20f)
+                        {
+                            // Upper arm: follows bicep/tricep movement
+                            w = 0.70f;
+                        }
+                        else if (forearmWeight > 0.15f)
+                        {
+                            // Forearm: follows forearm and elbow movement firmly
+                            w = 0.60f;
+                        }
+                        else if (handWeight > 0.15f)
+                        {
+                            // Wrist / cuff / bell sleeve: follows wrist movement, with 55% cloth freedom to drape & sway
+                            w = 0.45f;
                         }
                         else if (upperBodyWeight > 0.30f || relZ >= 0.50f)
                         {
-                            // Torso / chest / ribs: follow spine bones
-                            w = MathHelper.Clamp((relZ - 0.45f) / 0.45f * 0.45f + 0.45f, 0.45f, 0.80f);
+                            // Torso / chest / ribs / waist
+                            if (relZ >= 0.70f)
+                                w = 0.80f; // Upper chest & back
+                            else if (relZ >= 0.50f)
+                                w = 0.70f; // Abdomen & waistline
+                            else
+                                w = 0.65f; // Upper pelvis
                         }
                         else if (legWeight > 0.15f || relZ < 0.50f)
                         {
-                            // Skirt / legs: comfortable tether following stride of the legs without wild flailing
-                            if (relZ >= 0.35f)
-                                w = MathHelper.Clamp(0.40f + (relZ - 0.35f) / 0.15f * 0.15f, 0.40f, 0.55f);
-                            else if (relZ >= 0.18f)
-                                w = MathHelper.Clamp(0.28f + (relZ - 0.18f) / 0.17f * 0.12f, 0.28f, 0.40f);
+                            // Thighs, knees, lower skirt, pants: firmly follow hip and leg cadence
+                            if (relZ >= 0.38f)
+                                w = 0.60f; // Upper thighs / hips
+                            else if (relZ >= 0.22f)
+                                w = 0.50f; // Mid thigh & knees (firmly follows knee stride!)
                             else
-                                w = MathHelper.Clamp(0.20f + (relZ / 0.18f) * 0.08f, 0.20f, 0.28f);
+                                w = 0.40f; // Knees, shins, hem (follows stride with 60% cloth freedom to billow and drape!)
                         }
                         else
                         {
-                            w = 0.35f;
+                            w = 0.45f;
                         }
                     }
                     else
                     {
-                        w = isCollar ? 1.0f : 0.0f;
+                        // Fallback vertical height gradient
+                        float relZ = (rest[p].Z - minZ) / height;
+                        if (isCollar || relZ >= 0.88f)
+                            w = 1.0f;
+                        else if (relZ >= 0.60f)
+                            w = 0.70f;
+                        else if (relZ >= 0.35f)
+                            w = 0.55f;
+                        else
+                            w = 0.40f;
                     }
                 }
                 else
                 {
-                    // Non-skinned piece (e.g. cape): top 10% is anchor, rest is free cloth
-                    w = isCollar ? 1.0f : 0.0f;
+                    // Non-skinned piece (e.g. cape or attached accessory)
+                    float relZ = (rest[p].Z - minZ) / height;
+                    if (isCollar || relZ >= 0.88f)
+                        w = 1.0f;
+                    else if (relZ >= 0.60f)
+                        w = 0.70f;
+                    else if (relZ >= 0.35f)
+                        w = 0.55f;
+                    else
+                        w = 0.40f;
                 }
 
                 lm.ClothPinWeight[p] = w;
@@ -10749,21 +10798,83 @@ namespace UoFiddler.Plugin.Granny3D
                 lm.ClothRest[e] = Vector3.Distance(rest[a[e]], rest[b[e]]);
         }
 
-        private static bool IsUpperBodyBone(string name)
+        private static bool IsPelvisBone(string s)
         {
-            if (string.IsNullOrEmpty(name)) return false;
-            string s = name.ToLowerInvariant();
-            return s.Contains("spine") || s.Contains("neck") || s.Contains("head") ||
-                   s.Contains("arm") || s.Contains("hand") || s.Contains("finger") ||
-                   s.Contains("clavicle") || s.Contains("shoulder");
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            return l.Contains("pelvis") || l.Contains("hip") || (l.Contains("root") && !l.Contains("motion"));
         }
 
-        private static bool IsLegBone(string name)
+        private static bool IsTorsoBone(string s)
         {
-            if (string.IsNullOrEmpty(name)) return false;
-            string s = name.ToLowerInvariant();
-            return s.Contains("thigh") || s.Contains("calf") || s.Contains("knee") ||
-                   s.Contains("shin") || s.Contains("foot") || s.Contains("toe") || s.Contains("ankle");
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            return l.Contains("spine") || l.Contains("chest") || l.Contains("rib") || l.Contains("belly") || l.Contains("abdomen") || l.Contains("torso");
+        }
+
+        private static bool IsNeckBone(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            return l.Contains("neck") || l.Contains("head");
+        }
+
+        private static bool IsShoulderBone(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            return l.Contains("clavicle") || l.Contains("shoulder") || l.Contains("collar");
+        }
+
+        private static bool IsUpperArmBone(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            if (l.Contains("forearm") || l.Contains("lowerarm") || l.Contains("hand") || l.Contains("finger") || l.Contains("wrist")) return false;
+            return l.Contains("upperarm") || l.Contains("upper_arm") || l.Contains("uparm") || l.Contains("up_arm") || l.Contains("arm");
+        }
+
+        private static bool IsForearmBone(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            if (l.Contains("hand") || l.Contains("finger") || l.Contains("wrist")) return false;
+            return l.Contains("forearm") || l.Contains("fore_arm") || l.Contains("lowerarm") || l.Contains("lower_arm") || l.Contains("elbow");
+        }
+
+        private static bool IsHandBone(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            return l.Contains("hand") || l.Contains("wrist") || l.Contains("palm") || l.Contains("finger") || l.Contains("thumb");
+        }
+
+        private static bool IsThighBone(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            if (l.Contains("calf") || l.Contains("shin") || l.Contains("knee") || l.Contains("foot") || l.Contains("toe") || l.Contains("ankle")) return false;
+            return l.Contains("thigh") || l.Contains("upperleg") || l.Contains("upper_leg") || l.Contains("upleg") || l.Contains("up_leg");
+        }
+
+        private static bool IsCalfBone(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            if (l.Contains("thigh") || l.Contains("upperleg") || l.Contains("upleg") || l.Contains("foot") || l.Contains("toe") || l.Contains("ankle")) return false;
+            return l.Contains("calf") || l.Contains("lowerleg") || l.Contains("lower_leg") || l.Contains("shin") || l.Contains("knee") || l.Contains("leg");
+        }
+
+        private static bool IsFootBone(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string l = s.ToLowerInvariant();
+            return l.Contains("foot") || l.Contains("ankle") || l.Contains("toe") || l.Contains("heel");
+        }
+
+        private static bool IsLegBone(string s)
+        {
+            return IsThighBone(s) || IsCalfBone(s) || IsFootBone(s);
         }
 
         private static int WeldOf(LoadedMesh lm, int vi)
@@ -10794,13 +10905,24 @@ namespace UoFiddler.Plugin.Granny3D
             Vector3 dnorm = baseN;
 
             // 1. WrapSkin (mesh skin-wrapped to host skeleton)
-            if (lm.WrapSource != null && lm.WrapSkin != null && lm.WrapSource.SkinMatrices != null)
+            if (lm.WrapSkin != null && v < lm.WrapSkin.Length && lm.WrapSkin[v] != null && lm.WrapSkin[v].Length > 0)
             {
-                if (v < lm.WrapSkin.Length && lm.WrapSkin[v] != null && lm.WrapSkin[v].Length > 0)
+                var inf = lm.WrapSkin[v];
+                Matrix4[] mats = (lm.WrapSource != null && lm.WrapSource.SkinMatrices != null) ? lm.WrapSource.SkinMatrices : null;
+                int bc = (lm.WrapSource != null && lm.WrapSource.Bones != null) ? lm.WrapSource.Bones.Count : (mats != null ? mats.Length : 0);
+
+                if (mats == null)
                 {
-                    var inf = lm.WrapSkin[v];
-                    var mats = lm.WrapSource.SkinMatrices;
-                    int bc = lm.WrapSource.Bones.Count;
+                    var host = _loadedMeshes.Find(m => !ReferenceEquals(m, lm) && m.SkinMatrices != null && m.SkinMatrices.Length >= 2);
+                    if (host != null)
+                    {
+                        mats = host.SkinMatrices;
+                        bc = host.Bones != null ? host.Bones.Count : mats.Length;
+                    }
+                }
+
+                if (mats != null)
+                {
                     Vector3 def = Vector3.Zero;
                     Vector3 dn = Vector3.Zero;
                     float tw = 0f;
@@ -10822,13 +10944,24 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
             // 2. Native Skin
-            else if (lm.Skin != null && v < lm.Skin.Length && lm.SkinMatrices != null && lm.Bones != null)
+            else if (lm.Skin != null && v < lm.Skin.Length && lm.Skin[v] != null && lm.Skin[v].Length > 0)
             {
                 var inf = lm.Skin[v];
-                if (inf != null && inf.Length > 0)
+                Matrix4[] mats = lm.SkinMatrices;
+                int bc = lm.Bones != null ? lm.Bones.Count : (mats != null ? mats.Length : 0);
+
+                if (mats == null)
                 {
-                    var mats = lm.SkinMatrices;
-                    int bc = lm.Bones.Count;
+                    var host = _loadedMeshes.Find(m => !ReferenceEquals(m, lm) && m.SkinMatrices != null && m.SkinMatrices.Length >= 2);
+                    if (host != null)
+                    {
+                        mats = host.SkinMatrices;
+                        bc = host.Bones != null ? host.Bones.Count : mats.Length;
+                    }
+                }
+
+                if (mats != null)
+                {
                     Vector3 def = Vector3.Zero;
                     Vector3 dn = Vector3.Zero;
                     float tw = 0f;
@@ -10896,6 +11029,27 @@ namespace UoFiddler.Plugin.Granny3D
                     Log($"Tissu : '{lm.Name}' a absorbé le repousser dans son patron de repos.");
                 }
 
+                // If mesh has placement tweaks (rotation, offset, scale), bake them into BaseVertices
+                // so the placed T-pose shape becomes the permanent bind geometry and won't get distorted
+                // during skeletal animations!
+                if (IsMeshTweaked(lm))
+                {
+                    BakeMeshGeometry(lm);
+                    Log($"Tissu : '{lm.Name}' - placement T-pose figé dans la géométrie.");
+                }
+
+                // If mesh is NOT skinned and has NO bone attachment, automatically link it (SkinWrap)
+                // to the character body so the sleeves, torso, and legs follow the skeleton!
+                if (lm.WrapSkin == null && (lm.Skin == null || lm.Skin.Length == 0) && !lm.HasAttachMatrix)
+                {
+                    bool hasHostBody = _loadedMeshes.Exists(m => !ReferenceEquals(m, lm) && m.Bones != null && m.Bones.Count >= 2);
+                    if (hasHostBody)
+                    {
+                        Log($"Tissu : '{lm.Name}' n'a pas de peau. Liaison automatique (skin wrap) au squelette du corps...");
+                        SkinWrapSelected();
+                    }
+                }
+
                 BuildClothFromMesh(lm);
                 ResetAllCloth();
                 Log($"Tissu : '{lm.Name}' activé (verts={lm.BaseVertices.Length} particules={lm.ClothPos?.Length ?? 0}, liens={lm.ClothEdgeA?.Length ?? 0}).");
@@ -10916,34 +11070,25 @@ namespace UoFiddler.Plugin.Granny3D
         {
             var caps = new List<ClothCapsule>();
 
-            // 1. If cloth has a WrapSource body mesh, prioritize it!
-            LoadedMesh bestHost = clothMesh?.WrapSource;
-            if (bestHost == null || bestHost.WorldMatrices == null || bestHost.Bones == null)
-            {
-                int maxBones = 0;
-                foreach (var m in _loadedMeshes)
-                {
-                    if (ReferenceEquals(m, clothMesh)) continue;
-                    if (m.IsCloth) continue;
-                    if (m.WorldMatrices != null && m.Bones != null && m.Bones.Count > maxBones)
-                    {
-                        maxBones = m.Bones.Count;
-                        bestHost = m;
-                    }
-                }
-            }
-
-            var targetMeshes = (bestHost != null && bestHost.Bones.Count >= 10)
-                ? new List<LoadedMesh> { bestHost }
-                : _loadedMeshes;
-
-            var seenSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            float clearance = Math.Max(0.010f, clothMesh != null ? clothMesh.Thickness : 0.010f);
-
-            foreach (var m in targetMeshes)
+            var targetMeshes = new List<LoadedMesh>();
+            foreach (var m in _loadedMeshes)
             {
                 if (ReferenceEquals(m, clothMesh)) continue;
                 if (m.IsCloth) continue;
+                if (m.WorldMatrices != null && m.Bones != null && m.Bones.Count >= 2)
+                    targetMeshes.Add(m);
+            }
+
+            if (targetMeshes.Count == 0 && clothMesh != null && clothMesh.Bones != null && clothMesh.Bones.Count >= 2 && clothMesh.WorldMatrices != null)
+            {
+                targetMeshes.Add(clothMesh);
+            }
+
+            var seenSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            float clearance = Math.Max(0.015f, clothMesh != null ? clothMesh.Thickness : 0.015f);
+
+            foreach (var m in targetMeshes)
+            {
                 if (m.WorldMatrices == null || m.Bones == null || m.Bones.Count < 2) continue;
                 int bn = m.Bones.Count;
                 for (int i = 0; i < bn; i++)
@@ -10976,28 +11121,10 @@ namespace UoFiddler.Plugin.Granny3D
                     float rA = CapsuleRadiusFor(pName, clearance);
                     float rB = CapsuleRadiusFor(bName, clearance);
 
-                    Vector3 A0 = A, B0 = B;
-                    Matrix4 skinMat = (m.SkinMatrices != null && i < m.SkinMatrices.Length) ? m.SkinMatrices[i] : Matrix4.Identity;
-                    if (m.Bones != null && p < m.Bones.Count && i < m.Bones.Count)
-                    {
-                        if (m.BindWorldMatrices == null || m.BindWorldMatrices.Length != m.Bones.Count)
-                        {
-                            m.BindWorldMatrices = ComputeBindWorld(m.Bones);
-                        }
-                        if (m.BindWorldMatrices != null && p < m.BindWorldMatrices.Length && i < m.BindWorldMatrices.Length)
-                        {
-                            A0 = new Vector3(m.BindWorldMatrices[p].M41, m.BindWorldMatrices[p].M42, m.BindWorldMatrices[p].M43);
-                            B0 = new Vector3(m.BindWorldMatrices[i].M41, m.BindWorldMatrices[i].M42, m.BindWorldMatrices[i].M43);
-                        }
-                    }
-                    if (float.IsNaN(A0.X) || float.IsNaN(B0.X)) { A0 = A; B0 = B; }
-
                     caps.Add(new ClothCapsule
                     {
                         A = A, B = B,
                         RA = rA, RB = rB,
-                        A0 = A0, B0 = B0,
-                        SkinMatrix = skinMat,
                         Name = bName
                     });
                 }
@@ -11008,27 +11135,23 @@ namespace UoFiddler.Plugin.Granny3D
         private static bool IsBodyCapsuleSegment(string pName, string bName)
         {
             if (string.IsNullOrEmpty(pName) || string.IsNullOrEmpty(bName)) return false;
-            string p = pName.ToLowerInvariant();
-            string b = bName.ToLowerInvariant();
 
-            // Legs: Thigh -> Calf, Calf -> Foot, Foot -> Toe
-            if (p.Contains("thigh") && (b.Contains("calf") || b.Contains("knee") || b.Contains("shin"))) return true;
-            if ((p.Contains("calf") || p.Contains("knee") || p.Contains("shin")) && (b.Contains("foot") || b.Contains("ankle"))) return true;
-            if ((p.Contains("foot") || p.Contains("ankle")) && (b.Contains("toe") || b.Contains("foot"))) return true;
-
-            // Pelvis to upper thighs (hips)
-            if (p.Contains("pelvis") && b.Contains("thigh")) return true;
+            // Legs: Pelvis -> Thigh, Thigh -> Calf, Calf -> Foot, Foot -> Toe
+            if (IsPelvisBone(pName) && IsThighBone(bName)) return true;
+            if (IsThighBone(pName) && IsCalfBone(bName)) return true;
+            if (IsCalfBone(pName) && IsFootBone(bName)) return true;
+            if (IsFootBone(pName) && (IsFootBone(bName) || bName.ToLowerInvariant().Contains("toe"))) return true;
 
             // Torso & Spine (Spine chain protects abdomen, chest, ribs)
-            if (p.Contains("pelvis") && b.Contains("spine")) return true;
-            if (p.Contains("spine") && (b.Contains("spine") || b.Contains("chest") || b.Contains("rib") || b.Contains("neck") || b.Contains("clavicle") || b.Contains("shoulder"))) return true;
-            if (p.Contains("neck") && b.Contains("head")) return true;
+            if (IsPelvisBone(pName) && IsTorsoBone(bName)) return true;
+            if (IsTorsoBone(pName) && (IsTorsoBone(bName) || IsNeckBone(bName) || IsShoulderBone(bName))) return true;
+            if (IsNeckBone(pName) && IsNeckBone(bName)) return true;
 
-            // Arms: Clavicle -> UpperArm, UpperArm -> Forearm, Forearm -> Hand, Hand -> Fingers
-            if ((p.Contains("clavicle") || p.Contains("shoulder") || p.Contains("spine2")) && b.Contains("upperarm")) return true;
-            if (p.Contains("upperarm") && b.Contains("forearm")) return true;
-            if (p.Contains("forearm") && (b.Contains("hand") || b.Contains("wrist"))) return true;
-            if (p.Contains("hand") && (b.Contains("finger") || b.Contains("hand"))) return true;
+            // Arms: Shoulder -> UpperArm, UpperArm -> Forearm, Forearm -> Hand, Hand -> Fingers
+            if ((IsShoulderBone(pName) || IsTorsoBone(pName)) && IsUpperArmBone(bName)) return true;
+            if (IsUpperArmBone(pName) && IsForearmBone(bName)) return true;
+            if (IsForearmBone(pName) && IsHandBone(bName)) return true;
+            if (IsHandBone(pName) && (IsHandBone(bName) || bName.ToLowerInvariant().Contains("finger") || bName.ToLowerInvariant().Contains("thumb"))) return true;
 
             return false;
         }
@@ -11036,43 +11159,42 @@ namespace UoFiddler.Plugin.Granny3D
         // Harmonized anatomical radii for character collision capsules.
         private static float CapsuleRadiusFor(string boneName, float clearance = 0f)
         {
-            if (string.IsNullOrEmpty(boneName)) return 0.08f + clearance;
-            string s = boneName.ToLowerInvariant();
+            if (string.IsNullOrEmpty(boneName)) return 0.080f + clearance;
 
-            // Knee / Calf / Shin: 0.145m covers the bent knee skin and patella comfortably even in full sprint!
-            if (s.Contains("calf") || s.Contains("knee") || s.Contains("shin")) return 0.145f + clearance;
+            // Knee / Calf / Shin / LowerLeg: 0.175m completely encloses patella, bent knee skin, and boots!
+            if (IsCalfBone(boneName)) return 0.175f + clearance;
 
-            // Thigh (hip / groin / femur top): 0.110m
-            if (s.Contains("thigh")) return 0.110f + clearance;
+            // Thigh (hip / groin / femur / upperleg): 0.160m completely encloses quadriceps & hamstrings
+            if (IsThighBone(boneName)) return 0.160f + clearance;
 
-            // Ankle (Foot) / Toe
-            if (s.Contains("foot") || s.Contains("ankle")) return 0.075f + clearance;
-            if (s.Contains("toe")) return 0.060f + clearance;
+            // Ankle (Foot) / Toe: prevents feet & heavy boots popping out of robe hem
+            if (IsFootBone(boneName)) return 0.110f + clearance;
 
-            // Pelvis / Hips: 0.155m covers buttocks & hips comfortably
-            if (s.Contains("pelvis") || s.Contains("hip")) return 0.155f + clearance;
+            // Pelvis / Hips / Buttocks: 0.175m covers buttocks & hips comfortably
+            if (IsPelvisBone(boneName)) return 0.175f + clearance;
 
-            // Spine / Chest / Ribs: 0.145m covers ribs & chest
-            if (s.Contains("spine") || s.Contains("chest") || s.Contains("rib")) return 0.145f + clearance;
+            // Spine / Chest / Ribs: 0.165m covers ribs & chest
+            if (IsTorsoBone(boneName)) return 0.165f + clearance;
 
             // Neck & Head
-            if (s.Contains("neck")) return 0.090f + clearance;
-            if (s.Contains("head")) return 0.120f + clearance;
+            if (IsNeckBone(boneName))
+            {
+                if (boneName.ToLowerInvariant().Contains("head")) return 0.130f + clearance;
+                return 0.095f + clearance;
+            }
 
-            // Arms & Shoulders
-            if (s.Contains("clavicle") || s.Contains("shoulder")) return 0.085f + clearance;
-            if (s.Contains("upperarm")) return 0.080f + clearance;
-            if (s.Contains("forearm")) return 0.070f + clearance;
-            if (s.Contains("hand") || s.Contains("finger")) return 0.050f + clearance;
+            // Arms & Shoulders: slender cylinders so bell sleeves can hang and drape freely around them!
+            if (IsShoulderBone(boneName)) return 0.085f + clearance;
+            if (IsUpperArmBone(boneName)) return 0.070f + clearance;
+            if (IsForearmBone(boneName)) return 0.060f + clearance;
+            if (IsHandBone(boneName)) return 0.045f + clearance;
 
             return 0.080f + clearance;
         }
 
         // Analytical tapered capsule collision: projects particle onto cylinder axis AB,
         // and pushes radially outward if distance is less than interpolated radius r(t).
-        // Anti-tunneling: preserves topological side from rest pose so fast limbs (e.g. sprint knees)
-        // cannot overtake cloth particles and push them backwards inside/behind the joint.
-        // Also cancels inward velocity to prevent particles from rebounding inside the collider.
+        // Cancels inward velocity to prevent particles from rebounding inside the collider.
         private static void PushOutOfCapsules(LoadedMesh lm, List<ClothCapsule> caps)
         {
             if (lm == null || lm.ClothPos == null || caps == null || caps.Count == 0) return;
@@ -11106,18 +11228,16 @@ namespace UoFiddler.Plugin.Granny3D
                     if (dist < r)
                     {
                         Vector3 pushDir;
-                        if (dist < 1e-4f)
-                        {
-                            pushDir = new Vector3(0f, 1f, 0f);
-                        }
-                        else
+                        if (dist > 1e-4f)
                         {
                             pushDir = d / dist;
                         }
-
-                        if (float.IsNaN(pushDir.X) || float.IsInfinity(pushDir.X) || pushDir.LengthSquared < 1e-6f)
+                        else
                         {
-                            pushDir = new Vector3(0f, 1f, 0f);
+                            // Degenerate on-axis point: push perpendicular to bone axis
+                            Vector3 ortho = Vector3.Cross(ab, Vector3.UnitZ);
+                            if (ortho.LengthSquared < 1e-4f) ortho = Vector3.Cross(ab, Vector3.UnitY);
+                            pushDir = ortho.LengthSquared > 1e-4f ? Vector3.Normalize(ortho) : Vector3.UnitY;
                         }
 
                         p = closest + pushDir * r;
@@ -11128,7 +11248,7 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (collided)
                 {
-                    // Inelastic collision: cancel inward velocity towards the capsule
+                    // Inelastic collision against body: cancel inward velocity component so fabric glides smoothly
                     if (lm.ClothPrev != null && v < lm.ClothPrev.Length)
                     {
                         Vector3 vOld = pBefore - lm.ClothPrev[v];
@@ -11136,7 +11256,7 @@ namespace UoFiddler.Plugin.Granny3D
                         if (vNorm < 0f)
                         {
                             Vector3 vTang = vOld - lastPushDir * vNorm;
-                            lm.ClothPrev[v] = p - vTang * 0.7f; // tangential sliding with 30% damping
+                            lm.ClothPrev[v] = p - vTang * 0.6f;
                         }
                         else
                         {
@@ -11323,9 +11443,9 @@ namespace UoFiddler.Plugin.Granny3D
             const int subSteps = 3;
             float subDt = dt / subSteps;
             float subDt2 = subDt * subDt;
-            float damp = 0.88f; // realistic fabric aerodynamic damping
+            float damp = 0.92f; // realistic fabric aerodynamic damping
             Vector3 acc = new Vector3(0f, 0f, -lm.ClothGravity);
-            float maxStepDisp = 2.5f * subDt; // Velocity clamp: max 2.5 m/s
+            float maxStepDisp = 3.5f * subDt; // Velocity clamp: max 3.5 m/s
 
             int subIter = Math.Max(2, lm.ClothSimIterations / subSteps);
 
@@ -11366,10 +11486,10 @@ namespace UoFiddler.Plugin.Granny3D
                         // Gravity & inertia
                         Vector3 nextP = p + vel + acc * subDt2;
 
-                        // Soft animation drive: keeps sleeves riding arms, torso following spine, and skirt following stride of hips & legs
-                        if (w > 0.001f && target != Vector3.Zero)
+                        // Soft animation drive: keeps sleeves on arms, torso on chest, and skirt following stride
+                        if (w > 0.01f && target != Vector3.Zero)
                         {
-                            float drive = Math.Clamp(w * 0.70f, 0.15f, 0.95f);
+                            float drive = w * 0.45f;
                             nextP = Vector3.Lerp(nextP, target, drive);
                         }
 
@@ -11398,11 +11518,11 @@ namespace UoFiddler.Plugin.Granny3D
                         float len = d.Length;
                         if (len < 1e-6f || float.IsNaN(len)) continue;
                         float rawDiff = (len - lm.ClothRest[e]) / len;
-                        float diff = rawDiff > 0f ? (rawDiff * 0.95f) : (rawDiff * 0.40f);
+                        float diff = rawDiff > 0f ? (rawDiff * 0.50f) : (rawDiff * 0.18f);
 
                         // Pinned or anchor vertices have infinite mass (invM = 0)
-                        float invMa = (wa >= 0.999f) ? 0f : (1.0f - wa * 0.7f);
-                        float invMb = (wb >= 0.999f) ? 0f : (1.0f - wb * 0.7f);
+                        float invMa = (wa >= 0.999f) ? 0f : (1.0f - wa * 0.5f);
+                        float invMb = (wb >= 0.999f) ? 0f : (1.0f - wb * 0.5f);
                         float invSum = invMa + invMb;
                         if (invSum > 1e-6f)
                         {
