@@ -7972,7 +7972,7 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         private static bool FindClosestBodyPoint(CollisionGrid grid, Vector3 p, float maxR,
-            out CollisionTri bestTri, out Vector3 bestPoint, out float bestDist)
+            out CollisionTri bestTri, out Vector3 bestPoint, out float bestDist, Vector3 clothNormal = default)
         {
             bestTri = default;
             bestPoint = p;
@@ -8009,6 +8009,8 @@ namespace UoFiddler.Plugin.Granny3D
             int span = (int)Math.Ceiling(maxR / grid.Cell);
             if (span > 3) span = 3;
 
+            bool checkNormal = clothNormal != Vector3.Zero;
+
             for (int dx = -span; dx <= span; dx++)
             {
                 int x = cx + dx;
@@ -8027,6 +8029,14 @@ namespace UoFiddler.Plugin.Granny3D
                             grid.Stamp[ti] = stamp;
 
                             var t = grid.Tris[ti];
+
+                            // Armpit / pinching filter: reject body triangles whose normal faces directly opposite the cloth
+                            // (e.g. inner arm swinging past the ribs, or inner thighs).
+                            if (checkNormal && Vector3.Dot(clothNormal, t.N) < -0.15f)
+                            {
+                                continue;
+                            }
+
                             Vector3 q = ClosestPointOnTriangle(p, t.A, t.B, t.C);
                             float dsq = (p - q).LengthSquared;
                             if (dsq < bestDistSq)
@@ -8160,16 +8170,41 @@ namespace UoFiddler.Plugin.Granny3D
                 float force = Math.Clamp(_sewShrinkForce, 0.05f, 2.0f);
                 float effectiveMargin = margin * (0.4f + force * 2.0f);
 
+                var dc = lm.DeformedCache;
+                int moved = 0;
+
+                // Precompute cloth deformed normals to filter opposing surfaces (armpits, inner thighs)
+                int lvc = dc.Length;
+                Vector3[] clothNormals = new Vector3[lvc];
+                int[] lidx = lm.Indices;
+                for (int t = 0; t + 2 < lidx.Length; t += 3)
+                {
+                    int i0 = lidx[t], i1 = lidx[t + 1], i2 = lidx[t + 2];
+                    if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= lvc || i1 >= lvc || i2 >= lvc) continue;
+                    Vector3 a = dc[i0], b = dc[i1], c = dc[i2];
+                    Vector3 cfn = Vector3.Cross(b - a, c - a);
+                    if (cfn.LengthSquared < 1e-12f) continue;
+                    clothNormals[i0] += cfn;
+                    clothNormals[i1] += cfn;
+                    clothNormals[i2] += cfn;
+                }
+                for (int i = 0; i < lvc; i++)
+                {
+                    if (clothNormals[i].LengthSquared > 1e-12f)
+                        clothNormals[i] = Vector3.Normalize(clothNormals[i]);
+                    else
+                        clothNormals[i] = Vector3.UnitZ;
+                }
+
                 // Extended penetration threshold (15 cm = 150 mm) prevents any poke-through during walk/twist poses
                 const float maxPenetration = 0.15f;
                 float maxR = lm.ShrinkSew ? 0.22f : Math.Max(effectiveMargin * 3.0f, 0.18f);
-                var dc = lm.DeformedCache;
-                int moved = 0;
 
                 for (int v = 0; v < dc.Length; v++)
                 {
                     Vector3 p = dc[v];
-                    if (!FindClosestBodyPoint(grid, p, maxR, out var tri, out var q, out float dist))
+                    Vector3 cNorm = clothNormals[v];
+                    if (!FindClosestBodyPoint(grid, p, maxR, out var tri, out var q, out float dist, cNorm))
                     {
                         continue;
                     }
@@ -8179,6 +8214,11 @@ namespace UoFiddler.Plugin.Granny3D
                     Vector3 n = bary.X * tri.NA + bary.Y * tri.NB + bary.Z * tri.NC;
                     if (n.LengthSquared > 1e-12f) n = Vector3.Normalize(n);
                     else n = tri.N;
+
+                    if (Vector3.Dot(cNorm, n) < -0.15f)
+                    {
+                        continue;
+                    }
 
                     Vector3 diff = p - q;
                     float signed = Vector3.Dot(diff, n);
