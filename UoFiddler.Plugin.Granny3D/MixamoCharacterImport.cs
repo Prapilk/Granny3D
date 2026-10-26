@@ -1591,70 +1591,81 @@ namespace UoFiddler.Plugin.Granny3D
             for (int i = 0; i < nb; i++)
                 boneByName[bones[i].Name] = i;
 
-            var segments = new List<(int BoneId, Vector3 P0, Vector3 P1)>();
-            void AddSeg(string name, string endName)
+            bool hasBipedChildren = bones.Any(b => b.Name.StartsWith("Bip01 ", StringComparison.OrdinalIgnoreCase));
+
+            bool IsIgnoredBone(string name)
             {
-                if (boneByName.TryGetValue(name, out int b0) && boneByName.TryGetValue(endName, out int b1))
+                if (string.IsNullOrWhiteSpace(name)) return true;
+                string n = name.ToLowerInvariant();
+                if (n.StartsWith("__root")) return true;
+                if (n.StartsWith("master_")) return true;
+                if (n.StartsWith("cp_")) return true;
+                if (n == "bip01" && hasBipedChildren) return true;
+                if (n.Contains("_lod")) return true;
+                if (n.StartsWith("object")) return true;
+                if (n.EndsWith("nub")) return true;
+                if (!string.IsNullOrEmpty(part.Name) && string.Equals(n, part.Name.ToLowerInvariant(), StringComparison.OrdinalIgnoreCase)) return true;
+                return false;
+            }
+
+            // Find bone hierarchy children
+            var children = new Dictionary<int, List<int>>();
+            for (int i = 0; i < nb; i++) children[i] = new List<int>();
+            for (int i = 0; i < nb; i++)
+            {
+                int pid = bones[i].ParentId;
+                if (pid >= 0 && pid < nb && pid != i)
+                    children[pid].Add(i);
+            }
+
+            // Universal segment generation covering all deformation bones
+            var segments = new List<(int BoneId, Vector3 P0, Vector3 P1)>();
+            for (int i = 0; i < nb; i++)
+            {
+                if (IsIgnoredBone(bones[i].Name)) continue;
+
+                var myChildren = children[i].Where(c => !IsIgnoredBone(bones[c].Name) || bones[c].Name.EndsWith("Nub", StringComparison.OrdinalIgnoreCase)).ToList();
+
+                if (myChildren.Count > 0)
                 {
-                    if ((boneWorldPos[b1] - boneWorldPos[b0]).Length < 0.8f)
+                    foreach (var cid in myChildren)
                     {
-                        segments.Add((b0, boneWorldPos[b0], boneWorldPos[b1]));
-                    }
-                    else
-                    {
-                        segments.Add((b0, boneWorldPos[b0], boneWorldPos[b0]));
+                        float len = (boneWorldPos[cid] - boneWorldPos[i]).Length;
+                        if (len < 1.8f)
+                            segments.Add((i, boneWorldPos[i], boneWorldPos[cid]));
+                        else
+                            segments.Add((i, boneWorldPos[i], boneWorldPos[i]));
                     }
                 }
-                else if (boneByName.TryGetValue(name, out int bSingle))
+                else
                 {
-                    segments.Add((bSingle, boneWorldPos[bSingle], boneWorldPos[bSingle]));
+                    // Leaf bone (e.g. Tail2, Ponytail14, Head, Toe0)
+                    int pid = bones[i].ParentId;
+                    Vector3 p0 = boneWorldPos[i];
+                    Vector3 p1 = p0;
+                    if (pid >= 0 && pid < nb && pid != i)
+                    {
+                        Vector3 parentPos = boneWorldPos[pid];
+                        Vector3 dir = p0 - parentPos;
+                        if (dir.LengthSquared > 1e-4f)
+                        {
+                            float leafLen = Math.Min(dir.Length, 0.15f);
+                            p1 = p0 + dir.Normalized() * leafLen;
+                        }
+                    }
+                    segments.Add((i, p0, p1));
                 }
             }
 
-            // Spine & Head
-            AddSeg("Bip01 Pelvis", "Bip01 Spine");
-            AddSeg("Bip01 Spine", "Bip01 Spine1");
-            AddSeg("Bip01 Spine1", "Bip01 Spine2");
-            AddSeg("Bip01 Spine2", "Bip01 Neck");
-            AddSeg("Bip01 Neck", "Bip01 Head");
-            if (boneByName.TryGetValue("Bip01 Head", out int headIdx))
-                segments.Add((headIdx, boneWorldPos[headIdx], boneWorldPos[headIdx] + new Vector3(0, 0, 0.15f)));
+            // Humanoid vs Creature detection
+            bool hasTail = bones.Any(b => b.Name.Contains("Tail", StringComparison.OrdinalIgnoreCase));
+            bool hasHorseLink = bones.Any(b => b.Name.Contains("HorseLink", StringComparison.OrdinalIgnoreCase));
+            bool hasPonytail = bones.Any(b => b.Name.Contains("Ponytail", StringComparison.OrdinalIgnoreCase));
+            bool hasWing = bones.Any(b => b.Name.Contains("Wing", StringComparison.OrdinalIgnoreCase));
+            bool isStandardHumanoid = !hasTail && !hasHorseLink && !hasPonytail && !hasWing;
 
-            // Left Arm
-            AddSeg("Bip01 L Clavicle", "Bip01 L UpperArm");
-            AddSeg("Bip01 L UpperArm", "Bip01 L Forearm");
-            AddSeg("Bip01 L Forearm", "Bip01 L Hand");
-            AddSeg("Bip01 L Hand", "Bip01 L Finger0");
-            AddSeg("Bip01 L Hand", "Bip01 L Finger1");
-            AddSeg("Bip01 L Finger0", "Bip01 L Finger01");
-            AddSeg("Bip01 L Finger1", "Bip01 L Finger11");
-            AddSeg("Bip01 L Finger01", "Bip01 L Finger0Nub");
-            AddSeg("Bip01 L Finger11", "Bip01 L Finger1Nub");
-
-            // Right Arm
-            AddSeg("Bip01 R Clavicle", "Bip01 R UpperArm");
-            AddSeg("Bip01 R UpperArm", "Bip01 R Forearm");
-            AddSeg("Bip01 R Forearm", "Bip01 R Hand");
-            AddSeg("Bip01 R Hand", "Bip01 R Finger0");
-            AddSeg("Bip01 R Hand", "Bip01 R Finger1");
-            AddSeg("Bip01 R Finger0", "Bip01 R Finger01");
-            AddSeg("Bip01 R Finger1", "Bip01 R Finger11");
-            AddSeg("Bip01 R Finger01", "Bip01 R Finger0Nub");
-            AddSeg("Bip01 R Finger11", "Bip01 R Finger1Nub");
-
-            // Left Leg
-            AddSeg("Bip01 L Thigh", "Bip01 L Calf");
-            AddSeg("Bip01 L Calf", "Bip01 L Foot");
-            AddSeg("Bip01 L Foot", "Bip01 L Toe0");
-
-            // Right Leg
-            AddSeg("Bip01 R Thigh", "Bip01 R Calf");
-            AddSeg("Bip01 R Calf", "Bip01 R Foot");
-            AddSeg("Bip01 R Foot", "Bip01 R Toe0");
-
-            // Anatomical reference points for Torso vs Limb boundaries
+            // Anatomical reference points for Torso vs Limb boundaries (only used for humanoid ribcage protection)
             Vector3 pelvisPos = boneByName.TryGetValue("Bip01 Pelvis", out int bPelvis) ? boneWorldPos[bPelvis] : new Vector3(0, 0.037f, 0.937f);
-            Vector3 spine2Pos = boneByName.TryGetValue("Bip01 Spine2", out int bSpine2) ? boneWorldPos[bSpine2] : new Vector3(0, 0.041f, 1.214f);
             Vector3 neckPos   = boneByName.TryGetValue("Bip01 Neck", out int bNeck) ? boneWorldPos[bNeck] : new Vector3(0, 0.032f, 1.369f);
             Vector3 lArmPos   = boneByName.TryGetValue("Bip01 L UpperArm", out int bLArm) ? boneWorldPos[bLArm] : new Vector3(0.16f, 0.038f, 1.336f);
             Vector3 rArmPos   = boneByName.TryGetValue("Bip01 R UpperArm", out int bRArm) ? boneWorldPos[bRArm] : new Vector3(-0.16f, 0.038f, 1.336f);
@@ -1662,7 +1673,6 @@ namespace UoFiddler.Plugin.Granny3D
             float shoulderWidth = MathF.Max(0.12f, (MathF.Abs(lArmPos.X) + MathF.Abs(rArmPos.X)) * 0.5f);
             float shoulderZ = (lArmPos.Z + rArmPos.Z) * 0.5f;
             float pelvisZ = pelvisPos.Z;
-            // Lateral radius of the ribcage / thoracic cage volume
             float ribcageRadiusX = shoulderWidth * 0.75f;
 
             if (part.Skin == null || part.Skin.Length != part.Vertices.Length)
@@ -1677,50 +1687,43 @@ namespace UoFiddler.Plugin.Granny3D
                 foreach (var seg in segments)
                 {
                     string bName = bones[seg.BoneId].Name;
-                    bool isLeft = bName.Contains(" L ");
-                    bool isRight = bName.Contains(" R ");
-
-                    // Hemisphere separation based on bone's actual X position
                     float segMidX = (seg.P0.X + seg.P1.X) * 0.5f;
-                    if (isLeft)
+
+                    // Hemisphere separation based on bone name and actual geometric coordinate
+                    bool isLeft = bName.Contains(" L ") || bName.Contains("Ponytail2") || bName.Contains("Left") || (segMidX > 0.04f);
+                    bool isRight = bName.Contains(" R ") || bName.Contains("Ponytail1") || bName.Contains("Right") || (segMidX < -0.04f);
+
+                    if (isLeft && !isRight)
                     {
-                        if (segMidX > 0.01f && p.X < -0.015f) continue;
-                        if (segMidX < -0.01f && p.X > 0.015f) continue;
+                        if (segMidX > 0.02f && p.X < -0.02f) continue;
                     }
-                    else if (isRight)
+                    else if (isRight && !isLeft)
                     {
-                        if (segMidX < -0.01f && p.X > 0.015f) continue;
-                        if (segMidX > 0.01f && p.X < -0.015f) continue;
+                        if (segMidX < -0.02f && p.X > 0.02f) continue;
                     }
 
                     bool isUpperArm = bName.Contains("UpperArm");
                     bool isClavicle = bName.Contains("Clavicle");
-                    bool isForearmOrHand = bName.Contains("Forearm") || bName.Contains("Hand") || bName.Contains("Finger");
                     bool isTorsoSpine = bName.Contains("Spine") || bName.Contains("Neck") || bName.Contains("Pelvis");
 
-                    // 1. Torso Protection: Prevent Clavicle / UpperArm bones from stealing vertices inside the ribcage envelope
-                    if (isUpperArm || isClavicle)
+                    // 1. Torso Protection: ONLY for standard humanoid biped models
+                    // (in quadrupeds/centaurs, UpperArm is the horse front leg and must NEVER be shielded!)
+                    if (isStandardHumanoid)
                     {
-                        // Any vertex below the shoulder joint that is medial to the ribcage radius
-                        // belongs exclusively to the ribcage/torso and must NEVER be moved by UpperArm/Clavicle!
-                        if (p.Z < shoulderZ - 0.02f && absX < ribcageRadiusX)
+                        if ((isUpperArm || isClavicle) && p.Z < shoulderZ - 0.02f && absX < ribcageRadiusX)
                         {
-                            continue; // 100% shielded: upper arm/clavicle bone cannot influence this ribcage vertex
+                            continue;
+                        }
+                        if (isClavicle && p.Z < shoulderZ - 0.05f)
+                        {
+                            continue;
                         }
                     }
 
-                    // 2. Clavicle Protection: Clavicle only affects top shoulder / collarbone, never the lower ribs
-                    if (isClavicle && p.Z < shoulderZ - 0.05f)
-                    {
-                        continue;
-                    }
-
-                    // 3. Ribcage Volumetric Distance:
-                    // Spine1 and Spine2 represent the full lateral ribcage cylinder, not a 1D line at X=0!
+                    // 2. Ribcage Volumetric Distance:
                     float dist;
-                    if (isTorsoSpine && p.Z >= pelvisZ - 0.05f && p.Z <= neckPos.Z + 0.05f)
+                    if (isStandardHumanoid && isTorsoSpine && p.Z >= pelvisZ - 0.05f && p.Z <= neckPos.Z + 0.05f)
                     {
-                        // The effective lateral offset is measured from the ribcage surface
                         float lateralOffset = MathF.Max(0f, absX - ribcageRadiusX);
                         var pTorso = new Vector3(MathF.Sign(p.X) * MathF.Min(absX, ribcageRadiusX), p.Y, p.Z);
                         dist = DistanceToSegment(pTorso, seg.P0, seg.P1) + lateralOffset;
@@ -1729,9 +1732,7 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         dist = DistanceToSegment(p, seg.P0, seg.P1);
 
-                        // If near the armpit fold on the torso side, add a distance penalty to the UpperArm bone
-                        // to ensure the ribcage stays firmly anchored and doesn't get pulled inward
-                        if (isUpperArm && p.Z < shoulderZ && absX < ribcageRadiusX)
+                        if (isStandardHumanoid && isUpperArm && p.Z < shoulderZ && absX < ribcageRadiusX)
                         {
                             float pinchPen = (ribcageRadiusX - absX) * 3.0f;
                             dist += pinchPen;
@@ -1747,10 +1748,12 @@ namespace UoFiddler.Plugin.Granny3D
                 int count = Math.Min(4, candidates.Count);
                 if (count == 0)
                 {
-                    if (boneByName.TryGetValue("Bip01 Pelvis", out int pelv))
-                        part.Skin[v] = new[] { new VertexInfluence { BoneId = pelv, Weight = 1.0f } };
-                    else
-                        part.Skin[v] = Array.Empty<VertexInfluence>();
+                    int fallbackId = 0;
+                    if (boneByName.TryGetValue("Bip01 Pelvis", out int pelv)) fallbackId = pelv;
+                    else if (boneByName.TryGetValue("Bip01 Spine", out int sp)) fallbackId = sp;
+                    else if (segments.Count > 0) fallbackId = segments[0].BoneId;
+
+                    part.Skin[v] = new[] { new VertexInfluence { BoneId = fallbackId, Weight = 1.0f } };
                     continue;
                 }
 

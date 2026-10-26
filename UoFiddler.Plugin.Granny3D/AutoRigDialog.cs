@@ -1900,7 +1900,7 @@ namespace UoFiddler.Plugin.Granny3D
                 var b = bones[i];
                 string? pName = (b.ParentId >= 0 && b.ParentId < nb) ? bones[b.ParentId].Name : null;
 
-                // Symmetry detection: L <-> R
+                // Symmetry detection: L <-> R and Ponytail1 (Right) <-> Ponytail2 (Left)
                 string? symName = null;
                 string bName = b.Name;
                 if (bName.Contains(" L "))
@@ -1912,6 +1912,18 @@ namespace UoFiddler.Plugin.Granny3D
                 else if (bName.Contains(" R "))
                 {
                     string cand = bName.Replace(" R ", " L ");
+                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
+                        symName = cand;
+                }
+                else if (bName.Contains("Ponytail1"))
+                {
+                    string cand = bName.Replace("Ponytail1", "Ponytail2");
+                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
+                        symName = cand;
+                }
+                else if (bName.Contains("Ponytail2"))
+                {
+                    string cand = bName.Replace("Ponytail2", "Ponytail1");
                     if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
                         symName = cand;
                 }
@@ -1949,6 +1961,8 @@ namespace UoFiddler.Plugin.Granny3D
             string l = name.ToLowerInvariant();
             if (l.Contains("head") || l.Contains("jaw") || l.Contains("neck")) return Color.FromArgb(255, 140, 0);
             if (l.Contains("spine") || l.Contains("pelvis") || l.Contains("hips") || l.Contains("tail")) return Color.FromArgb(50, 205, 50);
+            if (l.Contains("ponytail1")) return Color.FromArgb(220, 20, 60); // Right arm
+            if (l.Contains("ponytail2")) return Color.FromArgb(30, 144, 255); // Left arm
             if (l.Contains(" l ") || l.Contains("left") || l.EndsWith("_l")) return Color.FromArgb(30, 144, 255);
             if (l.Contains(" r ") || l.Contains("right") || l.EndsWith("_r")) return Color.FromArgb(220, 20, 60);
 
@@ -2763,7 +2777,14 @@ namespace UoFiddler.Plugin.Granny3D
                     var rot = uoBindWorld[rotSourceIdx].ExtractRotation();
                     Matrix4 baseRot = Matrix4.CreateFromQuaternion(rot);
 
-                    string aimChildName = MixamoCharacterImport.GetAimChildBoneName(name);
+                    string? aimChildName = MixamoCharacterImport.GetAimChildBoneName(name);
+                    if (string.IsNullOrEmpty(aimChildName) && children[idx].Count == 1)
+                    {
+                        int singleChild = children[idx][0];
+                        if (singleChild >= 0 && singleChild < nb)
+                            aimChildName = _previewModel.Bones[singleChild].Name;
+                    }
+
                     if (!string.IsNullOrEmpty(aimChildName))
                     {
                         var childMarker = _markers.FirstOrDefault(m => string.Equals(m.BoneName, aimChildName, StringComparison.OrdinalIgnoreCase));
@@ -3171,8 +3192,8 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void RecalculateArmSkinning()
         {
-            if (_previewModel == null || _previewModel.Parts.Count == 0 || _baseVertices == null) return;
             EnsurePreviewModel();
+            if (_previewModel == null || _previewModel.Parts.Count == 0) return;
             int totalVerts = 0;
             foreach (var part in _previewModel.Parts)
             {
@@ -3194,8 +3215,8 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void RecalculateAllSkinning()
         {
-            if (_previewModel == null || _previewModel.Parts.Count == 0 || _baseVertices == null) return;
             EnsurePreviewModel();
+            if (_previewModel == null || _previewModel.Parts.Count == 0) return;
             int totalVerts = 0;
             foreach (var part in _previewModel.Parts)
             {
@@ -5054,14 +5075,16 @@ void main() {
                         else
                         {
                             _isPanning = true;
+                            glControl.Cursor = Cursors.Hand;
                         }
                         return;
                     }
                 }
             }
-            else if (e.Button == MouseButtons.Right)
+            else if (e.Button == MouseButtons.Right || e.Button == MouseButtons.Middle)
             {
                 _isPanning = true;
+                glControl.Cursor = Cursors.Hand;
             }
         }
 
@@ -5226,6 +5249,7 @@ void main() {
             _dragStartMarkerPositions.Clear();
             _isOrbiting = false;
             _isPanning = false;
+            glControl.Cursor = Cursors.Default;
         }
 
         private void GlControl_MouseWheel(object? sender, MouseEventArgs e)
