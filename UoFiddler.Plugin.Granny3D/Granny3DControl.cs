@@ -14180,8 +14180,17 @@ namespace UoFiddler.Plugin.Granny3D
                 }
             }
 
+            float frameSpan = ComputeFrameSpan();
+            float totalZoom = Math.Max(0.01f, _uoZoom);
+            float previewViewH = _uoFeetOnLine
+                ? frameSpan * 2f * 1.08f / totalZoom
+                : frameSpan * 1.15f / totalZoom;
+            int previewH = Math.Max(1, glControl.Height);
+            float previewPpu = Math.Max(1e-6f, previewH / previewViewH);
+            int cameraOffY = (int)Math.Round(_uoOffY * previewPpu);
+
             using (var form = new VdRemapForm(VdExport.Targets(), sources, prefix, allSources, allDisplay, BasePath,
-                previewRenderer, exportModeTitle, roleSummary, hasWarning, warningText))
+                previewRenderer, exportModeTitle, roleSummary, hasWarning, warningText, cameraOffY))
             {
                 if (form.ShowDialog(this) != DialogResult.OK) return;
                 var target = form.Target;
@@ -14433,6 +14442,13 @@ namespace UoFiddler.Plugin.Granny3D
                         new Vector3(-_refCenter.X * _refScale, -_refCenter.Y * _refScale, anchorZ), modelToView);
                     int centerX = (int)Math.Round((0.5f + (va.X + shiftX) / viewW) * cw);
                     int centerY = (int)Math.Round((0.5f - (va.Y + shiftY) / viewH) * ch) - ch;
+
+                    // Apply camera offset from the interactive UO viewport (right preview)
+                    // so the exported .vd sprite matches the visual alignment exactly.
+                    int cameraOffX = (int)Math.Round(_uoOffX * ppu);
+                    int cameraOffY = (int)Math.Round(_uoOffY * ppu);
+                    centerX -= cameraOffX;
+                    centerY += cameraOffY;
                     centerY -= offsetY;
 
                     // Pass 2: render every frame, then box-downsample (SSAA).
@@ -14450,7 +14466,7 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     blocks[d] = VdExport.BuildBlock(frames, centerX, centerY);
                     foreach (var b in frames) b.Dispose();
-                    Log($"  bake dir={d} frames={n} px={cw}x{ch} ss={ss} center=({centerX},{centerY}) offsetY={offsetY} actOff=({actionOffset.X:F2},{actionOffset.Y:F2},{actionOffset.Z:F2}) ({Path.GetFileName(animPath)})");
+                    Log($"  bake dir={d} frames={n} px={cw}x{ch} ss={ss} center=({centerX},{centerY}) camOff=({cameraOffX},{cameraOffY}) offsetY={offsetY} actOff=({actionOffset.X:F2},{actionOffset.Y:F2},{actionOffset.Z:F2}) ({Path.GetFileName(animPath)})");
                 }
                 return blocks;
             }

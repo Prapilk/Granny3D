@@ -69,7 +69,8 @@ namespace UoFiddler.Plugin.Granny3D
             List<string> allSources = null, List<string> allDisplay = null, string basePath = null,
             Func<string, int, float, Vector3, int, Bitmap> previewRenderer = null,
             string exportModeTitle = null, string cutoutInfo = null,
-            bool hasCutoutWarning = false, string cutoutWarningText = null)
+            bool hasCutoutWarning = false, string cutoutWarningText = null,
+            int cameraOffY = 0)
         {
             _previewRenderer = previewRenderer;
             _basePath = basePath;
@@ -151,10 +152,28 @@ namespace UoFiddler.Plugin.Granny3D
             _nudSize.ValueChanged += (s, e) => UpdatePreview();
             top.Controls.Add(_nudSize);
 
-            top.Controls.Add(new Label { Text = "Décal. Y px :", Location = new Point(262, 42), Width = 80, ForeColor = Color.Gray });
-            _nudOffY = new NumericUpDown { Location = new Point(344, 38), Width = 55, Minimum = -64, Maximum = 64, Increment = 1, Value = 0, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.FixedSingle };
-            _nudOffY.ValueChanged += (s, e) => UpdatePreview();
+            string offYLabel = cameraOffY != 0 ? $"Ajust. Y ({cameraOffY:+0;-0}) :" : "Ajust. Y px :";
+            var lblOffY = new Label { Text = offYLabel, Location = new Point(255, 42), Width = 95, ForeColor = Color.Gray };
+            top.Controls.Add(lblOffY);
+
+            _nudOffY = new NumericUpDown
+            {
+                Location = new Point(352, 38),
+                Width = 52,
+                Minimum = -64,
+                Maximum = 64,
+                Increment = 1,
+                Value = 0,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            _nudOffY.ValueChanged += (s, e) => { UpdatePreview(); _picPreview?.Invalidate(); };
             top.Controls.Add(_nudOffY);
+
+            var tt = new ToolTip();
+            tt.SetToolTip(lblOffY, $"Décalage caméra Y de {cameraOffY:+0;-0} px déjà intégré automatiquement depuis le rendu UO.\nCe champ permet un ajustement fin supplémentaire.");
+            tt.SetToolTip(_nudOffY, $"Décalage caméra Y de {cameraOffY:+0;-0} px déjà intégré automatiquement depuis le rendu UO.\nCe champ permet un ajustement fin supplémentaire.");
 
             var btnMountZ = new Button
             {
@@ -548,7 +567,7 @@ namespace UoFiddler.Plugin.Granny3D
                 int w = (int)(drawW * scale);
                 int h = (int)(drawH * scale);
                 int cx = (_picPreview.Width - w) / 2;
-                int cy = (_picPreview.Height - h) / 2;
+                int cy = (_picPreview.Height - h) / 2 + (int)((float)_nudOffY.Value * scale);
                 g.DrawImage(_previewBmp, cx, cy, w, h);
             }
             else
