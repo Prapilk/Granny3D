@@ -10656,9 +10656,21 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                         else
                         {
-                            bool useAnimPos = b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
-                                              TrackPositionVaries(tr, 0.002f);
-                            pos = useAnimPos ? tr.EvaluatePos(meshT) : b.LocalPosition;
+                            Vector3 delta = Vector3.Zero;
+                            if (b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase))
+                            {
+                                pos = tr.EvaluatePos(meshT);
+                            }
+                            else
+                            {
+                                if (tr.Pos != null && tr.Pos.Length > 1 && TrackPositionVaries(tr, 0.005f))
+                                {
+                                    Vector3 trPos = tr.EvaluatePos(meshT);
+                                    Vector3 restPos = tr.Pos[0];
+                                    delta = trPos - restPos;
+                                }
+                                pos = b.LocalPosition + delta;
+                            }
                             rot = tr.EvaluateRot(meshT);
                         }
 

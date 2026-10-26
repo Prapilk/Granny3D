@@ -399,7 +399,7 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int i = 0; i < nb; i++)
                 {
                     string uoName = refBones[i].Name;
-                    string? childName = GetAimChildBoneName(uoName);
+                    string? childName = GetAimChildBoneName(uoName, uoBoneByName);
                     if (childName != null && uoBoneByName.TryGetValue(childName, out int childIdx))
                     {
                         Vector3 pSelfRef = uoBindWorld[i].Row3.Xyz;
@@ -429,7 +429,7 @@ namespace UoFiddler.Plugin.Granny3D
                     bool hasDirectSource = (customJointPositions != null && customJointPositions.ContainsKey(uoName));
                     if (!hasDirectSource)
                     {
-                        string? childName = GetAimChildBoneName(uoName);
+                        string? childName = GetAimChildBoneName(uoName, uoBoneByName);
                         if (childName == null)
                         {
                             int p = refBones[i].ParentId;
@@ -1539,8 +1539,22 @@ namespace UoFiddler.Plugin.Granny3D
             return q;
         }
 
-        public static string? GetAimChildBoneName(string boneName)
+        public static string? GetAimChildBoneName(string boneName, Dictionary<string, int>? boneDict = null)
         {
+            if (boneDict != null)
+            {
+                if (boneName.Equals("Bip01 L Calf", StringComparison.OrdinalIgnoreCase))
+                    return boneDict.ContainsKey("Bip01 L HorseLink") ? "Bip01 L HorseLink" : "Bip01 L Foot";
+                if (boneName.Equals("Bip01 R Calf", StringComparison.OrdinalIgnoreCase))
+                    return boneDict.ContainsKey("Bip01 R HorseLink") ? "Bip01 R HorseLink" : "Bip01 R Foot";
+                if (boneName.Equals("Bip01 Neck", StringComparison.OrdinalIgnoreCase))
+                    return boneDict.ContainsKey("Bip01 Neck1") ? "Bip01 Neck1" : "Bip01 Head";
+                if (boneName.Equals("Bip01 L Hand", StringComparison.OrdinalIgnoreCase))
+                    return boneDict.ContainsKey("Bip01 L Finger1") ? "Bip01 L Finger1" : (boneDict.ContainsKey("Bip01 L Finger0") ? "Bip01 L Finger0" : null);
+                if (boneName.Equals("Bip01 R Hand", StringComparison.OrdinalIgnoreCase))
+                    return boneDict.ContainsKey("Bip01 R Finger1") ? "Bip01 R Finger1" : (boneDict.ContainsKey("Bip01 R Finger0") ? "Bip01 R Finger0" : null);
+            }
+
             return boneName switch
             {
                 "Bip01 L Clavicle" => "Bip01 L UpperArm",
@@ -1556,6 +1570,32 @@ namespace UoFiddler.Plugin.Granny3D
                 "Bip01 R Hand" => "Bip01 R Finger1",
                 "Bip01 R Finger0" => "Bip01 R Finger01",
                 "Bip01 R Finger1" => "Bip01 R Finger11",
+
+                // Centaur / Creature Ponytail chains (human arms on bust):
+                "Bip01 Ponytail1" => "Bip01 Ponytail11",
+                "Bip01 Ponytail11" => "Bip01 Ponytail12",
+                "Bip01 Ponytail12" => "Bip01 Ponytail13",
+                "Bip01 Ponytail13" => "Bip01 Ponytail14",
+                "Bip01 Ponytail14" => "CP_Grasp_RHand",
+
+                "Bip01 Ponytail2" => "Bip01 Ponytail21",
+                "Bip01 Ponytail21" => "Bip01 Ponytail22",
+                "Bip01 Ponytail22" => "Bip01 Ponytail23",
+                "Bip01 Ponytail23" => "Bip01 Ponytail24",
+                "Bip01 Ponytail24" => "CP_Grasp_LHand",
+
+                // Centaur torso chain:
+                "Bip01 Neck1" => "Bip01 Neck2",
+                "Bip01 Neck2" => "Bip01 Neck3",
+                "Bip01 Neck3" => "Bip01 Head",
+
+                // Horse / Quadruped back legs:
+                "Bip01 L HorseLink" => "Bip01 L Foot",
+                "Bip01 R HorseLink" => "Bip01 R Foot",
+
+                // Horse / Creature tail:
+                "Bip01 Tail" => "Bip01 Tail1",
+                "Bip01 Tail1" => "Bip01 Tail2",
 
                 "Bip01 L Thigh" => "Bip01 L Calf",
                 "Bip01 L Calf" => "Bip01 L Foot",

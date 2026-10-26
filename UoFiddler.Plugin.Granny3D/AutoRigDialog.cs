@@ -672,7 +672,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = Localization.Tr("rig_grp_markers", "4. Positionnement des Articulations (Croix 3D)"),
                 Dock = DockStyle.Top,
-                Height = 425,
+                Height = 458,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -767,6 +767,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Location = new Point(145, 111),
                 Width = 175,
+                DropDownWidth = 380,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(22, 22, 24),
                 ForeColor = Color.Gainsboro,
@@ -952,10 +953,33 @@ namespace UoFiddler.Plugin.Granny3D
             pnlSkelFit.Controls.Add(btnFitSkel);
             pnlSkelFit.Controls.Add(btnCenterSkel);
 
+            var pnlArmTPose = new FlowLayoutPanel
+            {
+                Location = new Point(12, 316),
+                Size = new Size(480, 30),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0)
+            };
+
+            var btnAlignArmsTPose = new Button
+            {
+                Text = Localization.Tr("rig_btn_align_tpose", "🤸 Aligner les Bras en T-Pose (Bipèdes / Humanoïdes)"),
+                Size = new Size(360, 26),
+                BackColor = Color.FromArgb(40, 80, 130),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(0, 2, 2, 0),
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnAlignArmsTPose.FlatAppearance.BorderColor = Color.FromArgb(60, 100, 150);
+            btnAlignArmsTPose.Click += (s, e) => AlignArmsToHorizontalTPose();
+            pnlArmTPose.Controls.Add(btnAlignArmsTPose);
+
             lblRotTip = new Label
             {
                 Text = Localization.Tr("rig_lbl_rot_tip", "💡 Ctrl + glisser = multi-sélection. Les boutons d'échelle agissent sur la sélection (ou tout le squelette)."),
-                Location = new Point(12, 318),
+                Location = new Point(12, 350),
                 AutoSize = true,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 8F, FontStyle.Bold)
@@ -992,6 +1016,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             grpMarkers.Controls.Add(btnResetPose);
             grpMarkers.Controls.Add(lblRotTip);
+            grpMarkers.Controls.Add(pnlArmTPose);
             grpMarkers.Controls.Add(pnlSkelFit);
             grpMarkers.Controls.Add(pnlSkelScale);
             grpMarkers.Controls.Add(pnlRotBtns);
@@ -1895,57 +1920,28 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (int r in roots)
                 ComputeFk(r);
 
+            bool hasHorseLegs = bones.Any(b => b.Name.IndexOf("HorseLink", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                               b.Name.IndexOf("centaur", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                               b.Name.IndexOf("horse", StringComparison.OrdinalIgnoreCase) >= 0);
+
             for (int i = 0; i < nb; i++)
             {
                 var b = bones[i];
                 string? pName = (b.ParentId >= 0 && b.ParentId < nb) ? bones[b.ParentId].Name : null;
+                string bName = b.Name;
 
                 // Symmetry detection: L <-> R and Ponytail1 (Right) <-> Ponytail2 (Left)
-                string? symName = null;
-                string bName = b.Name;
-                if (bName.Contains(" L "))
-                {
-                    string cand = bName.Replace(" L ", " R ");
-                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
-                        symName = cand;
-                }
-                else if (bName.Contains(" R "))
-                {
-                    string cand = bName.Replace(" R ", " L ");
-                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
-                        symName = cand;
-                }
-                else if (bName.Contains("Ponytail1"))
-                {
-                    string cand = bName.Replace("Ponytail1", "Ponytail2");
-                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
-                        symName = cand;
-                }
-                else if (bName.Contains("Ponytail2"))
-                {
-                    string cand = bName.Replace("Ponytail2", "Ponytail1");
-                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
-                        symName = cand;
-                }
-                else if (bName.StartsWith("Left", StringComparison.OrdinalIgnoreCase))
-                {
-                    string cand = "Right" + bName.Substring(4);
-                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
-                        symName = cand;
-                }
-                else if (bName.StartsWith("Right", StringComparison.OrdinalIgnoreCase))
-                {
-                    string cand = "Left" + bName.Substring(5);
-                    if (bones.Any(x => string.Equals(x.Name, cand, StringComparison.OrdinalIgnoreCase)))
-                        symName = cand;
-                }
+                string? symName = GetSymmetricBoneName(bName);
+                if (symName != null && !bones.Any(x => string.Equals(x.Name, symName, StringComparison.OrdinalIgnoreCase)))
+                    symName = null;
 
                 Color col = GetCreatureMarkerColor(bName, i, nb);
+                string friendlyName = GetFriendlyBoneDisplayName(b.Name, isCreature: hasHorseLegs);
 
                 _markers.Add(new JointMarker
                 {
                     BoneName = b.Name,
-                    DisplayName = b.Name,
+                    DisplayName = friendlyName,
                     Position = worldPos[i],
                     ParentName = pName,
                     SymmetricBoneName = symName,
@@ -1953,7 +1949,206 @@ namespace UoFiddler.Plugin.Granny3D
                 });
             }
 
+            // Check if Centaur / creature with ponytail arms on torso:
+            bool hasCentaurArms = _markers.Any(m => m.BoneName.StartsWith("Bip01 Ponytail1", StringComparison.OrdinalIgnoreCase)) &&
+                                  _markers.Any(m => m.BoneName.StartsWith("Bip01 Neck", StringComparison.OrdinalIgnoreCase));
+
+            if (hasCentaurArms && _baseVertices != null && _baseVertices.Length > 0)
+            {
+                // If mesh has vertices in T-pose (lateral arm extension):
+                bool isMeshTPose = _baseVertices.Any(v => Math.Abs(v.X) > 0.40f && v.Z > 1.25f);
+                if (isMeshTPose)
+                {
+                    AlignArmsToHorizontalTPose(silent: true);
+                }
+            }
+
             RefreshJointsCombo();
+        }
+
+        public static string? GetSymmetricBoneName(string boneName)
+        {
+            if (string.IsNullOrEmpty(boneName)) return null;
+            if (boneName.Contains(" L ")) return boneName.Replace(" L ", " R ");
+            if (boneName.Contains(" R ")) return boneName.Replace(" R ", " L ");
+            if (boneName.Contains("Ponytail1")) return boneName.Replace("Ponytail1", "Ponytail2");
+            if (boneName.Contains("Ponytail2")) return boneName.Replace("Ponytail2", "Ponytail1");
+            if (boneName.StartsWith("Left", StringComparison.OrdinalIgnoreCase)) return "Right" + boneName.Substring(4);
+            if (boneName.StartsWith("Right", StringComparison.OrdinalIgnoreCase)) return "Left" + boneName.Substring(5);
+            if (boneName.EndsWith("_l", StringComparison.OrdinalIgnoreCase)) return boneName.Substring(0, boneName.Length - 2) + "_r";
+            if (boneName.EndsWith("_r", StringComparison.OrdinalIgnoreCase)) return boneName.Substring(0, boneName.Length - 2) + "_l";
+
+            // Dragon wing symmetry: Box01-05 (Left wing) <-> Box06-10 (Right wing)
+            if (boneName.Equals("Box01", StringComparison.OrdinalIgnoreCase)) return "Box06";
+            if (boneName.Equals("Box02", StringComparison.OrdinalIgnoreCase)) return "Box07";
+            if (boneName.Equals("Box03", StringComparison.OrdinalIgnoreCase)) return "Box08";
+            if (boneName.Equals("Box04", StringComparison.OrdinalIgnoreCase)) return "Box09";
+            if (boneName.Equals("Box05", StringComparison.OrdinalIgnoreCase)) return "Box10";
+            if (boneName.Equals("Box06", StringComparison.OrdinalIgnoreCase)) return "Box01";
+            if (boneName.Equals("Box07", StringComparison.OrdinalIgnoreCase)) return "Box02";
+            if (boneName.Equals("Box08", StringComparison.OrdinalIgnoreCase)) return "Box03";
+            if (boneName.Equals("Box09", StringComparison.OrdinalIgnoreCase)) return "Box04";
+            if (boneName.Equals("Box10", StringComparison.OrdinalIgnoreCase)) return "Box05";
+
+            // Giant Spider (Arachnids_Spider_Giant) 8-leg symmetry:
+            // Right legs (Bone20-22, Bone24-26, Bone28-30, Bone32-34) <-> Left legs (Bone16-18, Bone12-14, Bone08-10, Bone04-06)
+            if (boneName.Equals("Bone32", StringComparison.OrdinalIgnoreCase)) return "Bone04";
+            if (boneName.Equals("Bone33", StringComparison.OrdinalIgnoreCase)) return "Bone05";
+            if (boneName.Equals("Bone34", StringComparison.OrdinalIgnoreCase)) return "Bone06";
+            if (boneName.Equals("Bone28", StringComparison.OrdinalIgnoreCase)) return "Bone08";
+            if (boneName.Equals("Bone29", StringComparison.OrdinalIgnoreCase)) return "Bone09";
+            if (boneName.Equals("Bone30", StringComparison.OrdinalIgnoreCase)) return "Bone10";
+            if (boneName.Equals("Bone24", StringComparison.OrdinalIgnoreCase)) return "Bone12";
+            if (boneName.Equals("Bone25", StringComparison.OrdinalIgnoreCase)) return "Bone13";
+            if (boneName.Equals("Bone26", StringComparison.OrdinalIgnoreCase)) return "Bone14";
+            if (boneName.Equals("Bone20", StringComparison.OrdinalIgnoreCase)) return "Bone16";
+            if (boneName.Equals("Bone21", StringComparison.OrdinalIgnoreCase)) return "Bone17";
+            if (boneName.Equals("Bone22", StringComparison.OrdinalIgnoreCase)) return "Bone18";
+
+            if (boneName.Equals("Bone04", StringComparison.OrdinalIgnoreCase)) return "Bone32";
+            if (boneName.Equals("Bone05", StringComparison.OrdinalIgnoreCase)) return "Bone33";
+            if (boneName.Equals("Bone06", StringComparison.OrdinalIgnoreCase)) return "Bone34";
+            if (boneName.Equals("Bone08", StringComparison.OrdinalIgnoreCase)) return "Bone28";
+            if (boneName.Equals("Bone09", StringComparison.OrdinalIgnoreCase)) return "Bone29";
+            if (boneName.Equals("Bone10", StringComparison.OrdinalIgnoreCase)) return "Bone30";
+            if (boneName.Equals("Bone12", StringComparison.OrdinalIgnoreCase)) return "Bone24";
+            if (boneName.Equals("Bone13", StringComparison.OrdinalIgnoreCase)) return "Bone25";
+            if (boneName.Equals("Bone14", StringComparison.OrdinalIgnoreCase)) return "Bone26";
+            if (boneName.Equals("Bone16", StringComparison.OrdinalIgnoreCase)) return "Bone20";
+            if (boneName.Equals("Bone17", StringComparison.OrdinalIgnoreCase)) return "Bone21";
+            if (boneName.Equals("Bone18", StringComparison.OrdinalIgnoreCase)) return "Bone22";
+
+            // Terathan fangs
+            if (boneName.Equals("bone_fang_R", StringComparison.OrdinalIgnoreCase)) return "bone_fangs_L";
+            if (boneName.Equals("bone_fangs_L", StringComparison.OrdinalIgnoreCase)) return "bone_fang_R";
+
+            return null;
+        }
+
+        public static string GetFriendlyBoneDisplayName(string boneName, bool isCreature = false)
+        {
+            if (string.IsNullOrEmpty(boneName)) return string.Empty;
+
+            // Wings (Daemon, Gargoyle, Dragon, etc.)
+            if (boneName.Contains("MainWing", StringComparison.OrdinalIgnoreCase) || boneName.Contains("Wing", StringComparison.OrdinalIgnoreCase))
+            {
+                string side = boneName.Contains(" L ") || boneName.Contains(" L") ? "G" : (boneName.Contains(" R ") || boneName.Contains(" R") ? "D" : "");
+                string sideTxt = !string.IsNullOrEmpty(side) ? $" {side}" : "";
+                return $"Aile{sideTxt} ({boneName})";
+            }
+            if (boneName.StartsWith("Box0", StringComparison.OrdinalIgnoreCase) || boneName.StartsWith("Box10", StringComparison.OrdinalIgnoreCase))
+            {
+                if (int.TryParse(boneName.Substring(3), out int boxNum))
+                {
+                    if (boxNum >= 1 && boxNum <= 5) return $"Aile Dragon G - Segment {boxNum} [{boneName}]";
+                    if (boxNum >= 6 && boxNum <= 10) return $"Aile Dragon D - Segment {boxNum - 5} [{boneName}]";
+                }
+            }
+
+            // Terathan spider fangs
+            if (boneName.Equals("bone_fang_R", StringComparison.OrdinalIgnoreCase)) return "Chélicère / Crochet D [bone_fang_R]";
+            if (boneName.Equals("bone_fangs_L", StringComparison.OrdinalIgnoreCase)) return "Chélicère / Crochet G [bone_fangs_L]";
+
+            // Spider body & 8 legs (Arachnids_Spider_Giant)
+            if (boneName.Equals("Bone01", StringComparison.OrdinalIgnoreCase)) return "Corps / Céphalothorax [Bone01]";
+            if (boneName.Equals("Bone02", StringComparison.OrdinalIgnoreCase)) return "Tête / Mandibules [Bone02]";
+            // Right legs
+            if (boneName.Equals("Bone32", StringComparison.OrdinalIgnoreCase)) return "Patte Av-D - Base [Bone32]";
+            if (boneName.Equals("Bone33", StringComparison.OrdinalIgnoreCase)) return "Patte Av-D - Cuisse [Bone33]";
+            if (boneName.Equals("Bone34", StringComparison.OrdinalIgnoreCase)) return "Patte Av-D - Pointe [Bone34]";
+            if (boneName.Equals("Bone28", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Av-D - Base [Bone28]";
+            if (boneName.Equals("Bone29", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Av-D - Cuisse [Bone29]";
+            if (boneName.Equals("Bone30", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Av-D - Pointe [Bone30]";
+            if (boneName.Equals("Bone24", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Ar-D - Base [Bone24]";
+            if (boneName.Equals("Bone25", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Ar-D - Cuisse [Bone25]";
+            if (boneName.Equals("Bone26", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Ar-D - Pointe [Bone26]";
+            if (boneName.Equals("Bone20", StringComparison.OrdinalIgnoreCase)) return "Patte Ar-D - Base [Bone20]";
+            if (boneName.Equals("Bone21", StringComparison.OrdinalIgnoreCase)) return "Patte Ar-D - Cuisse [Bone21]";
+            if (boneName.Equals("Bone22", StringComparison.OrdinalIgnoreCase)) return "Patte Ar-D - Pointe [Bone22]";
+            // Left legs
+            if (boneName.Equals("Bone04", StringComparison.OrdinalIgnoreCase)) return "Patte Av-G - Base [Bone04]";
+            if (boneName.Equals("Bone05", StringComparison.OrdinalIgnoreCase)) return "Patte Av-G - Cuisse [Bone05]";
+            if (boneName.Equals("Bone06", StringComparison.OrdinalIgnoreCase)) return "Patte Av-G - Pointe [Bone06]";
+            if (boneName.Equals("Bone08", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Av-G - Base [Bone08]";
+            if (boneName.Equals("Bone09", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Av-G - Cuisse [Bone09]";
+            if (boneName.Equals("Bone10", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Av-G - Pointe [Bone10]";
+            if (boneName.Equals("Bone12", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Ar-G - Base [Bone12]";
+            if (boneName.Equals("Bone13", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Ar-G - Cuisse [Bone13]";
+            if (boneName.Equals("Bone14", StringComparison.OrdinalIgnoreCase)) return "Patte Mil-Ar-G - Pointe [Bone14]";
+            if (boneName.Equals("Bone16", StringComparison.OrdinalIgnoreCase)) return "Patte Ar-G - Base [Bone16]";
+            if (boneName.Equals("Bone17", StringComparison.OrdinalIgnoreCase)) return "Patte Ar-G - Cuisse [Bone17]";
+            if (boneName.Equals("Bone18", StringComparison.OrdinalIgnoreCase)) return "Patte Ar-G - Pointe [Bone18]";
+
+            // Centaur / Creature Ponytail chains (human arms on bust)
+            if (boneName.Equals("Bip01 Ponytail1", StringComparison.OrdinalIgnoreCase)) return "Épaule D Humaine [Ponytail1]";
+            if (boneName.Equals("Bip01 Ponytail11", StringComparison.OrdinalIgnoreCase)) return "Bras D Humain [Ponytail11]";
+            if (boneName.Equals("Bip01 Ponytail12", StringComparison.OrdinalIgnoreCase)) return "Coude D Humain [Ponytail12]";
+            if (boneName.Equals("Bip01 Ponytail13", StringComparison.OrdinalIgnoreCase)) return "Poignet D Humain [Ponytail13]";
+            if (boneName.Equals("Bip01 Ponytail14", StringComparison.OrdinalIgnoreCase)) return "Main D Humaine [Ponytail14]";
+            if (boneName.Equals("CP_Grasp_RHand", StringComparison.OrdinalIgnoreCase)) return "Point d'Attache Main D [CP_Grasp_RHand]";
+
+            if (boneName.Equals("Bip01 Ponytail2", StringComparison.OrdinalIgnoreCase)) return "Épaule G Humaine [Ponytail2]";
+            if (boneName.Equals("Bip01 Ponytail21", StringComparison.OrdinalIgnoreCase)) return "Bras G Humain [Ponytail21]";
+            if (boneName.Equals("Bip01 Ponytail22", StringComparison.OrdinalIgnoreCase)) return "Coude G Humain [Ponytail22]";
+            if (boneName.Equals("Bip01 Ponytail23", StringComparison.OrdinalIgnoreCase)) return "Poignet G Humain [Ponytail23]";
+            if (boneName.Equals("Bip01 Ponytail24", StringComparison.OrdinalIgnoreCase)) return "Main G Humaine [Ponytail24]";
+            if (boneName.Equals("CP_Grasp_LHand", StringComparison.OrdinalIgnoreCase)) return "Point d'Attache Main G [CP_Grasp_LHand]";
+
+            // Centaur torso chain
+            if (boneName.Equals("Bip01 Neck1", StringComparison.OrdinalIgnoreCase)) return "Bas du Torse Humain [Neck1]";
+            if (boneName.Equals("Bip01 Neck2", StringComparison.OrdinalIgnoreCase)) return "Milieu du Buste Humain [Neck2]";
+            if (boneName.Equals("Bip01 Neck3", StringComparison.OrdinalIgnoreCase)) return "Haut Buste / Clavicules Humaines [Neck3]";
+
+            if (isCreature)
+            {
+                // Horse / Quadruped front legs (labeled as Clavicle/UpperArm in 3ds Max biped)
+                if (boneName.Equals("Bip01 R Clavicle", StringComparison.OrdinalIgnoreCase)) return "Cheval - Épaule/Omoplate D (Patte Avant)";
+                if (boneName.Equals("Bip01 R UpperArm", StringComparison.OrdinalIgnoreCase)) return "Cheval - Haut Patte Avant D";
+                if (boneName.Equals("Bip01 R Forearm", StringComparison.OrdinalIgnoreCase)) return "Cheval - Genou/Avant-bras D";
+                if (boneName.Equals("Bip01 R Hand", StringComparison.OrdinalIgnoreCase)) return "Cheval - Boulet/Cheville Avant D";
+                if (boneName.Equals("Bip01 R Finger0", StringComparison.OrdinalIgnoreCase)) return "Cheval - Sabot Avant D";
+
+                if (boneName.Equals("Bip01 L Clavicle", StringComparison.OrdinalIgnoreCase)) return "Cheval - Épaule/Omoplate G (Patte Avant)";
+                if (boneName.Equals("Bip01 L UpperArm", StringComparison.OrdinalIgnoreCase)) return "Cheval - Haut Patte Avant G";
+                if (boneName.Equals("Bip01 L Forearm", StringComparison.OrdinalIgnoreCase)) return "Cheval - Genou/Avant-bras G";
+                if (boneName.Equals("Bip01 L Hand", StringComparison.OrdinalIgnoreCase)) return "Cheval - Boulet/Cheville Avant G";
+                if (boneName.Equals("Bip01 L Finger0", StringComparison.OrdinalIgnoreCase)) return "Cheval - Sabot Avant G";
+
+                if (boneName.Equals("Bip01 Neck", StringComparison.OrdinalIgnoreCase)) return "Cheval - Encolure / Garrot";
+                if (boneName.Equals("Bip01 Pelvis", StringComparison.OrdinalIgnoreCase)) return "Cheval - Croupe / Bassin";
+                if (boneName.Equals("Bip01 Spine", StringComparison.OrdinalIgnoreCase)) return "Cheval - Dos Arrière";
+                if (boneName.Equals("Bip01 Spine1", StringComparison.OrdinalIgnoreCase)) return "Cheval - Dos Avant";
+
+                if (boneName.Equals("Bip01 R Thigh", StringComparison.OrdinalIgnoreCase)) return "Cheval - Cuisse Arrière D";
+                if (boneName.Equals("Bip01 R Calf", StringComparison.OrdinalIgnoreCase)) return "Cheval - Jambe Arrière D";
+                if (boneName.Equals("Bip01 R HorseLink", StringComparison.OrdinalIgnoreCase)) return "Cheval - Jarret Arrière D";
+                if (boneName.Equals("Bip01 R Foot", StringComparison.OrdinalIgnoreCase)) return "Cheval - Boulet Arrière D";
+                if (boneName.Equals("Bip01 R Toe0", StringComparison.OrdinalIgnoreCase)) return "Cheval - Sabot Arrière D";
+
+                if (boneName.Equals("Bip01 L Thigh", StringComparison.OrdinalIgnoreCase)) return "Cheval - Cuisse Arrière G";
+                if (boneName.Equals("Bip01 L Calf", StringComparison.OrdinalIgnoreCase)) return "Cheval - Jambe Arrière G";
+                if (boneName.Equals("Bip01 L HorseLink", StringComparison.OrdinalIgnoreCase)) return "Cheval - Jarret Arrière G";
+                if (boneName.Equals("Bip01 L Foot", StringComparison.OrdinalIgnoreCase)) return "Cheval - Boulet Arrière G";
+                if (boneName.Equals("Bip01 L Toe0", StringComparison.OrdinalIgnoreCase)) return "Cheval - Sabot Arrière G";
+
+                if (boneName.Equals("Bip01 Tail", StringComparison.OrdinalIgnoreCase)) return "Cheval - Queue (Base)";
+                if (boneName.Equals("Bip01 Tail1", StringComparison.OrdinalIgnoreCase)) return "Cheval - Queue (Milieu)";
+                if (boneName.Equals("Bip01 Tail2", StringComparison.OrdinalIgnoreCase)) return "Cheval - Queue (Pointe)";
+            }
+            else
+            {
+                if (boneName.Equals("Bip01 R Clavicle", StringComparison.OrdinalIgnoreCase)) return "Clavicule / Épaule D";
+                if (boneName.Equals("Bip01 R UpperArm", StringComparison.OrdinalIgnoreCase)) return "Bras D (Humérus)";
+                if (boneName.Equals("Bip01 R Forearm", StringComparison.OrdinalIgnoreCase)) return "Avant-bras D (Coude)";
+                if (boneName.Equals("Bip01 R Hand", StringComparison.OrdinalIgnoreCase)) return "Main D (Poignet)";
+
+                if (boneName.Equals("Bip01 L Clavicle", StringComparison.OrdinalIgnoreCase)) return "Clavicule / Épaule G";
+                if (boneName.Equals("Bip01 L UpperArm", StringComparison.OrdinalIgnoreCase)) return "Bras G (Humérus)";
+                if (boneName.Equals("Bip01 L Forearm", StringComparison.OrdinalIgnoreCase)) return "Avant-bras G (Coude)";
+                if (boneName.Equals("Bip01 L Hand", StringComparison.OrdinalIgnoreCase)) return "Main G (Poignet)";
+            }
+
+            return boneName;
         }
 
         private static Color GetCreatureMarkerColor(string name, int idx, int total)
@@ -2792,7 +2987,7 @@ namespace UoFiddler.Plugin.Granny3D
                         int childRefIdx = -1;
                         if (rotSourceIdx != idx)
                         {
-                            string symChildName = aimChildName.Contains(" L ") ? aimChildName.Replace(" L ", " R ") : (aimChildName.Contains(" R ") ? aimChildName.Replace(" R ", " L ") : aimChildName);
+                            string symChildName = GetSymmetricBoneName(aimChildName) ?? aimChildName;
                             childRefIdx = FindMatchingBoneIndex(_refBones, symChildName);
                         }
                         else
@@ -2858,8 +3053,8 @@ namespace UoFiddler.Plugin.Granny3D
                         int refParentIdx = p;
                         if (fittedWorld[p].Row3.X < -0.01f && uoBindWorld[p].Row3.X > 0.01f)
                         {
-                            string symName = name.Contains(" L ") ? name.Replace(" L ", " R ") : (name.Contains(" R ") ? name.Replace(" R ", " L ") : name);
-                            string symPName = _previewModel.Bones[p].Name.Contains(" L ") ? _previewModel.Bones[p].Name.Replace(" L ", " R ") : (_previewModel.Bones[p].Name.Contains(" R ") ? _previewModel.Bones[p].Name.Replace(" R ", " L ") : _previewModel.Bones[p].Name);
+                            string symName = GetSymmetricBoneName(name) ?? name;
+                            string symPName = GetSymmetricBoneName(_previewModel.Bones[p].Name) ?? _previewModel.Bones[p].Name;
                             int sIdx = FindMatchingBoneIndex(_refBones, symName);
                             int spIdx = FindMatchingBoneIndex(_refBones, symPName);
                             if (sIdx >= 0 && spIdx >= 0)
@@ -2870,8 +3065,8 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                         else if (fittedWorld[p].Row3.X > 0.01f && uoBindWorld[p].Row3.X < -0.01f)
                         {
-                            string symName = name.Contains(" L ") ? name.Replace(" L ", " R ") : (name.Contains(" R ") ? name.Replace(" R ", " L ") : name);
-                            string symPName = _previewModel.Bones[p].Name.Contains(" L ") ? _previewModel.Bones[p].Name.Replace(" L ", " R ") : (_previewModel.Bones[p].Name.Contains(" R ") ? _previewModel.Bones[p].Name.Replace(" R ", " L ") : _previewModel.Bones[p].Name);
+                            string symName = GetSymmetricBoneName(name) ?? name;
+                            string symPName = GetSymmetricBoneName(_previewModel.Bones[p].Name) ?? _previewModel.Bones[p].Name;
                             int sIdx = FindMatchingBoneIndex(_refBones, symName);
                             int spIdx = FindMatchingBoneIndex(_refBones, symPName);
                             if (sIdx >= 0 && spIdx >= 0)
@@ -3236,6 +3431,131 @@ namespace UoFiddler.Plugin.Granny3D
             glControl.Invalidate();
         }
 
+        private void AlignArmsToHorizontalTPose(bool silent = false)
+        {
+            if (_markers == null || _markers.Count == 0) return;
+
+            bool hasPonytail = _markers.Any(m => m.BoneName.StartsWith("Bip01 Ponytail1", StringComparison.OrdinalIgnoreCase) ||
+                                                 m.BoneName.StartsWith("Bip01 Ponytail2", StringComparison.OrdinalIgnoreCase));
+
+            if (hasPonytail)
+            {
+                // Centaur arm alignment:
+                var neck3 = _markers.FirstOrDefault(m => string.Equals(m.BoneName, "Bip01 Neck3", StringComparison.OrdinalIgnoreCase));
+                var head = _markers.FirstOrDefault(m => string.Equals(m.BoneName, "Bip01 Head", StringComparison.OrdinalIgnoreCase));
+                var neck2 = _markers.FirstOrDefault(m => string.Equals(m.BoneName, "Bip01 Neck2", StringComparison.OrdinalIgnoreCase));
+
+                float shoulderZ = 1.55f;
+                float shoulderY = -1.05f;
+
+                if (neck3 != null)
+                {
+                    shoulderZ = neck3.Position.Z - 0.06f;
+                    shoulderY = neck3.Position.Y;
+                }
+                else if (neck2 != null)
+                {
+                    shoulderZ = neck2.Position.Z + 0.12f;
+                    shoulderY = neck2.Position.Y;
+                }
+                else if (head != null)
+                {
+                    shoulderZ = head.Position.Z - 0.22f;
+                    shoulderY = head.Position.Y;
+                }
+
+                float armSpan = 0.85f;
+                if (_baseVertices != null && _baseVertices.Length > 0)
+                {
+                    var armVerts = _baseVertices.Where(v => v.Z >= shoulderZ - 0.25f && v.Z <= shoulderZ + 0.25f).ToList();
+                    if (armVerts.Count > 0)
+                    {
+                        float maxX = armVerts.Max(v => Math.Abs(v.X));
+                        if (maxX > 0.40f) armSpan = maxX;
+                    }
+                }
+
+                // Place right arm (negative X) and left arm (positive X)
+                SetMarkerPosAndResetRot("Bip01 Ponytail1", new Vector3(-armSpan * 0.20f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 Ponytail11", new Vector3(-armSpan * 0.38f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 Ponytail12", new Vector3(-armSpan * 0.58f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 Ponytail13", new Vector3(-armSpan * 0.78f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 Ponytail14", new Vector3(-armSpan * 0.92f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("CP_Grasp_RHand", new Vector3(-armSpan * 0.98f, shoulderY, shoulderZ));
+
+                SetMarkerPosAndResetRot("Bip01 Ponytail2", new Vector3(armSpan * 0.20f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 Ponytail21", new Vector3(armSpan * 0.38f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 Ponytail22", new Vector3(armSpan * 0.58f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 Ponytail23", new Vector3(armSpan * 0.78f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 Ponytail24", new Vector3(armSpan * 0.92f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("CP_Grasp_LHand", new Vector3(armSpan * 0.98f, shoulderY, shoulderZ));
+            }
+            else
+            {
+                // Humanoid arm alignment:
+                var neck = _markers.FirstOrDefault(m => string.Equals(m.BoneName, "Bip01 Neck", StringComparison.OrdinalIgnoreCase));
+                var spine2 = _markers.FirstOrDefault(m => string.Equals(m.BoneName, "Bip01 Spine2", StringComparison.OrdinalIgnoreCase));
+
+                float shoulderZ = 1.34f;
+                float shoulderY = 0.035f;
+
+                if (neck != null)
+                {
+                    shoulderZ = neck.Position.Z - 0.04f;
+                    shoulderY = neck.Position.Y;
+                }
+                else if (spine2 != null)
+                {
+                    shoulderZ = spine2.Position.Z + 0.12f;
+                    shoulderY = spine2.Position.Y;
+                }
+
+                float armSpan = 0.75f;
+                if (_baseVertices != null && _baseVertices.Length > 0)
+                {
+                    var armVerts = _baseVertices.Where(v => v.Z >= shoulderZ - 0.25f && v.Z <= shoulderZ + 0.25f).ToList();
+                    if (armVerts.Count > 0)
+                    {
+                        float maxX = armVerts.Max(v => Math.Abs(v.X));
+                        if (maxX > 0.35f) armSpan = maxX;
+                    }
+                }
+
+                SetMarkerPosAndResetRot("Bip01 R Clavicle", new Vector3(-armSpan * 0.12f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 R UpperArm", new Vector3(-armSpan * 0.32f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 R Forearm", new Vector3(-armSpan * 0.62f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 R Hand", new Vector3(-armSpan * 0.90f, shoulderY, shoulderZ));
+
+                SetMarkerPosAndResetRot("Bip01 L Clavicle", new Vector3(armSpan * 0.12f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 L UpperArm", new Vector3(armSpan * 0.32f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 L Forearm", new Vector3(armSpan * 0.62f, shoulderY, shoulderZ));
+                SetMarkerPosAndResetRot("Bip01 L Hand", new Vector3(armSpan * 0.90f, shoulderY, shoulderZ));
+            }
+
+            _previewModel = null;
+            EnsurePreviewModel();
+            UpdateNudValues();
+            glControl.Invalidate();
+
+            if (!silent)
+            {
+                string msg = hasPonytail
+                    ? "Les bras du buste centaure (Ponytail1 & Ponytail2) ont été parfaitement alignés à l'horizontale en T-Pose !"
+                    : "Les bras ont été alignés à l'horizontale en T-Pose !";
+                MessageBox.Show(msg, "Alignement T-Pose", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        private void SetMarkerPosAndResetRot(string boneName, Vector3 pos)
+        {
+            var m = _markers.FirstOrDefault(x => string.Equals(x.BoneName, boneName, StringComparison.OrdinalIgnoreCase));
+            if (m != null)
+            {
+                m.Position = pos;
+                m.RotationDegrees = Vector3.Zero;
+            }
+        }
+
         private void ApplyAnimationPose(float time)
         {
             EnsurePreviewModel();
@@ -3298,21 +3618,32 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (track != null)
                 {
-                    bool useAnimPos = isRoot ||
-                                      bone.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase) ||
-                                      TrackPositionVaries(track, 0.002f);
                     Vector3 pos;
-                    if (bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
+                    if (bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase) || isRoot)
                     {
-                        var refBip = _refBones?.FirstOrDefault(b => string.Equals(b.Name, "Bip01", StringComparison.OrdinalIgnoreCase));
+                        var refBip = _refBones?.FirstOrDefault(b => string.Equals(b.Name, bone.Name, StringComparison.OrdinalIgnoreCase));
                         float refBindZ = refBip != null ? refBip.LocalPosition.Z : 0.937f;
                         var animPos = track.EvaluatePos(time);
                         float deltaZ = animPos.Z - refBindZ;
                         pos = new Vector3(bone.LocalPosition.X, bone.LocalPosition.Y, bone.LocalPosition.Z + deltaZ);
                     }
+                    else if (bone.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pos = track.EvaluatePos(time);
+                    }
                     else
                     {
-                        pos = useAnimPos ? track.EvaluatePos(time) : bone.LocalPosition;
+                        // Skeletal bones preserve the user's fitted and scaled bone placement.
+                        // Dynamic translation from the clip is added as a relative delta
+                        // from the clip's rest pose rather than overriding the fitted position!
+                        Vector3 delta = Vector3.Zero;
+                        if (track.Pos != null && track.Pos.Length > 1 && TrackPositionVaries(track, 0.005f))
+                        {
+                            Vector3 trPos = track.EvaluatePos(time);
+                            Vector3 restPos = track.Pos[0];
+                            delta = trPos - restPos;
+                        }
+                        pos = bone.LocalPosition + delta;
                     }
                     OpenTK.Mathematics.Quaternion rot = track.EvaluateRot(time);
                     localTransform = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
