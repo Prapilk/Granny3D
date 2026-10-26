@@ -120,6 +120,51 @@ namespace UoFiddler.Plugin.Granny3D
         private Vector3 _dragStartMarkerPos = Vector3.Zero;
         private Vector3 _dragGrabOffset = Vector3.Zero;
 
+        // Undo / Redo System
+        private class RigUndoState
+        {
+            public struct MarkerState
+            {
+                public string BoneName;
+                public string DisplayName;
+                public Vector3 Position;
+                public Vector3 RotationDegrees;
+                public Color Color;
+                public string? ParentName;
+                public string? SymmetricBoneName;
+            }
+
+            public List<MarkerState> Markers { get; set; } = new();
+            public int SelectedIndex { get; set; } = -1;
+            public List<int> SelectedIndices { get; set; } = new();
+
+            public float Scale { get; set; } = 1.0f;
+            public float RotX { get; set; } = 0f;
+            public float RotY { get; set; } = 0f;
+            public float RotZ { get; set; } = 0f;
+            public bool MirrorX { get; set; } = false;
+            public Vector3 Offset { get; set; } = Vector3.Zero;
+
+            public string RefPath { get; set; } = string.Empty;
+            public string CustomSkeletonPath { get; set; } = string.Empty;
+            public string CustomSkeletonName { get; set; } = string.Empty;
+            public bool IsMale { get; set; }
+            public bool IsFemale { get; set; }
+            public bool IsCustom { get; set; }
+
+            public string ActionName { get; set; } = string.Empty;
+        }
+
+        private readonly List<RigUndoState> _undoList = new();
+        private readonly List<RigUndoState> _redoList = new();
+        private const int MaxUndoSteps = 60;
+        private bool _isApplyingUndoRedo = false;
+        private RigUndoState? _dragUndoState = null;
+        private RigUndoState? _nudPendingUndoState = null;
+        private System.Windows.Forms.Timer? _nudDebounceTimer;
+        private Button btnUndo = null!;
+        private Button btnRedo = null!;
+
         private readonly List<JointMarker> _markers = new();
         private int _selectedMarkerIndex = -1;
         private readonly HashSet<int> _selectedMarkerIndices = new();
@@ -347,6 +392,12 @@ namespace UoFiddler.Plugin.Granny3D
             pnlCamTools.Controls.Add(btnVue3D);
             pnlCamTools.Controls.Add(CreateCamBtn(Localization.Tr("cam_center", "🎯 Centrer Caméra"), () => { _cameraDist = 2.8f; _cameraPan = Vector3.Zero; }));
             UpdateViewButtonsUI();
+
+            btnUndo = CreateCamBtn(Localization.Tr("btn_undo", "↩ Annuler (Ctrl+Z)"), () => PerformUndo());
+            btnRedo = CreateCamBtn(Localization.Tr("btn_redo", "↪ Rétablir (Ctrl+Y)"), () => PerformRedo());
+            pnlCamTools.Controls.Add(btnUndo);
+            pnlCamTools.Controls.Add(btnRedo);
+            UpdateUndoRedoButtons();
 
             chkWireframe = new CheckBox
             {
@@ -699,7 +750,12 @@ namespace UoFiddler.Plugin.Granny3D
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
             };
-            btnAutoDetect.Click += (s, e) => { AutoPlaceMixamoLandmarks(); };
+            btnAutoDetect.Click += (s, e) =>
+            {
+                CommitPendingNudUndo();
+                PushUndoState("Auto-détection repères");
+                AutoPlaceMixamoLandmarks();
+            };
 
             var btnRestoreLiveBones = new Button
             {
@@ -715,6 +771,8 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (_liveOriginalBones != null && _liveOriginalBones.Count > 0)
                 {
+                    CommitPendingNudUndo();
+                    PushUndoState("Restaurer squelette d'origine");
                     if (rbCustom.Checked)
                     {
                         InitializeMarkersFromCreatureBones(_liveOriginalBones);
@@ -778,6 +836,7 @@ namespace UoFiddler.Plugin.Granny3D
             cbJoints.SelectedIndex = 0;
             cbJoints.SelectedIndexChanged += (s, e) =>
             {
+                CommitPendingNudUndo();
                 _selectedMarkerIndex = cbJoints.SelectedIndex;
                 _selectedMarkerIndices.Clear();
                 if (_selectedMarkerIndex >= 0) _selectedMarkerIndices.Add(_selectedMarkerIndex);
@@ -821,6 +880,9 @@ namespace UoFiddler.Plugin.Granny3D
             nudX.ValueChanged += (s, e) => OnNudChanged();
             nudY.ValueChanged += (s, e) => OnNudChanged();
             nudZ.ValueChanged += (s, e) => OnNudChanged();
+            nudX.Leave += (s, e) => CommitPendingNudUndo();
+            nudY.Leave += (s, e) => CommitPendingNudUndo();
+            nudZ.Leave += (s, e) => CommitPendingNudUndo();
 
             pnlCoords.Controls.Add(CreateLbl("X:", 5));
             pnlCoords.Controls.Add(nudX);
@@ -838,6 +900,9 @@ namespace UoFiddler.Plugin.Granny3D
             nudRoll.ValueChanged += (s, e) => OnNudRotChanged();
             nudPitch.ValueChanged += (s, e) => OnNudRotChanged();
             nudYaw.ValueChanged += (s, e) => OnNudRotChanged();
+            nudRoll.Leave += (s, e) => CommitPendingNudUndo();
+            nudPitch.Leave += (s, e) => CommitPendingNudUndo();
+            nudYaw.Leave += (s, e) => CommitPendingNudUndo();
 
             pnlRotControls.Controls.Add(CreateLbl(Localization.Tr("rig_lbl_twist", "Torsion (Roll) :"), 5));
             pnlRotControls.Controls.Add(nudRoll);
@@ -998,6 +1063,8 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnResetPose.Click += (s, e) =>
             {
+                CommitPendingNudUndo();
+                PushUndoState("Réinitialiser repères Biped UO");
                 if (rbCustom.Checked && _refBones != null && _refBones.Count > 0)
                 {
                     InitializeMarkersFromCreatureBones(_refBones);
@@ -1288,13 +1355,273 @@ namespace UoFiddler.Plugin.Granny3D
 
             FormClosing += (s, e) =>
             {
+                _nudDebounceTimer?.Stop();
+                _nudDebounceTimer?.Dispose();
                 _animTimer?.Stop();
                 CleanupGlResources();
             };
         }
 
+        // ==========================================
+        // UNDO / REDO MANAGEMENT
+        // ==========================================
+        private RigUndoState CaptureCurrentState(string actionName = "")
+        {
+            var state = new RigUndoState
+            {
+                ActionName = actionName,
+                SelectedIndex = _selectedMarkerIndex,
+                SelectedIndices = new List<int>(_selectedMarkerIndices),
+                Scale = _scale,
+                RotX = _rotX,
+                RotY = _rotY,
+                RotZ = _rotZ,
+                MirrorX = _mirrorX,
+                Offset = _offset,
+                RefPath = _refPath ?? string.Empty,
+                CustomSkeletonPath = _customSkeletonPath ?? string.Empty,
+                CustomSkeletonName = _customSkeletonName ?? string.Empty,
+                IsMale = rbMale != null && rbMale.Checked,
+                IsFemale = rbFemale != null && rbFemale.Checked,
+                IsCustom = rbCustom != null && rbCustom.Checked,
+                Markers = new List<RigUndoState.MarkerState>(_markers.Count)
+            };
+
+            foreach (var m in _markers)
+            {
+                state.Markers.Add(new RigUndoState.MarkerState
+                {
+                    BoneName = m.BoneName,
+                    DisplayName = m.DisplayName,
+                    Position = m.Position,
+                    RotationDegrees = m.RotationDegrees,
+                    Color = m.Color,
+                    ParentName = m.ParentName,
+                    SymmetricBoneName = m.SymmetricBoneName
+                });
+            }
+
+            return state;
+        }
+
+        public void PushUndoState(string actionName = "")
+        {
+            if (_isApplyingUndoRedo) return;
+            _undoList.Add(CaptureCurrentState(actionName));
+            if (_undoList.Count > MaxUndoSteps)
+            {
+                _undoList.RemoveAt(0);
+            }
+            _redoList.Clear();
+            UpdateUndoRedoButtons();
+        }
+
+        private void CommitPendingNudUndo()
+        {
+            if (_nudPendingUndoState != null)
+            {
+                _nudDebounceTimer?.Stop();
+                _undoList.Add(_nudPendingUndoState);
+                if (_undoList.Count > MaxUndoSteps) _undoList.RemoveAt(0);
+                _redoList.Clear();
+                _nudPendingUndoState = null;
+                UpdateUndoRedoButtons();
+            }
+        }
+
+        private void RecordNudChange()
+        {
+            if (_isUpdatingNud || _isApplyingUndoRedo) return;
+            if (_nudPendingUndoState == null)
+            {
+                _nudPendingUndoState = CaptureCurrentState("Modification numérique");
+            }
+            if (_nudDebounceTimer == null)
+            {
+                _nudDebounceTimer = new System.Windows.Forms.Timer { Interval = 450 };
+                _nudDebounceTimer.Tick += (s, e) =>
+                {
+                    _nudDebounceTimer.Stop();
+                    CommitPendingNudUndo();
+                };
+            }
+            else
+            {
+                _nudDebounceTimer.Stop();
+            }
+            _nudDebounceTimer.Start();
+        }
+
+        public void PerformUndo()
+        {
+            CommitPendingNudUndo();
+            if (_undoList.Count == 0) return;
+
+            var currentState = CaptureCurrentState("RedoState");
+            _redoList.Add(currentState);
+
+            int lastIdx = _undoList.Count - 1;
+            var targetState = _undoList[lastIdx];
+            _undoList.RemoveAt(lastIdx);
+
+            ApplyState(targetState);
+            UpdateUndoRedoButtons();
+        }
+
+        public void PerformRedo()
+        {
+            CommitPendingNudUndo();
+            if (_redoList.Count == 0) return;
+
+            var currentState = CaptureCurrentState("UndoState");
+            _undoList.Add(currentState);
+
+            int lastIdx = _redoList.Count - 1;
+            var targetState = _redoList[lastIdx];
+            _redoList.RemoveAt(lastIdx);
+
+            ApplyState(targetState);
+            UpdateUndoRedoButtons();
+        }
+
+        private void ApplyState(RigUndoState state)
+        {
+            _isApplyingUndoRedo = true;
+            try
+            {
+                // 1. Modèle transform
+                bool modelTransformChanged = (_scale != state.Scale || _rotX != state.RotX || _rotY != state.RotY || _rotZ != state.RotZ || _mirrorX != state.MirrorX || _offset != state.Offset);
+                _scale = state.Scale;
+                _rotX = state.RotX;
+                _rotY = state.RotY;
+                _rotZ = state.RotZ;
+                _mirrorX = state.MirrorX;
+                _offset = state.Offset;
+                if (nudScale != null)
+                {
+                    _isInternalScaleChange = true;
+                    nudScale.Value = (decimal)MathHelper.Clamp(_scale, (float)nudScale.Minimum, (float)nudScale.Maximum);
+                    _isInternalScaleChange = false;
+                }
+
+                if (modelTransformChanged)
+                {
+                    RebakeModelTransform();
+                }
+
+                // 2. Squelette de référence si changé
+                if (!string.IsNullOrEmpty(state.RefPath) && !string.Equals(_refPath, state.RefPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    _refPath = state.RefPath;
+                    _customSkeletonPath = state.CustomSkeletonPath;
+                    _customSkeletonName = state.CustomSkeletonName;
+                    _isInternalSkeletonSwitch = true;
+                    try
+                    {
+                        if (rbMale != null) rbMale.Checked = state.IsMale;
+                        if (rbFemale != null) rbFemale.Checked = state.IsFemale;
+                        if (rbCustom != null) rbCustom.Checked = state.IsCustom;
+                        if (lblSkeletonName != null)
+                        {
+                            if (state.IsMale) lblSkeletonName.Text = "Squelette actif : Homme (H_Male_Lod2.grn)";
+                            else if (state.IsFemale) lblSkeletonName.Text = "Squelette actif : Femme (H_Female_Lod2.grn)";
+                            else lblSkeletonName.Text = $"Squelette actif : {_customSkeletonName} ({Path.GetFileName(_customSkeletonPath)})";
+                        }
+                    }
+                    finally
+                    {
+                        _isInternalSkeletonSwitch = false;
+                    }
+                    LoadReferenceBones();
+                    PopulateTestAnimations();
+                }
+
+                // 3. Markers
+                _markers.Clear();
+                foreach (var ms in state.Markers)
+                {
+                    _markers.Add(new JointMarker
+                    {
+                        BoneName = ms.BoneName,
+                        DisplayName = ms.DisplayName,
+                        Position = ms.Position,
+                        RotationDegrees = ms.RotationDegrees,
+                        Color = ms.Color,
+                        ParentName = ms.ParentName,
+                        SymmetricBoneName = ms.SymmetricBoneName
+                    });
+                }
+
+                cbJoints.BeginUpdate();
+                cbJoints.Items.Clear();
+                foreach (var m in _markers) cbJoints.Items.Add(m.DisplayName);
+                cbJoints.EndUpdate();
+
+                // 4. Sélections
+                _selectedMarkerIndex = (state.SelectedIndex >= 0 && state.SelectedIndex < _markers.Count) ? state.SelectedIndex : -1;
+                _selectedMarkerIndices.Clear();
+                foreach (int idx in state.SelectedIndices)
+                {
+                    if (idx >= 0 && idx < _markers.Count)
+                        _selectedMarkerIndices.Add(idx);
+                }
+
+                if (_selectedMarkerIndex >= 0 && _selectedMarkerIndex < cbJoints.Items.Count)
+                {
+                    cbJoints.SelectedIndex = _selectedMarkerIndex;
+                }
+                else if (cbJoints.Items.Count > 0)
+                {
+                    cbJoints.SelectedIndex = 0;
+                    _selectedMarkerIndex = 0;
+                    _selectedMarkerIndices.Add(0);
+                }
+
+                UpdateNudValues();
+                EnsurePreviewModel();
+                RefreshAnimatedPoseIfTesting();
+                glControl.Invalidate();
+            }
+            finally
+            {
+                _isApplyingUndoRedo = false;
+            }
+        }
+
+        private void UpdateUndoRedoButtons()
+        {
+            if (btnUndo != null)
+            {
+                btnUndo.Enabled = _undoList.Count > 0;
+                btnUndo.ForeColor = btnUndo.Enabled ? Color.Gainsboro : Color.FromArgb(100, 100, 105);
+            }
+            if (btnRedo != null)
+            {
+                btnRedo.Enabled = _redoList.Count > 0;
+                btnRedo.ForeColor = btnRedo.Enabled ? Color.Gainsboro : Color.FromArgb(100, 100, 105);
+            }
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.Z))
+            {
+                PerformUndo();
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.Y) || keyData == (Keys.Control | Keys.Shift | Keys.Z))
+            {
+                PerformRedo();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
         private void NudgeOffset(float dx, float dy, float dz)
         {
+            CommitPendingNudUndo();
+            PushUndoState("Décalage modèle");
+
             var delta = new Vector3(dx, dy, dz);
             _offset += delta;
             foreach (var m in _markers)
@@ -1309,6 +1636,9 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void RotateModel(float dx, float dy, float dz)
         {
+            CommitPendingNudUndo();
+            PushUndoState("Rotation modèle");
+
             _rotX = (_rotX + dx) % 360f;
             _rotY = (_rotY + dy) % 360f;
             _rotZ = (_rotZ + dz) % 360f;
@@ -1319,6 +1649,9 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void ToggleMirrorX()
         {
+            CommitPendingNudUndo();
+            PushUndoState("Miroir X modèle");
+
             _mirrorX = !_mirrorX;
             RebakeModelTransform();
             EnsurePreviewModel();
@@ -1365,6 +1698,8 @@ namespace UoFiddler.Plugin.Granny3D
         private void AutoCenterAndGround()
         {
             if (_baseVertices == null || _baseVertices.Length == 0) return;
+            CommitPendingNudUndo();
+            PushUndoState("Centrer et poser modèle au sol");
 
             float minX = float.MaxValue, maxX = float.MinValue;
             float minY = float.MaxValue, maxY = float.MinValue;
@@ -1396,6 +1731,8 @@ namespace UoFiddler.Plugin.Granny3D
         private void AutoScaleToSkeleton()
         {
             if (_baseVertices == null || _baseVertices.Length == 0) return;
+            CommitPendingNudUndo();
+            PushUndoState("Ajuster modèle au squelette");
 
             float minZ = float.MaxValue, maxZ = float.MinValue;
             foreach (var v in _baseVertices)
@@ -1449,7 +1786,8 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void OnMeshScaleChanged()
         {
-            if (_isInternalScaleChange || nudScale == null) return;
+            if (_isInternalScaleChange || nudScale == null || _isApplyingUndoRedo) return;
+            RecordNudChange();
             _scale = (float)nudScale.Value;
             RebakeModelTransform();
             EnsurePreviewModel();
@@ -1458,6 +1796,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void SelectAllMarkers()
         {
+            CommitPendingNudUndo();
             _selectedMarkerIndices.Clear();
             for (int i = 0; i < _markers.Count; i++)
             {
@@ -1477,6 +1816,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void DeselectAllMarkers()
         {
+            CommitPendingNudUndo();
             _selectedMarkerIndices.Clear();
             _selectedMarkerIndex = -1;
             UpdateNudValues();
@@ -1486,6 +1826,8 @@ namespace UoFiddler.Plugin.Granny3D
         private void ScaleSkeletonMarkers(float factor, bool onlySelectedIfMultiple = true)
         {
             if (_markers == null || _markers.Count == 0 || factor <= 0.0001f) return;
+            CommitPendingNudUndo();
+            PushUndoState($"Échelle squelette x{factor:0.00}");
 
             List<JointMarker> targets;
             bool isSubset = onlySelectedIfMultiple && _selectedMarkerIndices.Count > 1 && _selectedMarkerIndices.Count < _markers.Count;
@@ -1548,6 +1890,9 @@ namespace UoFiddler.Plugin.Granny3D
             if (_markers == null || _markers.Count == 0) return;
             if (_baseVertices == null || _baseVertices.Length == 0) return;
 
+            CommitPendingNudUndo();
+            PushUndoState("Ajuster hauteur squelette au modèle");
+
             float meshMinX = float.MaxValue, meshMaxX = float.MinValue;
             float meshMinY = float.MaxValue, meshMaxY = float.MinValue;
             float meshMinZ = float.MaxValue, meshMaxZ = float.MinValue;
@@ -1598,6 +1943,9 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (_markers == null || _markers.Count == 0) return;
             if (_baseVertices == null || _baseVertices.Length == 0) return;
+
+            CommitPendingNudUndo();
+            PushUndoState("Centrer squelette sur modèle");
 
             float meshMinX = float.MaxValue, meshMaxX = float.MinValue;
             float meshMinY = float.MaxValue, meshMaxY = float.MinValue;
@@ -1838,6 +2186,12 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void OnSkeletonChanged(bool isFemale)
         {
+            if (!_isApplyingUndoRedo)
+            {
+                CommitPendingNudUndo();
+                PushUndoState(isFemale ? "Squelette Femme" : "Squelette Homme");
+            }
+
             string maleRef = Path.Combine(_basePath, "Humans", "H_Male_Lod2.grn");
             string femaleRef = Path.Combine(_basePath, "Humans", "H_Female_Lod2.grn");
             if (!File.Exists(maleRef)) maleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Male_Lod2.grn");
@@ -1855,6 +2209,12 @@ namespace UoFiddler.Plugin.Granny3D
         private void OnSkeletonChangedCreature(string meshPath, string displayName)
         {
             if (string.IsNullOrEmpty(meshPath) || !File.Exists(meshPath)) return;
+
+            if (!_isApplyingUndoRedo)
+            {
+                CommitPendingNudUndo();
+                PushUndoState($"Squelette Créature : {displayName}");
+            }
 
             _refPath = meshPath;
             _customSkeletonPath = meshPath;
@@ -3458,6 +3818,12 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (_markers == null || _markers.Count == 0) return;
 
+            if (!silent)
+            {
+                CommitPendingNudUndo();
+                PushUndoState("Aligner bras en T-Pose");
+            }
+
             bool hasPonytail = _markers.Any(m => m.BoneName.StartsWith("Bip01 Ponytail1", StringComparison.OrdinalIgnoreCase) ||
                                                  m.BoneName.StartsWith("Bip01 Ponytail2", StringComparison.OrdinalIgnoreCase));
 
@@ -4593,8 +4959,11 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void OnNudChanged()
         {
-            if (_isUpdatingNud) return;
+            if (_isUpdatingNud || _isApplyingUndoRedo) return;
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
+
+            RecordNudChange();
+
             var m = _markers[_selectedMarkerIndex];
             var newPos = new Vector3((float)nudX.Value, (float)nudY.Value, (float)nudZ.Value);
             var delta = newPos - m.Position;
@@ -4636,8 +5005,11 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void OnNudRotChanged()
         {
-            if (_isUpdatingNud) return;
+            if (_isUpdatingNud || _isApplyingUndoRedo) return;
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
+
+            RecordNudChange();
+
             var m = _markers[_selectedMarkerIndex];
             m.RotationDegrees = new Vector3((float)nudRoll.Value, (float)nudPitch.Value, (float)nudYaw.Value);
 
@@ -4658,6 +5030,9 @@ namespace UoFiddler.Plugin.Granny3D
         private void ApplyRollOffset(float deltaRoll)
         {
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
+            CommitPendingNudUndo();
+            PushUndoState($"Rotation {deltaRoll:+0;-0}°");
+
             var m = _markers[_selectedMarkerIndex];
             float newRoll = (m.RotationDegrees.X + deltaRoll) % 360f;
             if (newRoll > 180f) newRoll -= 360f;
@@ -4682,6 +5057,9 @@ namespace UoFiddler.Plugin.Granny3D
         private void SetRollExact(float targetRoll)
         {
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
+            CommitPendingNudUndo();
+            PushUndoState($"Rotation {targetRoll}°");
+
             var m = _markers[_selectedMarkerIndex];
             m.RotationDegrees = new Vector3(targetRoll, m.RotationDegrees.Y, m.RotationDegrees.Z);
 
@@ -5465,6 +5843,9 @@ void main() {
         {
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
 
+            CommitPendingNudUndo();
+            _dragUndoState = CaptureCurrentState("Déplacement repère(s)");
+
             _isDraggingMarker = true;
             _dragStartMarkerPositions.Clear();
             foreach (int idx in _selectedMarkerIndices)
@@ -5618,6 +5999,30 @@ void main() {
                     UpdateNudValues();
                 }
                 glControl.Invalidate();
+            }
+
+            if (_isDraggingMarker && _dragUndoState != null)
+            {
+                bool moved = false;
+                foreach (var kvp in _dragStartMarkerPositions)
+                {
+                    if (kvp.Key >= 0 && kvp.Key < _markers.Count)
+                    {
+                        if ((_markers[kvp.Key].Position - kvp.Value).LengthSquared > 0.000001f)
+                        {
+                            moved = true;
+                            break;
+                        }
+                    }
+                }
+                if (moved)
+                {
+                    _undoList.Add(_dragUndoState);
+                    if (_undoList.Count > MaxUndoSteps) _undoList.RemoveAt(0);
+                    _redoList.Clear();
+                    UpdateUndoRedoButtons();
+                }
+                _dragUndoState = null;
             }
 
             _isDraggingMarker = false;

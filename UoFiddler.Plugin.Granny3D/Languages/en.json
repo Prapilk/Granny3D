@@ -244,5 +244,7 @@
   "tex_col_clear": "Remove",
   "btn_apply_save": "Apply and Save",
   "btn_extract_fbx_tex": "Extract textures from FBX...",
-  "btn_open_model_folder": "Open model folder..."
+  "btn_open_model_folder": "Open model folder...",
+  "btn_undo": "↩ Undo (Ctrl+Z)",
+  "btn_redo": "↪ Redo (Ctrl+Y)"
 }
