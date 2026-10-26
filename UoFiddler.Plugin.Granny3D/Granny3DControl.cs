@@ -816,6 +816,30 @@ namespace UoFiddler.Plugin.Granny3D
             };
             tvAnims.AfterSelect += TvAnims_AfterSelect;
             tvAnims.BeforeExpand += TvAnims_BeforeExpand;
+            tvAnims.KeyDown += (s, e) =>
+            {
+                if (tvAnims.SelectedNode != null && tvAnims.SelectedNode.Tag is string animPath)
+                {
+                    bool isCustom = animPath.EndsWith(".anim", StringComparison.OrdinalIgnoreCase) ||
+                                    animPath.EndsWith(".pose", StringComparison.OrdinalIgnoreCase) ||
+                                    (tvAnims.SelectedNode.Parent?.Tag as AnimCat)?.Pattern == "*.anim" ||
+                                    (tvAnims.SelectedNode.Parent?.Tag as AnimCat)?.Pattern == "*.pose";
+
+                    if (isCustom)
+                    {
+                        if (e.KeyCode == Keys.F2)
+                        {
+                            RenameCustomAnimation(tvAnims.SelectedNode, animPath);
+                            e.Handled = true;
+                        }
+                        else if (e.KeyCode == Keys.Delete)
+                        {
+                            DeleteCustomAnimation(tvAnims.SelectedNode, animPath);
+                            e.Handled = true;
+                        }
+                    }
+                }
+            };
 
             var pnlAnimTools = new Panel { Dock = DockStyle.Bottom, Height = 58 };
             btnTPose = new Button
@@ -4417,6 +4441,11 @@ namespace UoFiddler.Plugin.Granny3D
             if (isCustomAnim)
             {
                 tvAnimMenu.Items.Add(new ToolStripSeparator());
+                tvAnimMenu.Items.Add(Localization.Tr("menu_rename", "Renommer..."), null, (s, a) =>
+                {
+                    RenameCustomAnimation(node, animPath);
+                });
+
                 var deleteItem = new ToolStripMenuItem("Supprimer cette animation", null, (s, a) =>
                 {
                     DeleteCustomAnimation(node, animPath);
@@ -4442,6 +4471,118 @@ namespace UoFiddler.Plugin.Granny3D
                 }
                 catch { }
             });
+        }
+
+        private void RenameCustomAnimation(TreeNode node, string animPath)
+        {
+            if (string.IsNullOrEmpty(animPath) || !File.Exists(animPath)) return;
+
+            string oldName = !string.IsNullOrEmpty(node.Text) ? node.Text : Path.GetFileNameWithoutExtension(animPath);
+            bool isPose = animPath.EndsWith(".pose", StringComparison.OrdinalIgnoreCase);
+
+            using var dlg = new Form
+            {
+                Text = isPose ? "Renommer la pose" : "Renommer l'animation",
+                Size = new Size(380, 160),
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                BackColor = Color.FromArgb(40, 40, 40),
+                ForeColor = Color.Gainsboro
+            };
+
+            var lbl = new Label { Text = "Nouveau nom :", Location = new Point(16, 16), AutoSize = true, ForeColor = Color.Gainsboro };
+            var txt = new TextBox
+            {
+                Text = oldName,
+                Location = new Point(16, 40),
+                Width = 330,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            txt.SelectAll();
+
+            var btnOk = new Button
+            {
+                Text = "OK",
+                DialogResult = DialogResult.OK,
+                Location = new Point(170, 80),
+                Width = 80,
+                Height = 28,
+                BackColor = Color.FromArgb(48, 48, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            var btnCancel = new Button
+            {
+                Text = "Annuler",
+                DialogResult = DialogResult.Cancel,
+                Location = new Point(266, 80),
+                Width = 80,
+                Height = 28,
+                BackColor = Color.FromArgb(48, 48, 48),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            dlg.Controls.AddRange(new Control[] { lbl, txt, btnOk, btnCancel });
+            dlg.AcceptButton = btnOk;
+            dlg.CancelButton = btnCancel;
+
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            string newName = MakeSafeFilename(txt.Text.Trim());
+            if (string.IsNullOrEmpty(newName) || string.Equals(newName, oldName, StringComparison.OrdinalIgnoreCase)) return;
+
+            string folder = Path.GetDirectoryName(animPath) ?? string.Empty;
+            string ext = Path.GetExtension(animPath);
+            string newPath = Path.Combine(folder, newName + ext);
+
+            if (File.Exists(newPath))
+            {
+                MessageBox.Show($"Un fichier nommé '{newName}{ext}' existe déjà dans ce dossier.", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                if (animPath.EndsWith(".anim", StringComparison.OrdinalIgnoreCase))
+                {
+                    var anim = GrannyAnimFile.Load(animPath);
+                    if (anim != null)
+                    {
+                        anim.Name = newName;
+                        GrannyAnimFile.Save(anim, newPath);
+                        try { File.Delete(animPath); } catch { }
+                    }
+                    else
+                    {
+                        File.Move(animPath, newPath);
+                    }
+                }
+                else
+                {
+                    File.Move(animPath, newPath);
+                }
+
+                if (string.Equals(_currentAnimPath, animPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    _currentAnimPath = newPath;
+                    if (_currentAnimation != null) _currentAnimation.Name = newName;
+                    if (lblAnimHeader != null) lblAnimHeader.Text = newName;
+                }
+
+                node.Tag = newPath;
+                node.Text = newName;
+
+                Log($"{(isPose ? "Pose renommée" : "Animation renommée")} : '{oldName}' -> '{newName}'");
+            }
+            catch (Exception ex)
+            {
+                Log($"Erreur renommage animation: {ex.Message}");
+                MessageBox.Show("Erreur lors du renommage : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void DeleteCustomAnimation(TreeNode node, string animPath)
