@@ -175,6 +175,7 @@ namespace UoFiddler.Plugin.Granny3D
         private System.Windows.Forms.Timer? _animTimer;
         private float _animTime = 0.0f;
         private bool _isPlayingAnim = false;
+        private bool _isAnimTesting = false;
         private Matrix4[]? _boneWorldMatrices;
         private List<GrannyBone> _refBones = new();
 
@@ -1163,6 +1164,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnFlexOpen.Click += (s, e) =>
             {
+                _isAnimTesting = true;
                 tbFingerFlex.Value = 0;
                 _fingerFlexAmount = 0f;
                 lblFingerFlex.Text = Localization.Tr("rig_lbl_finger_flex", "✋ Test Flexion Doigts / Poing : 0%");
@@ -1171,6 +1173,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
             btnFlexFist.Click += (s, e) =>
             {
+                _isAnimTesting = true;
                 tbFingerFlex.Value = 100;
                 _fingerFlexAmount = 1.0f;
                 lblFingerFlex.Text = Localization.TrFmt("rig_lbl_finger_flex_pct", "✋ Test Flexion Doigts / Poing : {0}%", 100);
@@ -1179,6 +1182,7 @@ namespace UoFiddler.Plugin.Granny3D
             };
             tbFingerFlex.Scroll += (s, e) =>
             {
+                _isAnimTesting = true;
                 _fingerFlexAmount = tbFingerFlex.Value / 100f;
                 lblFingerFlex.Text = Localization.TrFmt("rig_lbl_finger_flex_pct", "✋ Test Flexion Doigts / Poing : {0}%", tbFingerFlex.Value);
                 ApplyAnimationPose(_animTime);
@@ -1201,6 +1205,8 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (_testAnim != null)
                 {
+                    _isAnimTesting = true;
+                    if (!_isPlayingAnim && btnPlayAnim != null) btnPlayAnim.Text = "▶ Reprendre";
                     _animTime = (tbAnimScrub.Value / 1000f) * _testAnim.Duration;
                     ApplyAnimationPose(_animTime);
                     glControl.Invalidate();
@@ -1533,6 +1539,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             UpdateNudValues();
             EnsurePreviewModel();
+            RefreshAnimatedPoseIfTesting();
             glControl.Invalidate();
         }
 
@@ -2632,10 +2639,13 @@ namespace UoFiddler.Plugin.Granny3D
                 if (item.PreloadedAnim != null)
                 {
                     _testAnim = item.PreloadedAnim;
-                    tbAnimScrub.Value = 0;
-                    _animTime = 0f;
-                    ApplyAnimationPose(0f);
-                    glControl.Invalidate();
+                    if (_isAnimTesting)
+                    {
+                        tbAnimScrub.Value = 0;
+                        _animTime = 0f;
+                        ApplyAnimationPose(0f);
+                        glControl.Invalidate();
+                    }
                     return;
                 }
 
@@ -2663,10 +2673,13 @@ namespace UoFiddler.Plugin.Granny3D
 
                     if (_testAnim != null)
                     {
-                        tbAnimScrub.Value = 0;
-                        _animTime = 0f;
-                        ApplyAnimationPose(0f);
-                        glControl.Invalidate();
+                        if (_isAnimTesting)
+                        {
+                            tbAnimScrub.Value = 0;
+                            _animTime = 0f;
+                            ApplyAnimationPose(0f);
+                            glControl.Invalidate();
+                        }
                     }
                 }
             }
@@ -2761,15 +2774,25 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             _isPlayingAnim = !_isPlayingAnim;
-            btnPlayAnim.Text = _isPlayingAnim ? "⏸ Pause" : "▶ Lancer le Test";
+            if (_isPlayingAnim) _isAnimTesting = true;
+            btnPlayAnim.Text = _isPlayingAnim ? "⏸ Pause" : (_isAnimTesting ? "▶ Reprendre" : "▶ Lancer le Test");
             btnPlayAnim.BackColor = _isPlayingAnim ? Color.FromArgb(120, 30, 30) : Color.FromArgb(80, 40, 110);
-            if (_isPlayingAnim) _animTimer.Start();
-            else _animTimer.Stop();
+            if (_isPlayingAnim)
+            {
+                ApplyAnimationPose(_animTime);
+                _animTimer.Start();
+                glControl.Invalidate();
+            }
+            else
+            {
+                _animTimer.Stop();
+            }
         }
 
         private void StopAnimation()
         {
             _isPlayingAnim = false;
+            _isAnimTesting = false;
             _animTimer?.Stop();
             btnPlayAnim.Text = "▶ Lancer le Test";
             btnPlayAnim.BackColor = Color.FromArgb(80, 40, 110);
@@ -4607,6 +4630,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             EnsurePreviewModel();
+            RefreshAnimatedPoseIfTesting();
             glControl.Invalidate();
         }
 
@@ -4627,6 +4651,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             EnsurePreviewModel();
+            RefreshAnimatedPoseIfTesting();
             glControl.Invalidate();
         }
 
@@ -4650,6 +4675,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             UpdateNudValues();
             EnsurePreviewModel();
+            RefreshAnimatedPoseIfTesting();
             glControl.Invalidate();
         }
 
@@ -4670,6 +4696,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             UpdateNudValues();
             EnsurePreviewModel();
+            RefreshAnimatedPoseIfTesting();
             glControl.Invalidate();
         }
 
@@ -4962,8 +4989,8 @@ void main() {
         {
             var lines = new List<float>();
 
-            // If animation is playing or finger flex is active, draw dynamic animated bones!
-            if ((_isPlayingAnim || _fingerFlexAmount > 0.001f) && _boneWorldMatrices != null && _previewModel != null)
+            // If animation or pose is active, draw dynamic animated bones!
+            if (_isAnimTesting && _boneWorldMatrices != null && _previewModel != null)
             {
                 int nb = _previewModel.Bones.Count;
                 for (int i = 0; i < nb; i++)
@@ -5058,15 +5085,7 @@ void main() {
                 bool isPrimary = (i == _selectedMarkerIndex);
                 bool isMultiSelected = _selectedMarkerIndices.Contains(i);
 
-                Vector3 pos = m.Position;
-                if ((_isPlayingAnim || _fingerFlexAmount > 0.001f) && _boneWorldMatrices != null && _previewModel != null)
-                {
-                    int bidx = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, m.BoneName, StringComparison.OrdinalIgnoreCase));
-                    if (bidx >= 0 && bidx < _boneWorldMatrices.Length)
-                    {
-                        pos = _boneWorldMatrices[bidx].Row3.Xyz;
-                    }
-                }
+                Vector3 pos = GetMarkerVisualPosition(i);
 
                 if (isPrimary)
                 {
@@ -5419,6 +5438,29 @@ void main() {
             }
         }
 
+        private Vector3 GetMarkerVisualPosition(int markerIndex)
+        {
+            if (markerIndex < 0 || markerIndex >= _markers.Count) return Vector3.Zero;
+            var m = _markers[markerIndex];
+            if (_isAnimTesting && _boneWorldMatrices != null && _previewModel != null)
+            {
+                int bidx = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, m.BoneName, StringComparison.OrdinalIgnoreCase));
+                if (bidx >= 0 && bidx < _boneWorldMatrices.Length)
+                {
+                    return _boneWorldMatrices[bidx].Row3.Xyz;
+                }
+            }
+            return m.Position;
+        }
+
+        private void RefreshAnimatedPoseIfTesting()
+        {
+            if (_isAnimTesting && (_testAnim != null || _fingerFlexAmount > 0.001f))
+            {
+                ApplyAnimationPose(_animTime);
+            }
+        }
+
         private void SetupMarkerDrag(int mouseX, int mouseY)
         {
             if (_selectedMarkerIndex < 0 || _selectedMarkerIndex >= _markers.Count) return;
@@ -5434,8 +5476,9 @@ void main() {
             }
 
             var m = _markers[_selectedMarkerIndex];
-            _dragStartMarkerPos = m.Position;
-            _dragPlanePoint = m.Position;
+            Vector3 visualPos = GetMarkerVisualPosition(_selectedMarkerIndex);
+            _dragStartMarkerPos = visualPos;
+            _dragPlanePoint = visualPos;
 
             if (_currentViewMode == RigViewMode.Front || _currentViewMode == RigViewMode.Back ||
                 ((Math.Abs(_cameraYaw) < 15f || Math.Abs(_cameraYaw - 180f) < 15f) && Math.Abs(_cameraPitch) < 15f))
@@ -5535,6 +5578,7 @@ void main() {
 
                     UpdateNudValues();
                     EnsurePreviewModel();
+                    RefreshAnimatedPoseIfTesting();
                     glControl.Invalidate();
                 }
                 return;
@@ -5656,7 +5700,7 @@ void main() {
 
             for (int i = 0; i < _markers.Count; i++)
             {
-                var p = _markers[i].Position;
+                var p = GetMarkerVisualPosition(i);
                 Vector4 clip = new Vector4(p, 1.0f) * mvp;
                 if (clip.W <= 0.01f) continue;
 
