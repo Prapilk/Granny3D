@@ -200,6 +200,28 @@ namespace UoFiddler.Plugin.Granny3D
             public VertexInfluence[][]? Skin { get; set; }
         }
 
+        public class RigMarkerTemplate
+        {
+            public string BoneName { get; set; } = string.Empty;
+            public float PosX { get; set; }
+            public float PosY { get; set; }
+            public float PosZ { get; set; }
+            public float Roll { get; set; }
+            public float Pitch { get; set; }
+            public float Yaw { get; set; }
+        }
+
+        public class RigTemplateFile
+        {
+            public string TemplateName { get; set; } = string.Empty;
+            public string SkeletonType { get; set; } = string.Empty;
+            public DateTime CreatedAt { get; set; } = DateTime.Now;
+            public List<RigMarkerTemplate> Markers { get; set; } = new();
+        }
+
+        private CheckBox chkHeatmap = null!;
+        private int _colorVbo;
+
         private class AnimTestItem
         {
             public string DisplayName { get; set; } = string.Empty;
@@ -360,7 +382,10 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlCamTools = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
-                Height = 36,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = new Size(0, 36),
+                WrapContents = true,
                 BackColor = Color.FromArgb(22, 22, 24),
                 Padding = new Padding(6, 4, 6, 4)
             };
@@ -370,11 +395,13 @@ namespace UoFiddler.Plugin.Granny3D
                 var b = new Button
                 {
                     Text = text,
-                    Height = 26,
+                    Height = 28,
                     AutoSize = true,
                     BackColor = Color.FromArgb(45, 45, 48),
                     ForeColor = Color.Gainsboro,
-                    FlatStyle = FlatStyle.Flat
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI", 9F, FontStyle.Regular),
+                    Margin = new Padding(2, 2, 2, 2)
                 };
                 b.FlatAppearance.BorderColor = Color.FromArgb(65, 65, 70);
                 b.Click += (s, e) => { onClick(); glControl.Invalidate(); };
@@ -394,7 +421,9 @@ namespace UoFiddler.Plugin.Granny3D
             UpdateViewButtonsUI();
 
             btnUndo = CreateCamBtn(Localization.Tr("btn_undo", "↩ Annuler (Ctrl+Z)"), () => PerformUndo());
+            btnUndo.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             btnRedo = CreateCamBtn(Localization.Tr("btn_redo", "↪ Rétablir (Ctrl+Y)"), () => PerformRedo());
+            btnRedo.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             pnlCamTools.Controls.Add(btnUndo);
             pnlCamTools.Controls.Add(btnRedo);
             UpdateUndoRedoButtons();
@@ -404,7 +433,7 @@ namespace UoFiddler.Plugin.Granny3D
                 Text = Localization.Tr("chk_wireframe", "Fil de fer"),
                 ForeColor = Color.Gainsboro,
                 AutoSize = true,
-                Margin = new Padding(16, 6, 0, 0)
+                Margin = new Padding(12, 6, 0, 0)
             };
             chkWireframe.CheckedChanged += (s, e) => glControl.Invalidate();
             pnlCamTools.Controls.Add(chkWireframe);
@@ -430,6 +459,25 @@ namespace UoFiddler.Plugin.Granny3D
             };
             chkShowMesh.CheckedChanged += (s, e) => glControl.Invalidate();
             pnlCamTools.Controls.Add(chkShowMesh);
+
+            chkHeatmap = new CheckBox
+            {
+                Text = Localization.Tr("cam_chk_heatmap", "🎨 Heatmap (Poids)"),
+                Checked = false,
+                ForeColor = Color.Yellow,
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                Margin = new Padding(12, 6, 0, 0)
+            };
+            chkHeatmap.CheckedChanged += (s, e) =>
+            {
+                if (chkHeatmap.Checked)
+                {
+                    UpdateHeatmapColors();
+                }
+                glControl.Invalidate();
+            };
+            pnlCamTools.Controls.Add(chkHeatmap);
 
             glControl = new GLControl
             {
@@ -724,7 +772,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = Localization.Tr("rig_grp_markers", "4. Positionnement des Articulations (Croix 3D)"),
                 Dock = DockStyle.Top,
-                Height = 458,
+                Height = 530,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -821,10 +869,68 @@ namespace UoFiddler.Plugin.Granny3D
             pnlSkinBtns.Controls.Add(btnRecalcArms);
             pnlSkinBtns.Controls.Add(btnRecalcAllSkin);
 
-            var lblJoint = new Label { Text = Localization.Tr("rig_lbl_sel_cross", "Croix sélectionnée :"), Location = new Point(12, 114), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            // Rig Templates (JSON) Panel
+            var pnlTemplateBtns = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(0, 4, 0, 0) };
+            var btnSaveTemplate = new Button
+            {
+                Text = Localization.Tr("rig_btn_save_template", "💾 Sauvegarder Gabarit (JSON)"),
+                Dock = DockStyle.Left,
+                Width = 250,
+                BackColor = Color.FromArgb(60, 45, 95),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnSaveTemplate.Click += (s, e) => SaveRigTemplate();
+
+            var btnLoadTemplate = new Button
+            {
+                Text = Localization.Tr("rig_btn_load_template", "📂 Charger Gabarit (JSON)"),
+                Dock = DockStyle.Right,
+                Width = 230,
+                BackColor = Color.FromArgb(30, 80, 80),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnLoadTemplate.Click += (s, e) => LoadRigTemplate();
+
+            pnlTemplateBtns.Controls.Add(btnSaveTemplate);
+            pnlTemplateBtns.Controls.Add(btnLoadTemplate);
+
+            // Symmetrical Mirror Buttons Panel
+            var pnlMirrorBtns = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(0, 4, 0, 0) };
+            var btnMirrorLtoR = new Button
+            {
+                Text = Localization.Tr("rig_btn_mirror_l_r", "⮂ Miroir Gauche ➔ Droite"),
+                Dock = DockStyle.Left,
+                Width = 250,
+                BackColor = Color.FromArgb(35, 75, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnMirrorLtoR.Click += (s, e) => ApplySymmetry(true);
+
+            var btnMirrorRtoL = new Button
+            {
+                Text = Localization.Tr("rig_btn_mirror_r_l", "⮃ Miroir Droite ➔ Gauche"),
+                Dock = DockStyle.Right,
+                Width = 230,
+                BackColor = Color.FromArgb(35, 60, 85),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            btnMirrorRtoL.Click += (s, e) => ApplySymmetry(false);
+
+            pnlMirrorBtns.Controls.Add(btnMirrorLtoR);
+            pnlMirrorBtns.Controls.Add(btnMirrorRtoL);
+
+            var lblJoint = new Label { Text = Localization.Tr("rig_lbl_sel_cross", "Croix sélectionnée :"), Location = new Point(12, 178), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
             cbJoints = new ComboBox
             {
-                Location = new Point(145, 111),
+                Location = new Point(145, 175),
                 Width = 175,
                 DropDownWidth = 380,
                 DropDownStyle = ComboBoxStyle.DropDownList,
@@ -841,13 +947,14 @@ namespace UoFiddler.Plugin.Granny3D
                 _selectedMarkerIndices.Clear();
                 if (_selectedMarkerIndex >= 0) _selectedMarkerIndices.Add(_selectedMarkerIndex);
                 UpdateNudValues();
+                if (chkHeatmap != null && chkHeatmap.Checked) UpdateHeatmapColors();
                 glControl.Invalidate();
             };
 
             var btnSelectAll = new Button
             {
                 Text = Localization.Tr("rig_btn_sel_all", "🎯 Tout"),
-                Location = new Point(325, 110),
+                Location = new Point(325, 174),
                 Size = new Size(72, 26),
                 BackColor = Color.FromArgb(45, 55, 75),
                 ForeColor = Color.White,
@@ -860,7 +967,7 @@ namespace UoFiddler.Plugin.Granny3D
             var btnDeselectAll = new Button
             {
                 Text = Localization.Tr("rig_btn_desel_all", "🧹 Aucun"),
-                Location = new Point(402, 110),
+                Location = new Point(402, 174),
                 Size = new Size(70, 26),
                 BackColor = Color.FromArgb(45, 45, 50),
                 ForeColor = Color.Gainsboro,
@@ -870,7 +977,7 @@ namespace UoFiddler.Plugin.Granny3D
             btnDeselectAll.FlatAppearance.BorderColor = Color.FromArgb(65, 65, 70);
             btnDeselectAll.Click += (s, e) => DeselectAllMarkers();
 
-            var pnlCoords = new Panel { Location = new Point(12, 145), Size = new Size(480, 36), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            var pnlCoords = new Panel { Location = new Point(12, 209), Size = new Size(480, 36), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
             Label CreateLbl(string txt, int x) => new Label { Text = txt, Location = new Point(x, 8), AutoSize = true, ForeColor = Color.Gainsboro };
 
             nudX = new NumericUpDown { DecimalPlaces = 3, Minimum = -10, Maximum = 10, Increment = 0.01m, Location = new Point(25, 6), Width = 85, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
@@ -892,7 +999,7 @@ namespace UoFiddler.Plugin.Granny3D
             pnlCoords.Controls.Add(nudZ);
 
             // Rotation Controls Panel
-            pnlRotControls = new Panel { Location = new Point(12, 185), Size = new Size(480, 32), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            pnlRotControls = new Panel { Location = new Point(12, 249), Size = new Size(480, 32), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
             nudRoll = new NumericUpDown { DecimalPlaces = 1, Minimum = -180, Maximum = 180, Increment = 5m, Location = new Point(115, 4), Width = 75, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gold };
             nudPitch = new NumericUpDown { DecimalPlaces = 1, Minimum = -90, Maximum = 90, Increment = 5m, Location = new Point(245, 4), Width = 70, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
             nudYaw = new NumericUpDown { DecimalPlaces = 1, Minimum = -90, Maximum = 90, Increment = 5m, Location = new Point(365, 4), Width = 70, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
@@ -912,7 +1019,7 @@ namespace UoFiddler.Plugin.Granny3D
             pnlRotControls.Controls.Add(nudYaw);
 
             // Quick Rotation Presets Panel
-            pnlRotBtns = new Panel { Location = new Point(12, 218), Size = new Size(480, 28) };
+            pnlRotBtns = new Panel { Location = new Point(12, 282), Size = new Size(480, 28) };
             Button CreateRotBtn(string text, int x, int width, Action act)
             {
                 var b = new Button
@@ -939,7 +1046,7 @@ namespace UoFiddler.Plugin.Granny3D
             // Skeleton Scale Presets Panel
             var pnlSkelScale = new FlowLayoutPanel
             {
-                Location = new Point(12, 250),
+                Location = new Point(12, 314),
                 Size = new Size(480, 30),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
@@ -982,7 +1089,7 @@ namespace UoFiddler.Plugin.Granny3D
             // Auto Fit & Center Skeleton Panel
             var pnlSkelFit = new FlowLayoutPanel
             {
-                Location = new Point(12, 282),
+                Location = new Point(12, 346),
                 Size = new Size(480, 32),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
@@ -1021,7 +1128,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var pnlArmTPose = new FlowLayoutPanel
             {
-                Location = new Point(12, 316),
+                Location = new Point(12, 380),
                 Size = new Size(480, 30),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
@@ -1045,7 +1152,7 @@ namespace UoFiddler.Plugin.Granny3D
             lblRotTip = new Label
             {
                 Text = Localization.Tr("rig_lbl_rot_tip", "💡 Ctrl + glisser = multi-sélection. Les boutons d'échelle agissent sur la sélection (ou tout le squelette)."),
-                Location = new Point(12, 350),
+                Location = new Point(12, 414),
                 AutoSize = true,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 8F, FontStyle.Bold)
@@ -1094,6 +1201,8 @@ namespace UoFiddler.Plugin.Granny3D
             grpMarkers.Controls.Add(btnSelectAll);
             grpMarkers.Controls.Add(cbJoints);
             grpMarkers.Controls.Add(lblJoint);
+            grpMarkers.Controls.Add(pnlMirrorBtns);
+            grpMarkers.Controls.Add(pnlTemplateBtns);
             grpMarkers.Controls.Add(pnlSkinBtns);
             grpMarkers.Controls.Add(pnlTopRigBtns);
             grpMarkers.Controls.Add(lblJointTip);
@@ -1593,12 +1702,20 @@ namespace UoFiddler.Plugin.Granny3D
             if (btnUndo != null)
             {
                 btnUndo.Enabled = _undoList.Count > 0;
-                btnUndo.ForeColor = btnUndo.Enabled ? Color.Gainsboro : Color.FromArgb(100, 100, 105);
+                btnUndo.BackColor = btnUndo.Enabled ? Color.FromArgb(30, 80, 140) : Color.FromArgb(40, 42, 46);
+                btnUndo.ForeColor = btnUndo.Enabled ? Color.White : Color.FromArgb(120, 120, 125);
+                btnUndo.FlatAppearance.BorderColor = btnUndo.Enabled ? Color.FromArgb(60, 120, 200) : Color.FromArgb(60, 60, 65);
+                string last = _undoList.Count > 0 ? _undoList[^1].ActionName : "";
+                btnUndo.Text = string.IsNullOrEmpty(last) ? "↩ Annuler (Ctrl+Z)" : $"↩ Annuler: {last} (Ctrl+Z)";
             }
             if (btnRedo != null)
             {
                 btnRedo.Enabled = _redoList.Count > 0;
-                btnRedo.ForeColor = btnRedo.Enabled ? Color.Gainsboro : Color.FromArgb(100, 100, 105);
+                btnRedo.BackColor = btnRedo.Enabled ? Color.FromArgb(30, 80, 140) : Color.FromArgb(40, 42, 46);
+                btnRedo.ForeColor = btnRedo.Enabled ? Color.White : Color.FromArgb(120, 120, 125);
+                btnRedo.FlatAppearance.BorderColor = btnRedo.Enabled ? Color.FromArgb(60, 120, 200) : Color.FromArgb(60, 60, 65);
+                string next = _redoList.Count > 0 ? _redoList[^1].ActionName : "";
+                btnRedo.Text = string.IsNullOrEmpty(next) ? "↪ Rétablir (Ctrl+Y)" : $"↪ Rétablir: {next} (Ctrl+Y)";
             }
         }
 
@@ -5160,19 +5277,24 @@ namespace UoFiddler.Plugin.Granny3D
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aUV;
+layout(location=3) in vec3 aColor;
 uniform mat4 uMvp;
 out vec3 vNormal;
 out vec3 vFragPos;
+out vec3 vColor;
 void main() {
     vNormal = aNormal;
     vFragPos = aPos;
+    vColor = aColor;
     gl_Position = uMvp * vec4(aPos, 1.0);
 }";
 
             const string fsMesh = @"#version 330 core
 in vec3 vNormal;
 in vec3 vFragPos;
+in vec3 vColor;
 uniform int uWireframe;
+uniform int uUseHeatmap;
 out vec4 FragColor;
 void main() {
     if (uWireframe != 0) {
@@ -5185,7 +5307,7 @@ void main() {
     float diff1 = max(dot(norm, lightDir1), 0.0);
     float diff2 = max(dot(norm, lightDir2), 0.0) * 0.4;
     vec3 ambient = vec3(0.25, 0.26, 0.28);
-    vec3 baseColor = vec3(0.72, 0.72, 0.75);
+    vec3 baseColor = (uUseHeatmap != 0) ? vColor : vec3(0.72, 0.72, 0.75);
     vec3 color = (ambient + diff1 + diff2) * baseColor;
     FragColor = vec4(color, 1.0);
 }";
@@ -5261,8 +5383,19 @@ void main() {
                 GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, 6 * sizeof(float));
                 GL.EnableVertexAttribArray(2);
 
+                if (_colorVbo == 0) _colorVbo = GL.GenBuffer();
+                GL.BindBuffer(BufferTarget.ArrayBuffer, _colorVbo);
+                GL.BufferData(BufferTarget.ArrayBuffer, _meshVertexCount * 3 * sizeof(float), IntPtr.Zero, BufferUsageHint.DynamicDraw);
+                GL.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+                GL.EnableVertexAttribArray(3);
+
                 GL.BindVertexArray(0);
                 GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+
+                if (chkHeatmap != null && chkHeatmap.Checked)
+                {
+                    UpdateHeatmapColors();
+                }
             }
             catch { }
         }
@@ -5336,12 +5469,17 @@ void main() {
             GL.UseProgram(_shaderMeshProg);
             int uMvp = GL.GetUniformLocation(_shaderMeshProg, "uMvp");
             int uWire = GL.GetUniformLocation(_shaderMeshProg, "uWireframe");
+            int uHeat = GL.GetUniformLocation(_shaderMeshProg, "uUseHeatmap");
             GL.UniformMatrix4(uMvp, false, ref mvp);
 
             bool isWireframe = chkWireframe != null && chkWireframe.Checked;
             if (uWire >= 0)
             {
                 GL.Uniform1(uWire, isWireframe ? 1 : 0);
+            }
+            if (uHeat >= 0)
+            {
+                GL.Uniform1(uHeat, (chkHeatmap != null && chkHeatmap.Checked) ? 1 : 0);
             }
 
             if (isWireframe)
@@ -6146,6 +6284,229 @@ void main() {
             return bestIdx;
         }
 
+        private void SaveRigTemplate()
+        {
+            try
+            {
+                string presetsDir = Path.Combine(_basePath, "Presets_Rig");
+                if (!Directory.Exists(presetsDir)) Directory.CreateDirectory(presetsDir);
+
+                using var sfd = new SaveFileDialog
+                {
+                    Title = "Sauvegarder le gabarit de repères de rig",
+                    InitialDirectory = presetsDir,
+                    Filter = "Gabarit Rig JSON (*.json)|*.json",
+                    FileName = (!string.IsNullOrEmpty(_currentModelPath) ? Path.GetFileNameWithoutExtension(_currentModelPath) : "RigTemplate") + "_rig.json"
+                };
+
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+                var template = new RigTemplateFile
+                {
+                    TemplateName = Path.GetFileNameWithoutExtension(sfd.FileName),
+                    SkeletonType = rbCustom.Checked ? _customSkeletonName : (rbFemale.Checked ? "Female" : "Male"),
+                    CreatedAt = DateTime.Now,
+                    Markers = _markers.Select(m => new RigMarkerTemplate
+                    {
+                        BoneName = m.BoneName,
+                        PosX = m.Position.X,
+                        PosY = m.Position.Y,
+                        PosZ = m.Position.Z,
+                        Roll = m.RotationDegrees.X,
+                        Pitch = m.RotationDegrees.Y,
+                        Yaw = m.RotationDegrees.Z
+                    }).ToList()
+                };
+
+                string json = System.Text.Json.JsonSerializer.Serialize(template, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(sfd.FileName, json);
+                MessageBox.Show($"Gabarit sauvegardé avec succès ({template.Markers.Count} articulations) :\n\n{Path.GetFileName(sfd.FileName)}", "Gabarit Sauvegardé", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erreur lors de la sauvegarde : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LoadRigTemplate()
+        {
+            try
+            {
+                string presetsDir = Path.Combine(_basePath, "Presets_Rig");
+                if (!Directory.Exists(presetsDir)) Directory.CreateDirectory(presetsDir);
+
+                using var ofd = new OpenFileDialog
+                {
+                    Title = "Charger un gabarit de repères de rig",
+                    InitialDirectory = presetsDir,
+                    Filter = "Gabarit Rig JSON (*.json)|*.json|Tous les fichiers (*.*)|*.*"
+                };
+
+                if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+                string json = File.ReadAllText(ofd.FileName);
+                var template = System.Text.Json.JsonSerializer.Deserialize<RigTemplateFile>(json);
+                if (template == null || template.Markers == null || template.Markers.Count == 0)
+                {
+                    MessageBox.Show("Fichier de gabarit invalide ou vide.", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                CommitPendingNudUndo();
+                PushUndoState("Charger gabarit: " + Path.GetFileNameWithoutExtension(ofd.FileName));
+                int matched = 0;
+                foreach (var tm in template.Markers)
+                {
+                    var m = _markers.FirstOrDefault(x => string.Equals(x.BoneName, tm.BoneName, StringComparison.OrdinalIgnoreCase));
+                    if (m != null)
+                    {
+                        m.Position = new Vector3(tm.PosX, tm.PosY, tm.PosZ);
+                        m.RotationDegrees = new Vector3(tm.Roll, tm.Pitch, tm.Yaw);
+                        matched++;
+                    }
+                }
+
+                EnsurePreviewModel();
+                UpdateNudValues();
+                if (chkHeatmap != null && chkHeatmap.Checked) UpdateHeatmapColors();
+                RefreshAnimatedPoseIfTesting();
+                glControl.Invalidate();
+                MessageBox.Show($"Gabarit chargé avec succès : {matched} / {template.Markers.Count} articulations appliquées.", "Gabarit Appliqué", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erreur lors du chargement : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ApplySymmetry(bool leftToRight)
+        {
+            CommitPendingNudUndo();
+            PushUndoState(leftToRight ? "Miroir G ➔ D" : "Miroir D ➔ G");
+            int count = 0;
+
+            foreach (var m in _markers)
+            {
+                bool isSource = leftToRight 
+                    ? (m.BoneName.Contains(" L ", StringComparison.OrdinalIgnoreCase) || m.BoneName.StartsWith("Bip01 L ", StringComparison.OrdinalIgnoreCase) || m.BoneName.EndsWith("_L", StringComparison.OrdinalIgnoreCase))
+                    : (m.BoneName.Contains(" R ", StringComparison.OrdinalIgnoreCase) || m.BoneName.StartsWith("Bip01 R ", StringComparison.OrdinalIgnoreCase) || m.BoneName.EndsWith("_R", StringComparison.OrdinalIgnoreCase));
+
+                if (!isSource) continue;
+
+                string targetName = m.SymmetricBoneName;
+                if (string.IsNullOrEmpty(targetName))
+                {
+                    if (leftToRight)
+                    {
+                        targetName = m.BoneName.Replace(" L ", " R ")
+                                               .Replace("Bip01 L ", "Bip01 R ")
+                                               .Replace("_L", "_R");
+                    }
+                    else
+                    {
+                        targetName = m.BoneName.Replace(" R ", " L ")
+                                               .Replace("Bip01 R ", "Bip01 L ")
+                                               .Replace("_R", "_L");
+                    }
+                }
+
+                var targetMarker = _markers.FirstOrDefault(x => string.Equals(x.BoneName, targetName, StringComparison.OrdinalIgnoreCase));
+                if (targetMarker != null && !ReferenceEquals(targetMarker, m))
+                {
+                    targetMarker.Position = new Vector3(-m.Position.X, m.Position.Y, m.Position.Z);
+                    targetMarker.RotationDegrees = new Vector3(-m.RotationDegrees.X, -m.RotationDegrees.Y, -m.RotationDegrees.Z);
+                    count++;
+                }
+            }
+
+            EnsurePreviewModel();
+            UpdateNudValues();
+            if (chkHeatmap != null && chkHeatmap.Checked) UpdateHeatmapColors();
+            RefreshAnimatedPoseIfTesting();
+            glControl.Invalidate();
+            MessageBox.Show($"{count} articulation(s) synchronisée(s) par miroir.", "Miroir Symétrique", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void UpdateHeatmapColors()
+        {
+            if (_indices == null || _meshVertexCount == 0) return;
+
+            int boneIdx = -1;
+            if (_selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count && _previewModel != null)
+            {
+                string bName = _markers[_selectedMarkerIndex].BoneName;
+                boneIdx = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, bName, StringComparison.OrdinalIgnoreCase));
+            }
+
+            var colors = new float[_meshVertexCount * 3];
+
+            for (int i = 0; i < _meshVertexCount; i++)
+            {
+                int vi = _indices[i];
+                float w = 0f;
+                if (boneIdx >= 0 && _rawSkin != null && vi >= 0 && vi < _rawSkin.Length && _rawSkin[vi] != null)
+                {
+                    foreach (var inf in _rawSkin[vi])
+                    {
+                        if (inf.BoneId == boneIdx)
+                        {
+                            w = inf.Weight;
+                            break;
+                        }
+                    }
+                }
+
+                Vector3 c = WeightToHeatmapColor(w);
+                int off = i * 3;
+                colors[off + 0] = c.X;
+                colors[off + 1] = c.Y;
+                colors[off + 2] = c.Z;
+            }
+
+            if (!glControl.IsHandleCreated) return;
+            try
+            {
+                glControl.MakeCurrent();
+                if (_colorVbo == 0) _colorVbo = GL.GenBuffer();
+                GL.BindBuffer(BufferTarget.ArrayBuffer, _colorVbo);
+                GL.BufferData(BufferTarget.ArrayBuffer, colors.Length * sizeof(float), colors, BufferUsageHint.DynamicDraw);
+
+                if (_meshVao != 0)
+                {
+                    GL.BindVertexArray(_meshVao);
+                    GL.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+                    GL.EnableVertexAttribArray(3);
+                    GL.BindVertexArray(0);
+                }
+                GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+            }
+            catch { }
+        }
+
+        private static Vector3 WeightToHeatmapColor(float w)
+        {
+            if (w <= 0.001f) return new Vector3(0.12f, 0.15f, 0.35f); // Bleu nuit sombre
+            if (w <= 0.25f)
+            {
+                float t = w / 0.25f;
+                return Vector3.Lerp(new Vector3(0.0f, 0.4f, 0.9f), new Vector3(0.0f, 0.85f, 0.85f), t); // Bleu vers Cyan
+            }
+            if (w <= 0.5f)
+            {
+                float t = (w - 0.25f) / 0.25f;
+                return Vector3.Lerp(new Vector3(0.0f, 0.85f, 0.85f), new Vector3(0.1f, 0.9f, 0.1f), t); // Cyan vers Vert
+            }
+            if (w <= 0.75f)
+            {
+                float t = (w - 0.5f) / 0.25f;
+                return Vector3.Lerp(new Vector3(0.1f, 0.9f, 0.1f), new Vector3(1.0f, 0.85f, 0.0f), t); // Vert vers Jaune
+            }
+            {
+                float t = Math.Min(1.0f, (w - 0.75f) / 0.25f);
+                return Vector3.Lerp(new Vector3(1.0f, 0.85f, 0.0f), new Vector3(1.0f, 0.05f, 0.05f), t); // Jaune vers Rouge vif
+            }
+        }
+
         private void CleanupGlResources()
         {
             try
@@ -6155,6 +6516,7 @@ void main() {
                     glControl.MakeCurrent();
                     if (_meshVao != 0) GL.DeleteVertexArray(_meshVao);
                     if (_meshVbo != 0) GL.DeleteBuffer(_meshVbo);
+                    if (_colorVbo != 0) GL.DeleteBuffer(_colorVbo);
                     if (_boneVao != 0) GL.DeleteVertexArray(_boneVao);
                     if (_boneVbo != 0) GL.DeleteBuffer(_boneVbo);
                     if (_shaderMeshProg != 0) GL.DeleteProgram(_shaderMeshProg);

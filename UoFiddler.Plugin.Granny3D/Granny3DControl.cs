@@ -35,6 +35,7 @@ namespace UoFiddler.Plugin.Granny3D
         public VertexInfluence[][] Skin;
         public Vector3[] BaseVertices;
         public int[] Indices;
+        public int PartIndex = -1;
 
         // De-indexed (per triangle corner) buffers. Corner c corresponds to Indices[c].
         public int[] CornerVertex;
@@ -3731,8 +3732,9 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 int addedChar = 0;
-                foreach (var part in model.Parts)
+                for (int pIdx = 0; pIdx < model.Parts.Count; pIdx++)
                 {
+                    var part = model.Parts[pIdx];
                     if (part.Vertices.Length == 0 || part.Indices.Length == 0) continue;
 
                     var gmesh = new GrannyMesh();
@@ -3769,6 +3771,7 @@ namespace UoFiddler.Plugin.Granny3D
 
                     var lm = new LoadedMesh
                     {
+                        PartIndex = pIdx,
                         Name = string.IsNullOrEmpty(part.Name) ? Path.GetFileNameWithoutExtension(path) : part.Name,
                         SourcePath = path,
                         SourceMesh = gmesh,
@@ -4329,8 +4332,25 @@ namespace UoFiddler.Plugin.Granny3D
             tvAnims.Nodes.Add(node);
         }
 
+        private class AnimFolderTag
+        {
+            public string FolderPath = "";
+            public string Pattern = "*.anim";
+            public bool Populated = false;
+        }
+
         private void TvAnims_BeforeExpand(object sender, TreeViewCancelEventArgs e)
         {
+            if (e.Node?.Tag is AnimFolderTag folderTag)
+            {
+                if (folderTag.Populated || _populatingTree) return;
+                _populatingTree = true;
+                tvAnims.BeginUpdate();
+                try { PopulateAnimFolder(e.Node, folderTag); }
+                finally { tvAnims.EndUpdate(); _populatingTree = false; }
+                return;
+            }
+
             var cat = e.Node?.Tag as AnimCat;
             if (cat == null || cat.Populated || _populatingTree) return;
             _populatingTree = true;
@@ -4342,6 +4362,21 @@ namespace UoFiddler.Plugin.Granny3D
         private void PopulateAnimCategory(TreeNode node, AnimCat cat)
         {
             node.Nodes.Clear();
+
+            // Support des sous-dossiers personnalisés (Mixamo et Poses)
+            if (!cat.IsAll && (cat.Pattern == "*.anim" || cat.Pattern == "*.pose") && !string.IsNullOrEmpty(cat.Folder) && Directory.Exists(cat.Folder))
+            {
+                foreach (var dir in Directory.GetDirectories(cat.Folder))
+                {
+                    var dirNode = new TreeNode("📁 " + Path.GetFileName(dir))
+                    {
+                        Tag = new AnimFolderTag { FolderPath = dir, Pattern = cat.Pattern }
+                    };
+                    dirNode.Nodes.Add(new TreeNode("...")); // placeholder
+                    node.Nodes.Add(dirNode);
+                }
+            }
+
             var files = new List<string>();
             if (cat.IsAll)
             {
@@ -4357,6 +4392,32 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (var f in files)
                 node.Nodes.Add(new TreeNode(Path.GetFileNameWithoutExtension(f)) { Tag = f });
             cat.Populated = true;
+        }
+
+        private void PopulateAnimFolder(TreeNode node, AnimFolderTag tag)
+        {
+            node.Nodes.Clear();
+            if (Directory.Exists(tag.FolderPath))
+            {
+                foreach (var dir in Directory.GetDirectories(tag.FolderPath))
+                {
+                    var dirNode = new TreeNode("📁 " + Path.GetFileName(dir))
+                    {
+                        Tag = new AnimFolderTag { FolderPath = dir, Pattern = tag.Pattern }
+                    };
+                    dirNode.Nodes.Add(new TreeNode("..."));
+                    node.Nodes.Add(dirNode);
+                }
+
+                var files = new List<string>();
+                CollectAnims(tag.FolderPath, null, files, tag.Pattern);
+                files.Sort(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in files)
+                {
+                    node.Nodes.Add(new TreeNode(Path.GetFileNameWithoutExtension(f)) { Tag = f });
+                }
+            }
+            tag.Populated = true;
         }
 
         public static void CollectAnims(string folder, string prefix, List<string> outFiles, string pattern = "*.grn")
@@ -4401,10 +4462,29 @@ namespace UoFiddler.Plugin.Granny3D
 
             string animPath = node.Tag as string;
             var cat = node.Tag as AnimCat;
+            var folderTag = node.Tag as AnimFolderTag;
+
+            if (folderTag != null)
+            {
+                tvAnimMenu.Items.Add(node.IsExpanded ? "Réduire" : "Développer", null, (s, a) => node.Toggle());
+                tvAnimMenu.Items.Add(new ToolStripSeparator());
+                tvAnimMenu.Items.Add("📁 Nouveau sous-dossier...", null, (s, a) => CreateAnimSubfolder(node, folderTag.FolderPath, folderTag.Pattern));
+                tvAnimMenu.Items.Add(new ToolStripSeparator());
+                tvAnimMenu.Items.Add("Ouvrir le dossier contenant...", null, (s, a) =>
+                {
+                    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = folderTag.FolderPath, UseShellExecute = true }); } catch { }
+                });
+                return;
+            }
 
             if (cat != null)
             {
                 tvAnimMenu.Items.Add(node.IsExpanded ? "Réduire" : "Développer", null, (s, a) => node.Toggle());
+                if (!cat.IsAll && (cat.Pattern == "*.anim" || cat.Pattern == "*.pose"))
+                {
+                    tvAnimMenu.Items.Add(new ToolStripSeparator());
+                    tvAnimMenu.Items.Add("📁 Nouveau sous-dossier...", null, (s, a) => CreateAnimSubfolder(node, cat.Folder, cat.Pattern));
+                }
                 tvAnimMenu.Items.Add(new ToolStripSeparator());
                 var applyCat = new ToolStripMenuItem("⚡ Convert/create rig to UO (Importer une animation FBX)...", null, (s, a) => BtnImportAnim_Click(s, a));
                 applyCat.Font = new Font(tvAnimMenu.Font, FontStyle.Bold);
@@ -4436,17 +4516,22 @@ namespace UoFiddler.Plugin.Granny3D
             bool isCustomAnim = animPath.EndsWith(".anim", StringComparison.OrdinalIgnoreCase) ||
                                 animPath.EndsWith(".pose", StringComparison.OrdinalIgnoreCase) ||
                                 (node.Parent?.Tag as AnimCat)?.Pattern == "*.anim" ||
-                                (node.Parent?.Tag as AnimCat)?.Pattern == "*.pose";
+                                (node.Parent?.Tag as AnimCat)?.Pattern == "*.pose" ||
+                                (node.Parent?.Tag is AnimFolderTag);
 
             if (isCustomAnim)
             {
                 tvAnimMenu.Items.Add(new ToolStripSeparator());
+                tvAnimMenu.Items.Add(isPose ? "📄 Dupliquer cette pose..." : "📄 Dupliquer cette animation...", null, (s, a) =>
+                {
+                    DuplicateCustomAnimation(node, animPath);
+                });
                 tvAnimMenu.Items.Add(Localization.Tr("menu_rename", "Renommer..."), null, (s, a) =>
                 {
                     RenameCustomAnimation(node, animPath);
                 });
 
-                var deleteItem = new ToolStripMenuItem("Supprimer cette animation", null, (s, a) =>
+                var deleteItem = new ToolStripMenuItem(isPose ? "Supprimer cette pose" : "Supprimer cette animation", null, (s, a) =>
                 {
                     DeleteCustomAnimation(node, animPath);
                 });
@@ -4628,6 +4713,196 @@ namespace UoFiddler.Plugin.Granny3D
                 MessageBox.Show($"Erreur lors de la suppression de l'animation : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 Log($"Erreur suppression animation: {ex.Message}");
             }
+        }
+
+        private void CreateAnimSubfolder(TreeNode parentNode, string parentDir, string pattern)
+        {
+            if (string.IsNullOrEmpty(parentDir) || !Directory.Exists(parentDir)) return;
+
+            using var dlg = new Form
+            {
+                Text = "Nouveau sous-dossier",
+                Size = new Size(380, 160),
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                BackColor = Color.FromArgb(40, 40, 40),
+                ForeColor = Color.Gainsboro
+            };
+
+            var lbl = new Label { Text = "Nom du dossier :", Location = new Point(16, 16), AutoSize = true, ForeColor = Color.Gainsboro };
+            var txt = new TextBox
+            {
+                Text = "Nouveau dossier",
+                Location = new Point(16, 40),
+                Width = 330,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            txt.SelectAll();
+
+            var btnOk = new Button { Text = "Créer", DialogResult = DialogResult.OK, Location = new Point(170, 80), Width = 80, Height = 28, BackColor = Color.FromArgb(48, 48, 48), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            var btnCancel = new Button { Text = "Annuler", DialogResult = DialogResult.Cancel, Location = new Point(266, 80), Width = 80, Height = 28, BackColor = Color.FromArgb(48, 48, 48), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            dlg.Controls.AddRange(new Control[] { lbl, txt, btnOk, btnCancel });
+            dlg.AcceptButton = btnOk;
+            dlg.CancelButton = btnCancel;
+
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            string name = MakeSafeFilename(txt.Text.Trim());
+            if (string.IsNullOrEmpty(name)) return;
+
+            string newPath = Path.Combine(parentDir, name);
+            if (Directory.Exists(newPath))
+            {
+                MessageBox.Show($"Le dossier '{name}' existe déjà.", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(newPath);
+                var dirNode = new TreeNode("📁 " + name)
+                {
+                    Tag = new AnimFolderTag { FolderPath = newPath, Pattern = pattern }
+                };
+                parentNode.Nodes.Insert(0, dirNode);
+                parentNode.Expand();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erreur lors de la création du dossier : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void DuplicateCustomAnimation(TreeNode node, string animPath)
+        {
+            if (string.IsNullOrEmpty(animPath) || !File.Exists(animPath)) return;
+
+            string baseName = Path.GetFileNameWithoutExtension(animPath);
+            string folder = Path.GetDirectoryName(animPath) ?? string.Empty;
+            string ext = Path.GetExtension(animPath);
+            bool isPose = ext.Equals(".pose", StringComparison.OrdinalIgnoreCase);
+
+            using var dlg = new Form
+            {
+                Text = isPose ? "Dupliquer la pose" : "Dupliquer l'animation",
+                Size = new Size(380, 160),
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                BackColor = Color.FromArgb(40, 40, 40),
+                ForeColor = Color.Gainsboro
+            };
+
+            var lbl = new Label { Text = "Nom de la copie :", Location = new Point(16, 16), AutoSize = true, ForeColor = Color.Gainsboro };
+            var txt = new TextBox
+            {
+                Text = baseName + "_Copie",
+                Location = new Point(16, 40),
+                Width = 330,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            txt.SelectAll();
+
+            var btnOk = new Button { Text = "Dupliquer", DialogResult = DialogResult.OK, Location = new Point(170, 80), Width = 80, Height = 28, BackColor = Color.FromArgb(48, 48, 48), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            var btnCancel = new Button { Text = "Annuler", DialogResult = DialogResult.Cancel, Location = new Point(266, 80), Width = 80, Height = 28, BackColor = Color.FromArgb(48, 48, 48), ForeColor = Color.Gainsboro, FlatStyle = FlatStyle.Flat };
+            dlg.Controls.AddRange(new Control[] { lbl, txt, btnOk, btnCancel });
+            dlg.AcceptButton = btnOk;
+            dlg.CancelButton = btnCancel;
+
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            string newName = MakeSafeFilename(txt.Text.Trim());
+            if (string.IsNullOrEmpty(newName)) return;
+
+            string newPath = Path.Combine(folder, newName + ext);
+            if (File.Exists(newPath))
+            {
+                MessageBox.Show($"Un fichier nommé '{newName}{ext}' existe déjà.", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                File.Copy(animPath, newPath, true);
+
+                if (ext.Equals(".anim", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var anim = GrannyAnimFile.Load(newPath);
+                        if (anim != null)
+                        {
+                            anim.Name = newName;
+                            GrannyAnimFile.Save(anim, newPath);
+                        }
+                    }
+                    catch { }
+                }
+
+                var parentNode = node.Parent;
+                var newNode = new TreeNode(newName) { Tag = newPath };
+                if (parentNode != null)
+                {
+                    parentNode.Nodes.Add(newNode);
+                    tvAnims.SelectedNode = newNode;
+                }
+                else
+                {
+                    tvAnims.Nodes.Add(newNode);
+                }
+
+                Log($"Fichier dupliqué : {Path.GetFileName(newPath)}");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erreur lors de la duplication : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Space)
+            {
+                var focused = FindFocusedControl(this);
+                if (!(focused is TextBox) && !(focused is NumericUpDown))
+                {
+                    if (_playing)
+                    {
+                        if (btnPause != null && btnPause.Enabled)
+                        {
+                            btnPause.PerformClick();
+                            return true;
+                        }
+                    }
+                    else
+                    {
+                        if (btnPlay != null && btnPlay.Enabled)
+                        {
+                            btnPlay.PerformClick();
+                            return true;
+                        }
+                    }
+                }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private static Control FindFocusedControl(Control control)
+        {
+            var container = control as IContainerControl;
+            while (container != null && container.ActiveControl != null && container.ActiveControl != control)
+            {
+                control = container.ActiveControl;
+                container = control as IContainerControl;
+            }
+            return control;
         }
 
         private void TvAnims_AfterSelect(object sender, TreeViewEventArgs e)
@@ -5951,8 +6226,9 @@ namespace UoFiddler.Plugin.Granny3D
             _currentModelPath = path;
             ResetCharMenu();
 
-            foreach (var part in model.Parts)
+            for (int pi = 0; pi < model.Parts.Count; pi++)
             {
+                var part = model.Parts[pi];
                 if (part.Vertices.Length == 0 || part.Indices.Length == 0) continue;
 
                 var gmesh = new GrannyMesh();
@@ -5973,6 +6249,7 @@ namespace UoFiddler.Plugin.Granny3D
                 bool isFullChar = model.Bones != null && model.Bones.Count >= 20;
                 var lm = new LoadedMesh
                 {
+                    PartIndex = pi,
                     Name = string.IsNullOrEmpty(part.Name) ? Path.GetFileNameWithoutExtension(path) : part.Name,
                     SourcePath = path,
                     SourceMesh = gmesh,
@@ -9105,6 +9382,29 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         lm.BaseVertices[v] = ApplyMeshTweak(lm, lm.BaseVertices[v], hasThickness, (hasThickness && v < lm.BaseVertexNormals.Length) ? lm.BaseVertexNormals[v] : default);
                     }
+
+                    // Preserve skinned skeleton: adapt InverseBindMatrix so bones remain perfectly aligned with transformed vertices
+                    if (lm.Skin != null && lm.Skin.Length > 0 && lm.Bones != null && lm.Bones.Count > 0)
+                    {
+                        Matrix4 tweakMat = Matrix4.CreateScale(pscale) *
+                                           Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
+                                               MathHelper.DegreesToRadians(lm.AttachRotation.X),
+                                               MathHelper.DegreesToRadians(lm.AttachRotation.Y),
+                                               MathHelper.DegreesToRadians(lm.AttachRotation.Z))) *
+                                           Matrix4.CreateTranslation(lm.AttachOffset);
+
+                        if (Math.Abs(tweakMat.Determinant) > 1e-6f)
+                        {
+                            Matrix4 invTweak = Matrix4.Invert(tweakMat);
+                            foreach (var b in lm.Bones)
+                            {
+                                if (Math.Abs(b.InverseBindMatrix.Determinant) > 1e-6f)
+                                {
+                                    b.InverseBindMatrix = invTweak * b.InverseBindMatrix;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // 4. Invert triangle winding if odd number of mirror axes
@@ -9308,14 +9608,47 @@ namespace UoFiddler.Plugin.Granny3D
                         Bones = (groupMeshes[0].Bones != null) ? new List<GrannyBone>(groupMeshes[0].Bones) : new List<GrannyBone>()
                     };
                 }
+                else
+                {
+                    // Always preserve host bones if model bones were empty
+                    if ((model.Bones == null || model.Bones.Count == 0) && groupMeshes[0].Bones != null && groupMeshes[0].Bones.Count > 0)
+                    {
+                        model.Bones = new List<GrannyBone>(groupMeshes[0].Bones);
+                    }
+                }
+
+                var usedPartIndices = new HashSet<int>();
 
                 // 3. Update or add parts
                 foreach (var lm in groupMeshes)
                 {
-                    var part = model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
-                    if (part == null && model.Parts.Count == 1 && groupMeshes.Count == 1)
+                    GrannyModelPart part = null;
+                    int matchedIdx = -1;
+
+                    // Match 1: exact PartIndex if valid and not yet claimed
+                    if (lm.PartIndex >= 0 && lm.PartIndex < model.Parts.Count && !usedPartIndices.Contains(lm.PartIndex))
                     {
-                        part = model.Parts[0];
+                        matchedIdx = lm.PartIndex;
+                        part = model.Parts[matchedIdx];
+                    }
+
+                    // Match 2: matching name among unclaimed parts
+                    if (part == null)
+                    {
+                        for (int pi = 0; pi < model.Parts.Count; pi++)
+                        {
+                            if (!usedPartIndices.Contains(pi) && string.Equals(model.Parts[pi].Name, lm.Name, StringComparison.OrdinalIgnoreCase))
+                            {
+                                matchedIdx = pi;
+                                part = model.Parts[pi];
+                                break;
+                            }
+                        }
+                    }
+
+                    if (matchedIdx >= 0)
+                    {
+                        usedPartIndices.Add(matchedIdx);
                     }
 
                     if (part == null)
@@ -9332,6 +9665,7 @@ namespace UoFiddler.Plugin.Granny3D
                         if (lm.SourceMesh?.UVs != null && lm.SourceMesh.UVs.Count > 0)
                             part.UVs = lm.SourceMesh.UVs.ToArray();
                         model.Parts.Add(part);
+                        usedPartIndices.Add(model.Parts.Count - 1);
                     }
 
                     // Copy vertices, normals, indices
@@ -9358,9 +9692,12 @@ namespace UoFiddler.Plugin.Granny3D
                         part.Skin = lm.Skin;
                     }
 
-                    if (!string.IsNullOrEmpty(lm.TextureName) && string.IsNullOrEmpty(part.TextureName))
+                    // Preserve and intelligently update texture name (never overwrite with empty!)
+                    string texToSet = !string.IsNullOrEmpty(lm.TextureName) ? lm.TextureName :
+                                      (!string.IsNullOrEmpty(lm.TextureFilePath) ? Path.GetFileName(lm.TextureFilePath) : string.Empty);
+                    if (!string.IsNullOrEmpty(texToSet))
                     {
-                        part.TextureName = lm.TextureName;
+                        part.TextureName = texToSet;
                     }
 
                     part.AttachBoneName = lm.AttachBoneName ?? string.Empty;
@@ -9370,11 +9707,17 @@ namespace UoFiddler.Plugin.Granny3D
                     lm.SourcePath = charPath;
                 }
 
+                // Automatic safety backup before overwriting .char file
+                if (File.Exists(charPath))
+                {
+                    try { File.Copy(charPath, charPath + ".bak", true); } catch { }
+                }
+
                 // 4. Save to disk
                 if (GrannyModelFile.Save(model, charPath))
                 {
                     savedFilesCount++;
-                    Log($"Mesh(es) figés et sauvegardés dans {charPath}");
+                    Log($"Mesh(es) figés et sauvegardés dans {charPath} (Backup .bak créé)");
                 }
                 else
                 {
