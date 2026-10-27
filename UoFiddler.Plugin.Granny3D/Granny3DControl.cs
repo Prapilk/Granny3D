@@ -29,6 +29,7 @@ namespace UoFiddler.Plugin.Granny3D
     public class LoadedMesh
     {
         public string Name = string.Empty;
+        public string MaterialName = string.Empty;
         public string SourcePath = string.Empty;
         public GrannyMesh SourceMesh;
         public List<GrannyBone> Bones = new List<GrannyBone>();
@@ -5666,6 +5667,14 @@ namespace UoFiddler.Plugin.Granny3D
                             {
                                 string ext = Path.GetExtension(texOfd.FileName);
                                 string cleanMesh = MakeSafeFilename(part.Name);
+                                if (!string.IsNullOrEmpty(part.MaterialName) && !part.MaterialName.Equals(part.Name, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    cleanMesh = $"{cleanMesh}_{MakeSafeFilename(part.MaterialName)}";
+                                }
+                                else if (i > 0)
+                                {
+                                    cleanMesh = $"{cleanMesh}_p{i + 1}";
+                                }
                                 string savedName = $"{meshName}_{cleanMesh}{ext}";
                                 File.Copy(texOfd.FileName, Path.Combine(outFolder, savedName), true);
                                 part.TextureName = savedName;
@@ -6251,6 +6260,7 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     PartIndex = pi,
                     Name = string.IsNullOrEmpty(part.Name) ? Path.GetFileNameWithoutExtension(path) : part.Name,
+                    MaterialName = part.MaterialName ?? string.Empty,
                     SourcePath = path,
                     SourceMesh = gmesh,
                     Bones = new List<GrannyBone>(model.Bones),
@@ -6934,9 +6944,13 @@ namespace UoFiddler.Plugin.Granny3D
                     foreach (int i in grp.indices)
                     {
                         var lm = _loadedMeshes[i];
+                        string meshTitle = lm.Name;
+                        if (!string.IsNullOrEmpty(lm.MaterialName) && !lm.MaterialName.Equals(lm.Name, StringComparison.OrdinalIgnoreCase))
+                            meshTitle = $"{lm.Name} [{lm.MaterialName}]";
+
                         string childText = string.IsNullOrEmpty(lm.AttachBoneName)
-                            ? lm.Name
-                            : $"{lm.Name}  →  {lm.AttachBoneName}";
+                            ? meshTitle
+                            : $"{meshTitle}  →  {lm.AttachBoneName}";
 
                         var childNode = new TreeNode(childText)
                         {
@@ -10167,7 +10181,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (string.IsNullOrEmpty(modelPath)) return null;
             string dir = Path.GetDirectoryName(modelPath);
             string baseName = Path.GetFileNameWithoutExtension(modelPath);
-            string[] exts = { ".png", ".jpg", ".jpeg", ".bmp", ".tga" };
+            string[] exts = { ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".dds" };
 
             // 0) Direct texture name embedded in the model/mesh (authoritative)
             if (!string.IsNullOrEmpty(embeddedName))
@@ -10317,6 +10331,8 @@ namespace UoFiddler.Plugin.Granny3D
                 Bitmap bmp;
                 if (Path.GetExtension(file).Equals(".tga", StringComparison.OrdinalIgnoreCase))
                     bmp = LoadTga(file);
+                else if (Path.GetExtension(file).Equals(".dds", StringComparison.OrdinalIgnoreCase))
+                    bmp = LoadDds(file);
                 else
                     bmp = new Bitmap(file);
 
@@ -10369,6 +10385,8 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 if (Path.GetExtension(file).Equals(".tga", StringComparison.OrdinalIgnoreCase))
                     return LoadTga(file);
+                if (Path.GetExtension(file).Equals(".dds", StringComparison.OrdinalIgnoreCase))
+                    return LoadDds(file);
                 using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
                 using var temp = Image.FromStream(stream);
                 return new Bitmap(temp);
@@ -10555,6 +10573,11 @@ namespace UoFiddler.Plugin.Granny3D
             string outFolder = Path.Combine(BasePath, "Others");
             string ext = Path.GetExtension(ofd.FileName);
             string safeName = MakeSafeFilename(lm.Name);
+            if (!string.IsNullOrEmpty(lm.MaterialName) && !lm.MaterialName.Equals(lm.Name, StringComparison.OrdinalIgnoreCase))
+                safeName = $"{safeName}_{MakeSafeFilename(lm.MaterialName)}";
+            else if (lm.PartIndex > 0)
+                safeName = $"{safeName}_p{lm.PartIndex + 1}";
+
             string charName = !string.IsNullOrEmpty(lm.SourcePath) ? Path.GetFileNameWithoutExtension(lm.SourcePath) : "custom";
             string destName = $"{charName}_{safeName}{ext}";
             string destPath = Path.Combine(outFolder, destName);
@@ -10588,7 +10611,16 @@ namespace UoFiddler.Plugin.Granny3D
                 var model = GrannyModelFile.Load(lm.SourcePath);
                 if (model != null)
                 {
-                    var part = model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                    GrannyModelPart part = null;
+                    if (lm.PartIndex >= 0 && lm.PartIndex < model.Parts.Count && string.Equals(model.Parts[lm.PartIndex].Name, lm.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        part = model.Parts[lm.PartIndex];
+                    }
+                    else
+                    {
+                        part = model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                    }
+
                     if (part != null)
                     {
                         part.TextureName = destName;
@@ -10621,7 +10653,16 @@ namespace UoFiddler.Plugin.Granny3D
                 var model = GrannyModelFile.Load(lm.SourcePath);
                 if (model != null)
                 {
-                    var part = model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                    GrannyModelPart part = null;
+                    if (lm.PartIndex >= 0 && lm.PartIndex < model.Parts.Count && string.Equals(model.Parts[lm.PartIndex].Name, lm.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        part = model.Parts[lm.PartIndex];
+                    }
+                    else
+                    {
+                        part = model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                    }
+
                     if (part != null)
                     {
                         part.TextureName = string.Empty;
@@ -10735,6 +10776,267 @@ namespace UoFiddler.Plugin.Granny3D
 
                 bmp.UnlockBits(bd);
                 return bmp;
+            }
+        }
+
+        public static Bitmap? LoadDds(string file)
+        {
+            if (string.IsNullOrEmpty(file) || !File.Exists(file)) return null;
+            try
+            {
+                using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var br = new BinaryReader(fs);
+
+                uint magic = br.ReadUInt32();
+                if (magic != 0x20534444) return null; // "DDS "
+
+                byte[] header = br.ReadBytes(124);
+                if (header.Length < 124) return null;
+
+                int height = BitConverter.ToInt32(header, 8);
+                int width = BitConverter.ToInt32(header, 12);
+                if (width <= 0 || height <= 0) return null;
+
+                uint pfFlags = BitConverter.ToUInt32(header, 76);
+                uint fourCC = BitConverter.ToUInt32(header, 80);
+                uint rgbBitCount = BitConverter.ToUInt32(header, 84);
+                uint rMask = BitConverter.ToUInt32(header, 88);
+                uint gMask = BitConverter.ToUInt32(header, 92);
+                uint bMask = BitConverter.ToUInt32(header, 96);
+                uint aMask = BitConverter.ToUInt32(header, 100);
+
+                int[] pixels = new int[width * height];
+
+                if ((pfFlags & 0x4) != 0) // DDPF_FOURCC
+                {
+                    if (fourCC == 0x31545844) // DXT1
+                    {
+                        DecodeDxt1(br, width, height, pixels);
+                    }
+                    else if (fourCC == 0x33545844) // DXT3
+                    {
+                        DecodeDxt3(br, width, height, pixels);
+                    }
+                    else if (fourCC == 0x35545844) // DXT5
+                    {
+                        DecodeDxt5(br, width, height, pixels);
+                    }
+                    else
+                    {
+                        return null;
+                    }
+                }
+                else if (rgbBitCount == 32)
+                {
+                    for (int i = 0; i < width * height; i++)
+                    {
+                        uint raw = br.ReadUInt32();
+                        int a = aMask != 0 ? (int)((raw & aMask) >> GetDdsShift(aMask)) : 255;
+                        int r = (int)((raw & rMask) >> GetDdsShift(rMask));
+                        int g = (int)((raw & gMask) >> GetDdsShift(gMask));
+                        int b = (int)((raw & bMask) >> GetDdsShift(bMask));
+                        pixels[i] = (a << 24) | (r << 16) | (g << 8) | b;
+                    }
+                }
+                else
+                {
+                    return null;
+                }
+
+                Bitmap bmp = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                var rect = new Rectangle(0, 0, width, height);
+                var bd = bmp.LockBits(rect, ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
+                bmp.UnlockBits(bd);
+                return bmp;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static int GetDdsShift(uint mask)
+        {
+            if (mask == 0) return 0;
+            int shift = 0;
+            while ((mask & 1) == 0)
+            {
+                mask >>= 1;
+                shift++;
+            }
+            return shift;
+        }
+
+        private static void DecodeRgb565(ushort c, out int r, out int g, out int b)
+        {
+            r = ((c >> 11) & 0x1F) * 255 / 31;
+            g = ((c >> 5) & 0x3F) * 255 / 63;
+            b = (c & 0x1F) * 255 / 31;
+        }
+
+        private static void DecodeDxt1(BinaryReader br, int width, int height, int[] pixels)
+        {
+            int bw = (width + 3) / 4;
+            int bh = (height + 3) / 4;
+            for (int by = 0; by < bh; by++)
+            {
+                for (int bx = 0; bx < bw; bx++)
+                {
+                    ushort c0 = br.ReadUInt16();
+                    ushort c1 = br.ReadUInt16();
+                    uint code = br.ReadUInt32();
+
+                    DecodeRgb565(c0, out int r0, out int g0, out int b0);
+                    DecodeRgb565(c1, out int r1, out int g1, out int b1);
+
+                    int[] colors = new int[4];
+                    colors[0] = (255 << 24) | (r0 << 16) | (g0 << 8) | b0;
+                    colors[1] = (255 << 24) | (r1 << 16) | (g1 << 8) | b1;
+                    if (c0 > c1)
+                    {
+                        int r2 = (2 * r0 + r1) / 3;
+                        int g2 = (2 * g0 + g1) / 3;
+                        int b2 = (2 * b0 + b1) / 3;
+                        colors[2] = (255 << 24) | (r2 << 16) | (g2 << 8) | b2;
+
+                        int r3 = (r0 + 2 * r1) / 3;
+                        int g3 = (g0 + 2 * g1) / 3;
+                        int b3 = (b0 + 2 * b1) / 3;
+                        colors[3] = (255 << 24) | (r3 << 16) | (g3 << 8) | b3;
+                    }
+                    else
+                    {
+                        int r2 = (r0 + r1) / 2;
+                        int g2 = (g0 + g1) / 2;
+                        int b2 = (b0 + b1) / 2;
+                        colors[2] = (255 << 24) | (r2 << 16) | (g2 << 8) | b2;
+                        colors[3] = 0;
+                    }
+
+                    for (int py = 0; py < 4; py++)
+                    {
+                        int y = by * 4 + py;
+                        if (y >= height) continue;
+                        for (int px = 0; px < 4; px++)
+                        {
+                            int x = bx * 4 + px;
+                            if (x >= width) continue;
+                            int idx = (int)((code >> (2 * (py * 4 + px))) & 0x3);
+                            pixels[y * width + x] = colors[idx];
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void DecodeDxt3(BinaryReader br, int width, int height, int[] pixels)
+        {
+            int bw = (width + 3) / 4;
+            int bh = (height + 3) / 4;
+            for (int by = 0; by < bh; by++)
+            {
+                for (int bx = 0; bx < bw; bx++)
+                {
+                    ulong alphaBits = br.ReadUInt64();
+                    ushort c0 = br.ReadUInt16();
+                    ushort c1 = br.ReadUInt16();
+                    uint code = br.ReadUInt32();
+
+                    DecodeRgb565(c0, out int r0, out int g0, out int b0);
+                    DecodeRgb565(c1, out int r1, out int g1, out int b1);
+
+                    int[] colors = new int[4];
+                    colors[0] = (r0 << 16) | (g0 << 8) | b0;
+                    colors[1] = (r1 << 16) | (g1 << 8) | b1;
+                    colors[2] = (((2 * r0 + r1) / 3) << 16) | (((2 * g0 + g1) / 3) << 8) | ((2 * b0 + b1) / 3);
+                    colors[3] = (((r0 + 2 * r1) / 3) << 16) | (((g0 + 2 * g1) / 3) << 8) | ((b0 + 2 * b1) / 3);
+
+                    for (int py = 0; py < 4; py++)
+                    {
+                        int y = by * 4 + py;
+                        if (y >= height) continue;
+                        for (int px = 0; px < 4; px++)
+                        {
+                            int x = bx * 4 + px;
+                            if (x >= width) continue;
+                            int bitPos = py * 4 + px;
+                            int a = (int)((alphaBits >> (4 * bitPos)) & 0xF) * 255 / 15;
+                            int cIdx = (int)((code >> (2 * bitPos)) & 0x3);
+                            pixels[y * width + x] = (a << 24) | colors[cIdx];
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void DecodeDxt5(BinaryReader br, int width, int height, int[] pixels)
+        {
+            int bw = (width + 3) / 4;
+            int bh = (height + 3) / 4;
+            for (int by = 0; by < bh; by++)
+            {
+                for (int bx = 0; bx < bw; bx++)
+                {
+                    byte a0 = br.ReadByte();
+                    byte a1 = br.ReadByte();
+                    ulong aBits = 0;
+                    for (int i = 0; i < 6; i++)
+                    {
+                        aBits |= ((ulong)br.ReadByte()) << (8 * i);
+                    }
+
+                    int[] alphas = new int[8];
+                    alphas[0] = a0;
+                    alphas[1] = a1;
+                    if (a0 > a1)
+                    {
+                        alphas[2] = (6 * a0 + 1 * a1) / 7;
+                        alphas[3] = (5 * a0 + 2 * a1) / 7;
+                        alphas[4] = (4 * a0 + 3 * a1) / 7;
+                        alphas[5] = (3 * a0 + 4 * a1) / 7;
+                        alphas[6] = (2 * a0 + 5 * a1) / 7;
+                        alphas[7] = (1 * a0 + 6 * a1) / 7;
+                    }
+                    else
+                    {
+                        alphas[2] = (4 * a0 + 1 * a1) / 5;
+                        alphas[3] = (3 * a0 + 2 * a1) / 5;
+                        alphas[4] = (2 * a0 + 3 * a1) / 5;
+                        alphas[5] = (1 * a0 + 4 * a1) / 5;
+                        alphas[6] = 0;
+                        alphas[7] = 255;
+                    }
+
+                    ushort c0 = br.ReadUInt16();
+                    ushort c1 = br.ReadUInt16();
+                    uint code = br.ReadUInt32();
+
+                    DecodeRgb565(c0, out int r0, out int g0, out int b0);
+                    DecodeRgb565(c1, out int r1, out int g1, out int b1);
+
+                    int[] colors = new int[4];
+                    colors[0] = (r0 << 16) | (g0 << 8) | b0;
+                    colors[1] = (r1 << 16) | (g1 << 8) | b1;
+                    colors[2] = (((2 * r0 + r1) / 3) << 16) | (((2 * g0 + g1) / 3) << 8) | ((2 * b0 + b1) / 3);
+                    colors[3] = (((r0 + 2 * r1) / 3) << 16) | (((g0 + 2 * g1) / 3) << 8) | ((b0 + 2 * b1) / 3);
+
+                    for (int py = 0; py < 4; py++)
+                    {
+                        int y = by * 4 + py;
+                        if (y >= height) continue;
+                        for (int px = 0; px < 4; px++)
+                        {
+                            int x = bx * 4 + px;
+                            if (x >= width) continue;
+                            int bitPos = py * 4 + px;
+                            int aIdx = (int)((aBits >> (3 * bitPos)) & 0x7);
+                            int a = alphas[aIdx];
+                            int cIdx = (int)((code >> (2 * bitPos)) & 0x3);
+                            pixels[y * width + x] = (a << 24) | colors[cIdx];
+                        }
+                    }
+                }
             }
         }
 

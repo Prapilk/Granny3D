@@ -628,6 +628,11 @@ namespace UoFiddler.Plugin.Granny3D
                         // Nouvelle texture choisie
                         string ext = Path.GetExtension(chosenPath);
                         string cleanMesh = Granny3DControl.MakeSafeFilename(part.Name);
+                        if (!string.IsNullOrEmpty(part.MaterialName) && !part.MaterialName.Equals(part.Name, StringComparison.OrdinalIgnoreCase))
+                            cleanMesh = $"{cleanMesh}_{Granny3DControl.MakeSafeFilename(part.MaterialName)}";
+                        else if (partIdx > 0)
+                            cleanMesh = $"{cleanMesh}_p{partIdx + 1}";
+
                         string destName = $"{charName}_{cleanMesh}{ext}";
                         string destPath = Path.Combine(_othersFolder, destName);
 
@@ -657,7 +662,16 @@ namespace UoFiddler.Plugin.Granny3D
                         {
                             if (string.Equals(lm.SourcePath, _charPath, StringComparison.OrdinalIgnoreCase))
                             {
-                                var part = _model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                                GrannyModelPart? part = null;
+                                if (lm.PartIndex >= 0 && lm.PartIndex < _model.Parts.Count && string.Equals(_model.Parts[lm.PartIndex].Name, lm.Name, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    part = _model.Parts[lm.PartIndex];
+                                }
+                                else
+                                {
+                                    part = _model.Parts.Find(p => string.Equals(p.Name, lm.Name, StringComparison.OrdinalIgnoreCase));
+                                }
+
                                 if (part != null)
                                 {
                                     if (!string.IsNullOrEmpty(part.TextureName))
@@ -665,8 +679,12 @@ namespace UoFiddler.Plugin.Granny3D
                                         int newTex = _tryLoadTextureFunc(_charPath, part.TextureName);
                                         if (newTex > 0)
                                         {
-                                            if (lm.TextureId > 0 && lm.TextureId != newTex) GL.DeleteTexture(lm.TextureId);
+                                            if (lm.TextureId > 0 && lm.TextureId != newTex && lm.TextureId != lm.BaseTextureId) GL.DeleteTexture(lm.TextureId);
                                             lm.TextureId = newTex;
+                                            lm.BaseTextureId = newTex;
+                                            lm.TextureFilePath = Path.Combine(_othersFolder, part.TextureName);
+                                            if (lm.BaseTextureBmp != null) { lm.BaseTextureBmp.Dispose(); lm.BaseTextureBmp = null; }
+                                            lm.HueId = 0;
                                             lm.HasTexture = true;
                                         }
                                     }
@@ -674,6 +692,10 @@ namespace UoFiddler.Plugin.Granny3D
                                     {
                                         if (lm.TextureId > 0) GL.DeleteTexture(lm.TextureId);
                                         lm.TextureId = -1;
+                                        lm.BaseTextureId = -1;
+                                        lm.TextureFilePath = string.Empty;
+                                        if (lm.BaseTextureBmp != null) { lm.BaseTextureBmp.Dispose(); lm.BaseTextureBmp = null; }
+                                        lm.HueId = 0;
                                         lm.HasTexture = false;
                                     }
                                 }
