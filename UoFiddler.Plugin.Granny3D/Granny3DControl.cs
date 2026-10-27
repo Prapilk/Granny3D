@@ -14926,7 +14926,11 @@ namespace UoFiddler.Plugin.Granny3D
                     float anchorZ = _uoFeetOnLine ? _normMin.Z : (_normMin.Z + _normMax.Z) * 0.5f;
                     Vector3 va = Vector3.TransformPosition(
                         new Vector3(-_refCenter.X * _refScale, -_refCenter.Y * _refScale, anchorZ), modelToView);
-                    int centerX = (int)Math.Round((0.5f + (va.X + shiftX) / viewW) * cw);
+                    // Rotation axis X is always 0 in view space (model rotates around normalized origin 0,0),
+                    // matching DrawUoDirection which uses shiftX = _uoOffX without subtracting va.X.
+                    // va.X was non-zero for quadrupeds/centaurs (whose Y center != 0), causing an unwanted
+                    // horizontal shift in directions 1 (SW), 2 (W), 3 (NW).
+                    int centerX = (int)Math.Round((0.5f + shiftX / viewW) * cw);
                     int centerY = (int)Math.Round((0.5f - (va.Y + shiftY) / viewH) * ch) - ch;
 
                     // Apply camera offset from the interactive UO viewport (right preview)
