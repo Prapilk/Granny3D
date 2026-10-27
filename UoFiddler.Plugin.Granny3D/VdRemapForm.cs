@@ -25,6 +25,12 @@ namespace UoFiddler.Plugin.Granny3D
         private readonly List<NumericUpDown> _nudX = new List<NumericUpDown>();
         private readonly List<NumericUpDown> _nudY = new List<NumericUpDown>();
         private readonly List<NumericUpDown> _nudZ = new List<NumericUpDown>();
+        private readonly List<NumericUpDown> _nudFrames = new List<NumericUpDown>();
+
+        private ComboBox _cmbMulMob;
+        private NumericUpDown _nudBodyId;
+        private Button _btnApplyMulFrames;
+        private Button _btnResetFramesAuto;
 
         private readonly List<VdTargetDef> _targets;
         private readonly List<string> _sources;      // full .grn paths
@@ -94,7 +100,7 @@ namespace UoFiddler.Plugin.Granny3D
             MaximizeBox = false;
             FormBorderStyle = FormBorderStyle.Sizable;
 
-            var top = new Panel { Dock = DockStyle.Top, Height = 106, Padding = new Padding(8) };
+            var top = new Panel { Dock = DockStyle.Top, Height = 138, Padding = new Padding(8) };
 
             top.Controls.Add(new Label { Text = "Cible (type UO) :", Location = new Point(8, 10), Width = 110, ForeColor = Color.Gainsboro });
             _cmbTarget = new ComboBox
@@ -110,6 +116,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 var keep = CaptureSelection();
                 RebuildRows(keep, preserveClips: true);
+                UpdateMulMobTargetSuggestion();
             };
             top.Controls.Add(_cmbTarget);
 
@@ -278,12 +285,86 @@ namespace UoFiddler.Plugin.Granny3D
             btnClearAll.Click += (s, e) => ClearAllMapping();
             top.Controls.Add(btnClearAll);
 
+            // Row 4: MUL reference animation to copy frame counts
+            top.Controls.Add(new Label { Text = "Frames réf. UO :", Location = new Point(8, 105), Width = 108, ForeColor = Color.Gainsboro });
+            _cmbMulMob = new ComboBox
+            {
+                Location = new Point(120, 101),
+                Width = 220,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro
+            };
+            _cmbMulMob.SelectedIndexChanged += (s, e) =>
+            {
+                if (_cmbMulMob.SelectedItem is UoMobEntry me)
+                {
+                    _nudBodyId.Value = Math.Max(_nudBodyId.Minimum, Math.Min(_nudBodyId.Maximum, me.Body));
+                    ApplyMulFrames(me.Body);
+                }
+            };
+            top.Controls.Add(_cmbMulMob);
+
+            top.Controls.Add(new Label { Text = "ID :", Location = new Point(345, 105), Width = 24, ForeColor = Color.DarkGray });
+            _nudBodyId = new NumericUpDown
+            {
+                Location = new Point(372, 101),
+                Width = 60,
+                Minimum = 0,
+                Maximum = 2048,
+                Value = 1,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.Gainsboro,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            _nudBodyId.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.Enter)
+                {
+                    ApplyMulFrames((int)_nudBodyId.Value);
+                    e.SuppressKeyPress = true;
+                }
+            };
+            top.Controls.Add(_nudBodyId);
+
+            _btnApplyMulFrames = new Button
+            {
+                Text = "⚡ Copier frames UO",
+                Location = new Point(438, 100),
+                Width = 140,
+                Height = 26,
+                BackColor = Color.FromArgb(40, 75, 95),
+                ForeColor = Color.LightCyan,
+                FlatStyle = FlatStyle.Flat
+            };
+            _btnApplyMulFrames.Click += (s, e) => ApplyMulFrames((int)_nudBodyId.Value);
+            top.Controls.Add(_btnApplyMulFrames);
+
+            _btnResetFramesAuto = new Button
+            {
+                Text = "↺ Tout en Auto",
+                Location = new Point(584, 100),
+                Width = 110,
+                Height = 26,
+                BackColor = Color.FromArgb(60, 60, 62),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            _btnResetFramesAuto.Click += (s, e) => ResetAllFramesAuto();
+            top.Controls.Add(_btnResetFramesAuto);
+
+            tt.SetToolTip(_cmbMulMob, "Sélectionnez un monstre/animal/humain UO pour pré-remplir le nombre de frames de chaque action depuis les MUL.");
+            tt.SetToolTip(_nudBodyId, "Body ID de l'animation UO (ex: 1 = Ogre, 9 = Démon, 23 = Loup, 400 = Humain).");
+            tt.SetToolTip(_btnApplyMulFrames, "Copie le nombre de frames de ce monstre UO dans la colonne Frames.");
+            tt.SetToolTip(_btnResetFramesAuto, "Réinitialise toutes les frames en mode Auto (durée × FPS).");
+
             var hdr = new Panel { Dock = DockStyle.Top, Height = 22, BackColor = Color.FromArgb(32, 32, 35), Padding = new Padding(8, 2, 8, 2) };
             hdr.Controls.Add(new Label { Text = "Action", Location = new Point(14, 4), Width = 130, ForeColor = Color.DarkGray, Font = new Font(Font.FontFamily, 8.25f, FontStyle.Bold) });
             hdr.Controls.Add(new Label { Text = "Animation source", Location = new Point(156, 4), Width = 250, ForeColor = Color.DarkGray, Font = new Font(Font.FontFamily, 8.25f, FontStyle.Bold) });
             hdr.Controls.Add(new Label { Text = "Décalage 3D X", Location = new Point(426, 4), Width = 74, ForeColor = Color.DarkGray, Font = new Font(Font.FontFamily, 8f, FontStyle.Bold) });
             hdr.Controls.Add(new Label { Text = "Décalage 3D Y", Location = new Point(502, 4), Width = 74, ForeColor = Color.DarkGray, Font = new Font(Font.FontFamily, 8f, FontStyle.Bold) });
             hdr.Controls.Add(new Label { Text = "Décalage 3D Z", Location = new Point(578, 4), Width = 74, ForeColor = Color.DarkGray, Font = new Font(Font.FontFamily, 8f, FontStyle.Bold) });
+            hdr.Controls.Add(new Label { Text = "Frames", Location = new Point(660, 4), Width = 64, ForeColor = Color.DarkGray, Font = new Font(Font.FontFamily, 8f, FontStyle.Bold) });
 
             _rows = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(8) };
 
@@ -312,6 +393,7 @@ namespace UoFiddler.Plugin.Granny3D
             Controls.Add(bottom);
             Controls.Add(top);
 
+            InitMulMobList();
             if (_cmbTarget.Items.Count > 0) _cmbTarget.SelectedIndex = 0;
         }
 
@@ -609,7 +691,9 @@ namespace UoFiddler.Plugin.Granny3D
                 if (_lblActionDetail != null)
                 {
                     string clipName = !string.IsNullOrEmpty(path) ? Path.GetFileName(path) : "(aucune anim)";
-                    _lblActionDetail.Text = $"Action {a:D2} : {clipName}\nOffset 3D : ({off.X:F2}, {off.Y:F2}, {off.Z:F2})";
+                    int fCount = (a < _nudFrames.Count) ? (int)_nudFrames[a].Value : 0;
+                    string fText = fCount > 0 ? $"{fCount} fr (forcé UO/manuel)" : "Auto (durée × FPS)";
+                    _lblActionDetail.Text = $"Action {a:D2} : {clipName}\nOffset 3D : ({off.X:F2}, {off.Y:F2}, {off.Z:F2}) | {fText}";
                 }
             }
             catch (Exception ex)
@@ -634,12 +718,12 @@ namespace UoFiddler.Plugin.Granny3D
         private List<string> ActiveDisplay() => _useAll ? _allDisplay : _sourceNames;
         private string ActivePrefix() => _useAll ? string.Empty : _stripPrefix;
 
-        // Capture currently chosen clip paths and 3D offsets so target switches or map switches
+        // Capture currently chosen clip paths, 3D offsets and frame counts so target switches or map switches
         // preserve the user's manual adjustments.
-        private (string Path, Vector3 Offset)[] CaptureSelection()
+        private (string Path, Vector3 Offset, int Frames)[] CaptureSelection()
         {
             var from = ActiveSources();
-            var keep = new (string, Vector3)[_combos.Count];
+            var keep = new (string, Vector3, int)[_combos.Count];
             for (int i = 0; i < _combos.Count; i++)
             {
                 var cb = _combos[i];
@@ -651,8 +735,9 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     off = new Vector3((float)_nudX[i].Value, (float)_nudY[i].Value, (float)_nudZ[i].Value);
                 }
+                int fr = (i < _nudFrames.Count) ? (int)_nudFrames[i].Value : 0;
                 if (idx >= 0 && idx < keep.Length)
-                    keep[idx] = (path, off);
+                    keep[idx] = (path, off, fr);
             }
             return keep;
         }
@@ -695,7 +780,7 @@ namespace UoFiddler.Plugin.Granny3D
                 _btnChooseMap.Text = $"Map: {entry.DisplayName}";
                 _btnChooseMap.BackColor = Color.FromArgb(80, 96, 70);
 
-                // Auto prefill target actions from the chosen model's animation set, but keep existing X, Y, Z offsets!
+                // Auto prefill target actions from the chosen model's animation set, but keep existing X, Y, Z offsets and frame counts!
                 RebuildRows(preserve: keep, preserveClips: false);
             }
         }
@@ -713,7 +798,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         // preserve == null -> auto prefill from action names; otherwise keep the
         // given clip paths where they still exist in the offered set.
-        private void RebuildRows((string Path, Vector3 Offset)[] preserve = null, bool preserveClips = true)
+        private void RebuildRows((string Path, Vector3 Offset, int Frames)[] preserve = null, bool preserveClips = true)
         {
             _rows.SuspendLayout();
             _rows.Controls.Clear();
@@ -721,6 +806,7 @@ namespace UoFiddler.Plugin.Granny3D
             _nudX.Clear();
             _nudY.Clear();
             _nudZ.Clear();
+            _nudFrames.Clear();
 
             var target = _cmbTarget.SelectedItem as VdTargetDef;
             if (target == null) { _rows.ResumeLayout(); return; }
@@ -859,6 +945,37 @@ namespace UoFiddler.Plugin.Granny3D
                 nz.ValueChanged += (s, e) => { if (_activeActionIdx == actIdx) UpdatePreview(); };
                 _nudZ.Add(nz);
                 _rows.Controls.Add(nz);
+
+                // Frames control
+                int initFr = (preserve != null && i < preserve.Length) ? preserve[i].Frames : 0;
+                _rows.Controls.Add(new Label { Text = "Fr:", Location = new Point(646, y + 3), Width = 20, ForeColor = Color.DarkGray });
+                var nFr = new FrameNumericUpDown
+                {
+                    Location = new Point(668, y),
+                    Width = 56,
+                    Minimum = 0,
+                    Maximum = 64,
+                    Increment = 1,
+                    Value = initFr,
+                    BackColor = Color.FromArgb(30, 30, 30),
+                    ForeColor = Color.Gainsboro,
+                    BorderStyle = BorderStyle.FixedSingle
+                };
+                nFr.ValueChanged += (s, e) => { if (_activeActionIdx == actIdx) UpdatePreview(); };
+
+                var frameCtx = new ContextMenuStrip();
+                var itmAuto = frameCtx.Items.Add("Remettre cette action en Auto (0)");
+                itmAuto.Click += (s, e) => nFr.Value = 0;
+                var itmAllFr = frameCtx.Items.Add("Appliquer ce nombre de frames à TOUTES les actions");
+                itmAllFr.Click += (s, e) =>
+                {
+                    decimal val = nFr.Value;
+                    foreach (var nf in _nudFrames) nf.Value = val;
+                };
+                nFr.ContextMenuStrip = frameCtx;
+
+                _nudFrames.Add(nFr);
+                _rows.Controls.Add(nFr);
 
                 y += 28;
             }
@@ -1060,6 +1177,19 @@ namespace UoFiddler.Plugin.Granny3D
             return result;
         }
 
+        // action index -> frame count (0 = auto duration * fps, > 0 = explicit frame count).
+        public int[] GetFrameCounts()
+        {
+            var target = _cmbTarget.SelectedItem as VdTargetDef;
+            int n = target?.ActionCount ?? 0;
+            var result = new int[n];
+            for (int i = 0; i < n && i < _nudFrames.Count; i++)
+            {
+                result[i] = (int)_nudFrames[i].Value;
+            }
+            return result;
+        }
+
         private void SaveMappingDialog()
         {
             using var sfd = new SaveFileDialog
@@ -1095,6 +1225,7 @@ namespace UoFiddler.Plugin.Granny3D
                     float ox = (i < _nudX.Count) ? (float)_nudX[i].Value : 0f;
                     float oy = (i < _nudY.Count) ? (float)_nudY[i].Value : 0f;
                     float oz = (i < _nudZ.Count) ? (float)_nudZ[i].Value : 0f;
+                    int fr = (i < _nudFrames.Count) ? (int)_nudFrames[i].Value : 0;
 
                     preset.Actions.Add(new VdActionMapItem
                     {
@@ -1104,7 +1235,8 @@ namespace UoFiddler.Plugin.Granny3D
                         AnimFileName = !string.IsNullOrEmpty(path) ? Path.GetFileName(path) : null,
                         OffsetX = ox,
                         OffsetY = oy,
-                        OffsetZ = oz
+                        OffsetZ = oz,
+                        Frames = fr
                     });
                 }
 
@@ -1214,6 +1346,7 @@ namespace UoFiddler.Plugin.Granny3D
                         if (actIdx < _nudX.Count) _nudX[actIdx].Value = Math.Max(_nudX[actIdx].Minimum, Math.Min(_nudX[actIdx].Maximum, (decimal)item.OffsetX));
                         if (actIdx < _nudY.Count) _nudY[actIdx].Value = Math.Max(_nudY[actIdx].Minimum, Math.Min(_nudY[actIdx].Maximum, (decimal)item.OffsetY));
                         if (actIdx < _nudZ.Count) _nudZ[actIdx].Value = Math.Max(_nudZ[actIdx].Minimum, Math.Min(_nudZ[actIdx].Maximum, (decimal)item.OffsetZ));
+                        if (actIdx < _nudFrames.Count) _nudFrames[actIdx].Value = Math.Max(0, Math.Min(64, item.Frames));
                     }
                 }
 
@@ -1238,6 +1371,7 @@ namespace UoFiddler.Plugin.Granny3D
                 _combos[i].SelectedIndex = PrefillIndex(i, actionName, target);
             }
             ResetAllOffsets();
+            ResetAllFramesAuto();
             UpdatePreview();
         }
 
@@ -1248,7 +1382,235 @@ namespace UoFiddler.Plugin.Granny3D
                 _combos[i].SelectedIndex = 0;
             }
             ResetAllOffsets();
+            ResetAllFramesAuto();
             UpdatePreview();
+        }
+
+        private static List<UoMobEntry> _cachedMobEntries;
+
+        private static List<UoMobEntry> LoadMobEntries()
+        {
+            if (_cachedMobEntries != null) return _cachedMobEntries;
+            var list = new List<UoMobEntry>();
+
+            string path = null;
+            try
+            {
+                if (!string.IsNullOrEmpty(UoFiddler.Controls.Classes.Options.AppDataPath))
+                {
+                    string p = Path.Combine(UoFiddler.Controls.Classes.Options.AppDataPath, "Animationlist.xml");
+                    if (File.Exists(p)) path = p;
+                }
+            }
+            catch { }
+
+            if (path == null)
+            {
+                string p = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Animationlist.xml");
+                if (File.Exists(p)) path = p;
+            }
+
+            if (path != null && File.Exists(path))
+            {
+                try
+                {
+                    var doc = new System.Xml.XmlDocument();
+                    doc.Load(path);
+                    var xMobs = doc["Graphics"];
+                    if (xMobs != null)
+                    {
+                        foreach (System.Xml.XmlElement xMob in xMobs.SelectNodes("Mob"))
+                        {
+                            string name = xMob.GetAttribute("name");
+                            if (int.TryParse(xMob.GetAttribute("body"), out int body))
+                            {
+                                int.TryParse(xMob.GetAttribute("type"), out int type);
+                                list.Add(new UoMobEntry { Name = name, Body = body, Type = type });
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (list.Count == 0)
+            {
+                list.Add(new UoMobEntry { Name = "ogres ogre (1)", Body = 1, Type = 0 });
+                list.Add(new UoMobEntry { Name = "ettins ettin (2)", Body = 2, Type = 0 });
+                list.Add(new UoMobEntry { Name = "walking dead zombie (3)", Body = 3, Type = 0 });
+                list.Add(new UoMobEntry { Name = "gargoyles gargoyle (4)", Body = 4, Type = 0 });
+                list.Add(new UoMobEntry { Name = "birds eagle (5)", Body = 5, Type = 2 });
+                list.Add(new UoMobEntry { Name = "orcs orc captain (7)", Body = 7, Type = 0 });
+                list.Add(new UoMobEntry { Name = "daemons daemon (9)", Body = 9, Type = 0 });
+                list.Add(new UoMobEntry { Name = "dragons dragon (12)", Body = 12, Type = 0 });
+                list.Add(new UoMobEntry { Name = "canines wolf (23)", Body = 23, Type = 2 });
+                list.Add(new UoMobEntry { Name = "horses horse (200)", Body = 200, Type = 2 });
+                list.Add(new UoMobEntry { Name = "human male (400)", Body = 400, Type = 3 });
+                list.Add(new UoMobEntry { Name = "human female (401)", Body = 401, Type = 3 });
+            }
+
+            _cachedMobEntries = list;
+            return _cachedMobEntries;
+        }
+
+        private void InitMulMobList()
+        {
+            if (_cmbMulMob == null) return;
+            _cmbMulMob.BeginUpdate();
+            _cmbMulMob.Items.Clear();
+            var list = LoadMobEntries();
+            foreach (var m in list)
+            {
+                _cmbMulMob.Items.Add(m);
+            }
+            _cmbMulMob.EndUpdate();
+            UpdateMulMobTargetSuggestion();
+        }
+
+        private void UpdateMulMobTargetSuggestion()
+        {
+            if (_cmbMulMob == null || _cmbMulMob.Items.Count == 0) return;
+            var target = _cmbTarget.SelectedItem as VdTargetDef;
+            if (target == null) return;
+
+            int desiredType = 0; // Monster
+            if (target.Key.IndexOf("animal", StringComparison.OrdinalIgnoreCase) >= 0)
+                desiredType = 2; // Animal
+            else if (target.Key.IndexOf("human", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     target.Key.IndexOf("equipment", StringComparison.OrdinalIgnoreCase) >= 0)
+                desiredType = 3; // Human
+            else if (target.Key.IndexOf("sea", StringComparison.OrdinalIgnoreCase) >= 0)
+                desiredType = 1; // Sea
+
+            for (int i = 0; i < _cmbMulMob.Items.Count; i++)
+            {
+                if (_cmbMulMob.Items[i] is UoMobEntry me && me.Type == desiredType)
+                {
+                    _cmbMulMob.SelectedIndex = i;
+                    return;
+                }
+            }
+            if (_cmbMulMob.SelectedIndex < 0 && _cmbMulMob.Items.Count > 0)
+                _cmbMulMob.SelectedIndex = 0;
+        }
+
+        private void ApplyMulFrames(int body)
+        {
+            if (body <= 0) return;
+            var target = _cmbTarget.SelectedItem as VdTargetDef;
+            if (target == null) return;
+
+            int applied = 0;
+            int hue = 0;
+            for (int a = 0; a < target.ActionCount && a < _nudFrames.Count; a++)
+            {
+                try
+                {
+                    var frames = Ultima.Animations.GetAnimation(body, a, 0, ref hue, false, false);
+                    if (frames != null && frames.Length > 0)
+                    {
+                        _nudFrames[a].Value = Math.Clamp(frames.Length, 1, 64);
+                        applied++;
+                    }
+                    else
+                    {
+                        _nudFrames[a].Value = 0;
+                    }
+                }
+                catch
+                {
+                    _nudFrames[a].Value = 0;
+                }
+            }
+
+            UpdatePreview();
+        }
+
+        private void ResetAllFramesAuto()
+        {
+            for (int i = 0; i < _nudFrames.Count; i++)
+            {
+                _nudFrames[i].Value = 0;
+            }
+            UpdatePreview();
+        }
+    }
+
+    public sealed class UoMobEntry
+    {
+        public string Name { get; set; }
+        public int Body { get; set; }
+        public int Type { get; set; } // 0: Monster, 1: Sea, 2: Animal, 3: Human
+        public override string ToString() => $"{Name} (Body {Body})";
+    }
+
+    public sealed class FrameNumericUpDown : NumericUpDown
+    {
+        private bool _updating = false;
+
+        public FrameNumericUpDown()
+        {
+            Minimum = 0;
+            Maximum = 64;
+            Increment = 1;
+            Value = 0;
+        }
+
+        protected override void UpdateEditText()
+        {
+            if (_updating) return;
+            _updating = true;
+            try
+            {
+                if (Value == 0)
+                {
+                    Text = "Auto";
+                }
+                else
+                {
+                    base.UpdateEditText();
+                }
+            }
+            finally
+            {
+                _updating = false;
+            }
+        }
+
+        protected override void ValidateEditText()
+        {
+            if (_updating) return;
+            _updating = true;
+            try
+            {
+                string t = Text?.Trim();
+                if (string.Equals(t, "Auto", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(t) || t == "0")
+                {
+                    Value = 0;
+                    Text = "Auto";
+                    UserEdit = false;
+                    return;
+                }
+                if (decimal.TryParse(t, out decimal d))
+                {
+                    Value = Math.Max(Minimum, Math.Min(Maximum, d));
+                    UserEdit = false;
+                    UpdateEditText();
+                    return;
+                }
+                base.ValidateEditText();
+            }
+            catch
+            {
+                Value = 0;
+                Text = "Auto";
+                UserEdit = false;
+            }
+            finally
+            {
+                _updating = false;
+            }
         }
     }
 
@@ -1261,6 +1623,7 @@ namespace UoFiddler.Plugin.Granny3D
         public float OffsetX { get; set; }
         public float OffsetY { get; set; }
         public float OffsetZ { get; set; }
+        public int Frames { get; set; }
     }
 
     public class VdMappingPreset

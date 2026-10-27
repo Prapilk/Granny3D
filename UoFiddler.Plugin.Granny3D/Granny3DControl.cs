@@ -14682,6 +14682,7 @@ namespace UoFiddler.Plugin.Granny3D
 
                 var mapping = form.GetMapping();     // action -> source path or null
                 var offsets = form.GetOffsets();      // action -> 3D offset (X, Y, Z)
+                var frameCounts = form.GetFrameCounts(); // action -> forced frame count (0 = auto)
                 int fps = form.Fps, size = form.FrameSize, offsetY = form.OffsetY;
 
                 int mapped = 0;
@@ -14700,15 +14701,16 @@ namespace UoFiddler.Plugin.Granny3D
                         if (string.IsNullOrEmpty(src)) continue;
 
                         Vector3 actOff = (offsets != null && a < offsets.Length) ? offsets[a] : Vector3.Zero;
+                        int targetFrames = (frameCounts != null && a < frameCounts.Length) ? frameCounts[a] : 0;
 
-                        // Mount clip is action-specific, so cache per (source, mount keyword, action offset).
+                        // Mount clip is action-specific, so cache per (source, mount keyword, action offset, targetFrames).
                         string kw = MountClipKeywordForAction(a, target);
                         string cacheKey = (kw != null)
-                            ? $"{src}|{kw}|{actOff.X:F3}_{actOff.Y:F3}_{actOff.Z:F3}"
-                            : $"{src}|{actOff.X:F3}_{actOff.Y:F3}_{actOff.Z:F3}";
+                            ? $"{src}|{kw}|{actOff.X:F3}_{actOff.Y:F3}_{actOff.Z:F3}|fr_{targetFrames}"
+                            : $"{src}|{actOff.X:F3}_{actOff.Y:F3}_{actOff.Z:F3}|fr_{targetFrames}";
                         if (!cache.TryGetValue(cacheKey, out var blocks))
                         {
-                            blocks = BakeAnimFrames(src, size, fps, cutout, kw, offsetY, actOff);
+                            blocks = BakeAnimFrames(src, size, fps, cutout, kw, offsetY, actOff, targetFrames);
                             if (blocks == null) continue;
                             cache[cacheKey] = blocks;
                         }
@@ -14747,7 +14749,7 @@ namespace UoFiddler.Plugin.Granny3D
         // the plain full-model render.
         private VdAnimBlock[] BakeAnimFrames(string animPath, int size, int fps,
             (Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout = null,
-            string mountKeyword = null, int offsetY = 0, Vector3 actionOffset = default)
+            string mountKeyword = null, int offsetY = 0, Vector3 actionOffset = default, int targetFrames = 0)
         {
             var savedAnim = _currentAnimation;
             float savedTime = _currentTime;
@@ -14766,7 +14768,7 @@ namespace UoFiddler.Plugin.Granny3D
 
                 float dur = _currentAnimation.Duration;
                 if (dur <= 0.0001f) dur = 1f / Math.Max(1, fps);
-                int n = Math.Max(1, (int)Math.Round(dur * fps));
+                int n = targetFrames > 0 ? Math.Clamp(targetFrames, 1, 64) : Math.Max(1, (int)Math.Round(dur * fps));
                 if (n > 64) n = 64;
 
                 // Ensure cloth meshes are simulated or baked for this animation clip
