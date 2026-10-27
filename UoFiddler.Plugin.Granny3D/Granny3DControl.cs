@@ -3746,27 +3746,37 @@ namespace UoFiddler.Plugin.Granny3D
                     if (part.Skin != null) gmesh.Skin.AddRange(part.Skin);
 
                     string attachBone = !string.IsNullOrEmpty(part.AttachBoneName) ? part.AttachBoneName : null;
-                    if (string.IsNullOrEmpty(attachBone) && role == MeshCutoutRole.Accessory && (model.Bones == null || model.Bones.Count < 5))
+                    bool isClothingOrBody = IsClothingOrSkinnedModelPart(path, model, part);
+                    if (string.IsNullOrEmpty(attachBone) && !isClothingOrBody && role == MeshCutoutRole.Accessory && (model.Bones == null || model.Bones.Count < 5))
                     {
                         string fn = Path.GetFileName(path).ToLowerInvariant();
-                        bool isLeftHand = fn.Contains("shield") || fn.Contains("buckler");
-                        string[] prefs = isLeftHand
-                            ? new[] { "CP_Grasp_Lhand", "Bip01 L Hand" }
-                            : new[] { "CP_Grasp_Rhand", "Bip01 R Hand" };
+                        bool isLeftHand = fn.Contains("shield") || fn.Contains("buckler") || fn.Contains("bouclier");
+                        bool isWeaponOrShield = isLeftHand ||
+                            fn.Contains("sword") || fn.Contains("axe") || fn.Contains("mace") || fn.Contains("staff") ||
+                            fn.Contains("dagger") || fn.Contains("bow") || fn.Contains("crossbow") || fn.Contains("weapon") ||
+                            fn.Contains("blade") || fn.Contains("spear") || fn.Contains("arme") || fn.Contains("epee") ||
+                            fn.Contains("dague") || fn.Contains("hache");
 
-                        foreach (var host in _loadedMeshes)
+                        if (isWeaponOrShield)
                         {
-                            if (host.Bones != null && host.Bones.Count >= 20)
+                            string[] prefs = isLeftHand
+                                ? new[] { "CP_Grasp_Lhand", "Bip01 L Hand" }
+                                : new[] { "CP_Grasp_Rhand", "Bip01 R Hand" };
+
+                            foreach (var host in _loadedMeshes)
                             {
-                                foreach (var pref in prefs)
+                                if (host.Bones != null && host.Bones.Count >= 20)
                                 {
-                                    if (host.Bones.Exists(b => string.Equals(b.Name, pref, StringComparison.OrdinalIgnoreCase)))
+                                    foreach (var pref in prefs)
                                     {
-                                        attachBone = pref;
-                                        break;
+                                        if (host.Bones.Exists(b => string.Equals(b.Name, pref, StringComparison.OrdinalIgnoreCase)))
+                                        {
+                                            attachBone = pref;
+                                            break;
+                                        }
                                     }
+                                    if (attachBone != null) break;
                                 }
-                                if (attachBone != null) break;
                             }
                         }
                     }
@@ -3848,24 +3858,33 @@ namespace UoFiddler.Plugin.Granny3D
                 if (!isClothingOrBody && role == MeshCutoutRole.Accessory)
                 {
                     string fn = Path.GetFileName(path).ToLowerInvariant();
-                    bool isLeftHand = fn.Contains("shield") || fn.Contains("buckler");
-                    string[] prefs = isLeftHand
-                        ? new[] { "CP_Grasp_Lhand", "Bip01 L Hand" }
-                        : new[] { "CP_Grasp_Rhand", "Bip01 R Hand" };
+                    bool isLeftHand = fn.Contains("shield") || fn.Contains("buckler") || fn.Contains("bouclier");
+                    bool isWeaponOrShield = isLeftHand ||
+                        fn.Contains("sword") || fn.Contains("axe") || fn.Contains("mace") || fn.Contains("staff") ||
+                        fn.Contains("dagger") || fn.Contains("bow") || fn.Contains("crossbow") || fn.Contains("weapon") ||
+                        fn.Contains("blade") || fn.Contains("spear") || fn.Contains("arme") || fn.Contains("epee") ||
+                        fn.Contains("dague") || fn.Contains("hache");
 
-                    foreach (var host in _loadedMeshes)
+                    if (isWeaponOrShield)
                     {
-                        if (host.Bones != null && host.Bones.Count >= 20)
+                        string[] prefs = isLeftHand
+                            ? new[] { "CP_Grasp_Lhand", "Bip01 L Hand" }
+                            : new[] { "CP_Grasp_Rhand", "Bip01 R Hand" };
+
+                        foreach (var host in _loadedMeshes)
                         {
-                            foreach (var pref in prefs)
+                            if (host.Bones != null && host.Bones.Count >= 20)
                             {
-                                if (host.Bones.Exists(b => string.Equals(b.Name, pref, StringComparison.OrdinalIgnoreCase)))
+                                foreach (var pref in prefs)
                                 {
-                                    attachBone = pref;
-                                    break;
+                                    if (host.Bones.Exists(b => string.Equals(b.Name, pref, StringComparison.OrdinalIgnoreCase)))
+                                    {
+                                        attachBone = pref;
+                                        break;
+                                    }
                                 }
+                                if (attachBone != null) break;
                             }
-                            if (attachBone != null) break;
                         }
                     }
                 }
@@ -9257,10 +9276,12 @@ namespace UoFiddler.Plugin.Granny3D
             string src = (lm.SourcePath ?? "").ToLowerInvariant();
             string[] keywords = new[]
             {
-                "robe", "tunic", "dress", "armor", "plate", "chain", "ringmail",
-                "leather", "cloak", "cape", "pants", "skirt", "boot", "shoe", "sandals",
-                "helm", "hat", "hood", "cowl", "cap", "hair", "facial", "beard",
-                "torso", "neck", "leg", "arm", "hand", "foot", "feet", "head", "body", "chest"
+                "robe", "tunic", "tunique", "dress", "armor", "armure", "plate", "chain", "ringmail",
+                "leather", "cuir", "cloak", "cape", "pants", "pantalon", "braies", "skirt", "jupe",
+                "boot", "shoe", "sandals", "helm", "hat", "hood", "cowl", "cap", "hair", "facial", "beard",
+                "torso", "neck", "leg", "arm", "hand", "foot", "feet", "head", "body", "chest",
+                "jacket", "veste", "shirt", "chemise", "chemisier", "top", "bottom", "costume", "habit", "vetement",
+                "glove", "gant", "corset", "belt", "ceinture"
             };
             foreach (var kw in keywords)
             {
@@ -9276,7 +9297,45 @@ namespace UoFiddler.Plugin.Granny3D
                     if (z < minZ) minZ = z;
                     if (z > maxZ) maxZ = z;
                 }
-                if (maxZ - minZ > 0.6f || (minZ < 0.4f && maxZ > 1.0f)) return true;
+                if (maxZ - minZ > 0.5f || (minZ < 0.4f && maxZ > 0.9f)) return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsClothingOrSkinnedModelPart(string path, GrannyModelFile model, GrannyModelPart part)
+        {
+            if (part == null) return false;
+            if (part.Skin != null && part.Skin.Length > 0 && part.Skin.Any(s => s != null && s.Length > 0)) return true;
+            if (model != null && model.Bones != null && model.Bones.Count >= 5) return true;
+            if (part.CutoutRole == MeshCutoutRole.Body) return true;
+
+            string name = (part.Name ?? "").ToLowerInvariant();
+            string fn = (Path.GetFileName(path) ?? "").ToLowerInvariant();
+            string[] keywords = new[]
+            {
+                "robe", "tunic", "tunique", "dress", "armor", "armure", "plate", "chain", "ringmail",
+                "leather", "cuir", "cloak", "cape", "pants", "pantalon", "braies", "skirt", "jupe",
+                "boot", "shoe", "sandals", "helm", "hat", "hood", "cowl", "cap", "hair", "facial", "beard",
+                "torso", "neck", "leg", "arm", "hand", "foot", "feet", "head", "body", "chest",
+                "jacket", "veste", "shirt", "chemise", "chemisier", "top", "bottom", "costume", "habit", "vetement",
+                "glove", "gant", "corset", "belt", "ceinture"
+            };
+            foreach (var kw in keywords)
+            {
+                if (name.Contains(kw) || fn.Contains(kw)) return true;
+            }
+
+            if (part.Vertices != null && part.Vertices.Length > 0)
+            {
+                float minZ = float.MaxValue, maxZ = float.MinValue;
+                for (int i = 0; i < part.Vertices.Length; i++)
+                {
+                    float z = part.Vertices[i].Z;
+                    if (z < minZ) minZ = z;
+                    if (z > maxZ) maxZ = z;
+                }
+                if (maxZ - minZ > 0.5f || (minZ < 0.4f && maxZ > 0.9f)) return true;
             }
 
             return false;
@@ -9289,10 +9348,12 @@ namespace UoFiddler.Plugin.Granny3D
 
             string[] clothingKeywords = new[]
             {
-                "robe", "tunic", "dress", "armor", "plate", "chain", "ringmail",
-                "leather", "cloak", "cape", "pants", "skirt", "boot", "shoe", "sandals",
-                "helm", "hat", "hood", "cowl", "cap", "hair", "facial", "beard",
-                "torso", "neck", "leg", "arm", "hand", "foot", "feet", "head", "body", "chest"
+                "robe", "tunic", "tunique", "dress", "armor", "armure", "plate", "chain", "ringmail",
+                "leather", "cuir", "cloak", "cape", "pants", "pantalon", "braies", "skirt", "jupe",
+                "boot", "shoe", "sandals", "helm", "hat", "hood", "cowl", "cap", "hair", "facial", "beard",
+                "torso", "neck", "leg", "arm", "hand", "foot", "feet", "head", "body", "chest",
+                "jacket", "veste", "shirt", "chemise", "chemisier", "top", "bottom", "costume", "habit", "vetement",
+                "glove", "gant", "corset", "belt", "ceinture"
             };
             foreach (var kw in clothingKeywords)
             {
@@ -9310,7 +9371,7 @@ namespace UoFiddler.Plugin.Granny3D
                     if (v.Z < minZ) minZ = v.Z;
                     if (v.Z > maxZ) maxZ = v.Z;
                 }
-                if (maxZ - minZ > 0.6f || (minZ < 0.4f && maxZ > 1.0f)) return true;
+                if (maxZ - minZ > 0.5f || (minZ < 0.4f && maxZ > 0.9f)) return true;
             }
 
             return false;
