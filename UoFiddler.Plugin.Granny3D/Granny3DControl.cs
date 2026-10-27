@@ -188,6 +188,11 @@ namespace UoFiddler.Plugin.Granny3D
         // restores it.
         public LoadedMesh PreviewSavedWrapSource;
         public VertexInfluence[][] PreviewSavedWrapSkin;
+        public Vector3[] PreviewSavedBaseVertices;
+        public Vector3 PreviewSavedAttachOffset;
+        public Vector3 PreviewSavedAttachRotation;
+        public float PreviewSavedPartScale = 1f;
+        public Vector3 PreviewSavedPartScaleVec = Vector3.One;
         public bool PreviewActive;
 
         // DEBUG/test: render straight from BaseVertices, bypassing skin/wrap, to tell
@@ -5422,7 +5427,12 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (_poseTargetMode == 0) return true;
             int idx = _loadedMeshes.IndexOf(lm);
-            return idx >= 0 && _poseTargets.Contains(idx);
+            if (idx >= 0 && _poseTargets.Contains(idx)) return true;
+            // The character body (H_Male / H_Female) should always preserve its pose
+            // so selecting an accessory or clothing does not reset the character to T-pose!
+            if (lm.CutoutRole == MeshCutoutRole.Body || !string.IsNullOrEmpty(lm.CharSlot) || (lm.Bones != null && lm.Bones.Count >= 20))
+                return true;
+            return false;
         }
 
         // Rebuild the pose-target set from the current "Meshes affichés" selection
@@ -7453,6 +7463,23 @@ namespace UoFiddler.Plugin.Granny3D
                 return;
             }
 
+            // Separate targets from sources:
+            // If the user selected a group/parent node or both character + accessory in one lot:
+            // automatically treat accessories as targets and character body parts as sources!
+            var realTargets = new List<int>();
+            foreach (int ti in idxs)
+            {
+                if (ti < 0 || ti >= _loadedMeshes.Count) continue;
+                var m = _loadedMeshes[ti];
+                bool isBody = (m.CutoutRole == MeshCutoutRole.Body || !string.IsNullOrEmpty(m.CharSlot)) &&
+                              m.Skin != null && m.Skin.Length > 0 && m.Bones != null && m.Bones.Count >= 10;
+                if (!isBody) realTargets.Add(ti);
+            }
+            if (realTargets.Count > 0 && realTargets.Count < idxs.Count)
+            {
+                idxs = realTargets;
+            }
+
             // Check if all selected are already wrapped -> toggle detach
             bool allWrapped = true;
             foreach (int ti in idxs)
@@ -7710,11 +7737,13 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 var sv = sources[s].BaseVertices;
                 var sk = sources[s].Skin;
+                var dc = sources[s].DeformedCache;
+                bool useDc = dc != null && dc.Length == sv.Length;
                 for (int k = 0; k < sv.Length; k++)
                 {
                     if (k < sk.Length && sk[k] != null && sk[k].Length > 0)
                     {
-                        allSamples.Add((sv[k], s, k));
+                        allSamples.Add((useDc ? dc[k] : sv[k], s, k));
                     }
                 }
             }
@@ -7723,6 +7752,17 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Log("Skin wrap : aucun sommet skinné valide dans les sources.");
                 return;
+            }
+
+            Matrix4[] invSkin = null;
+            if (masterHost.SkinMatrices != null && masterHost.SkinMatrices.Length == masterHost.Bones.Count)
+            {
+                invSkin = new Matrix4[masterHost.SkinMatrices.Length];
+                for (int b = 0; b < invSkin.Length; b++)
+                {
+                    try { invSkin[b] = Matrix4.Invert(masterHost.SkinMatrices[b]); }
+                    catch { invSkin[b] = Matrix4.Identity; }
+                }
             }
 
             const int K = 4; // number of nearest body neighbours to blend
@@ -7760,30 +7800,17 @@ namespace UoFiddler.Plugin.Granny3D
                     target.AttachBoneName = null;
                     target.HasAttachMatrix = false;
                     target.AttachMatrix = Matrix4.Identity;
-                    if (IsClothingOrSkinned(target))
-                    {
-                        target.AttachOffset = Vector3.Zero;
-                        target.AttachRotation = Vector3.Zero;
-                        target.PartScale = 1f;
-                        target.PartScaleVec = Vector3.One;
-                    }
                 }
 
-                // 2. If target was tweaked (placed, scaled, rotated), bake the placement into BaseVertices
-                // so that wrap weights are calculated from the fitted rest position, and reset AttachOffset to 0
-                // to prevent any double-offset / jump!
-                if (IsMeshTweaked(target))
-                {
-                    BakeMeshGeometry(target);
-                }
-
+                bool tweaked = IsMeshTweaked(target);
                 int n = target.BaseVertices.Length;
                 var wrap = new VertexInfluence[n][];
+                var newBase = new Vector3[n];
                 int wrappedVerts = 0;
 
                 for (int v = 0; v < n; v++)
                 {
-                    Vector3 p = target.BaseVertices[v];
+                    Vector3 p = tweaked ? ApplyMeshTweak(target, target.BaseVertices[v], false, default) : target.BaseVertices[v];
 
                     for (int k = 0; k < K; k++)
                     {
@@ -7939,8 +7966,38 @@ namespace UoFiddler.Plugin.Granny3D
                         outInf[m] = new VertexInfluence { BoneId = list[m].Key, Weight = list[m].Value / kept };
 
                     wrap[v] = outInf;
-                    wrappedVerts++;
+                    if (outInf != null && outInf.Length > 0)
+                    {
+                        if (invSkin != null)
+                        {
+                            Vector3 bindP = Vector3.Zero;
+                            for (int m = 0; m < outInf.Length; m++)
+                            {
+                                int bid = outInf[m].BoneId;
+                                if (bid >= 0 && bid < invSkin.Length)
+                                    bindP += Vector3.TransformPosition(p, invSkin[bid]) * outInf[m].Weight;
+                                else
+                                    bindP += p * outInf[m].Weight;
+                            }
+                            newBase[v] = bindP;
+                        }
+                        else
+                        {
+                            newBase[v] = p;
+                        }
+                        wrappedVerts++;
+                    }
+                    else
+                    {
+                        newBase[v] = p;
+                    }
                 }
+
+                target.BaseVertices = newBase;
+                target.AttachOffset = Vector3.Zero;
+                target.AttachRotation = Vector3.Zero;
+                target.PartScale = 1f;
+                target.PartScaleVec = Vector3.One;
 
                 if (!target.HasOriginalWrapBackup)
                 {
@@ -8138,9 +8195,11 @@ namespace UoFiddler.Plugin.Granny3D
 
                 var sv = src.BaseVertices;
                 var sk = src.Skin;
+                var dc = src.DeformedCache;
+                bool useDc = dc != null && dc.Length == sv.Length;
                 for (int k = 0; k < sv.Length; k++)
                     if (k < sk.Length && sk[k] != null && sk[k].Length > 0)
-                        ctx.Samples.Add((sv[k], s, k));
+                        ctx.Samples.Add((useDc ? dc[k] : sv[k], s, k));
 
                 var idx = src.Indices;
                 if (idx != null && idx.Length >= 3)
@@ -8234,9 +8293,14 @@ namespace UoFiddler.Plugin.Granny3D
             var acc = new Dictionary<int, float>();
             float r2 = set.Radius > 0f ? set.Radius * set.Radius : float.MaxValue;
 
+            Vector3[] tPos = (target.DeformedCache != null && target.DeformedCache.Length == n)
+                ? target.DeformedCache
+                : null;
+            bool tweaked = IsMeshTweaked(target);
+
             for (int v = 0; v < n; v++)
             {
-                Vector3 p = target.BaseVertices[v];
+                Vector3 p = tPos != null ? tPos[v] : (tweaked ? ApplyMeshTweak(target, target.BaseVertices[v], false, default) : target.BaseVertices[v]);
                 for (int k = 0; k < K; k++) { tmpSample[k] = -1; tmpDist[k] = float.MaxValue; }
 
                 for (int si = 0; si < ctx.Samples.Count; si++)
@@ -8347,9 +8411,14 @@ namespace UoFiddler.Plugin.Granny3D
 
             float r2 = set.Radius > 0f ? set.Radius * set.Radius : float.MaxValue;
 
+            Vector3[] tPos = (target.DeformedCache != null && target.DeformedCache.Length == n)
+                ? target.DeformedCache
+                : null;
+            bool tweaked = IsMeshTweaked(target);
+
             for (int v = 0; v < n; v++)
             {
-                Vector3 p = target.BaseVertices[v];
+                Vector3 p = tPos != null ? tPos[v] : (tweaked ? ApplyMeshTweak(target, target.BaseVertices[v], false, default) : target.BaseVertices[v]);
                 acc.Clear();
                 int K = Math.Max(1, Math.Min(8, set.K));
                 var bestI = new int[K];
@@ -8404,9 +8473,14 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (ctx.Tris.Count == 0) return wrap;
 
+            Vector3[] tPos = (target.DeformedCache != null && target.DeformedCache.Length == n)
+                ? target.DeformedCache
+                : null;
+            bool tweaked = IsMeshTweaked(target);
+
             for (int v = 0; v < n; v++)
             {
-                Vector3 p = target.BaseVertices[v];
+                Vector3 p = tPos != null ? tPos[v] : (tweaked ? ApplyMeshTweak(target, target.BaseVertices[v], false, default) : target.BaseVertices[v]);
                 float bestD = float.MaxValue;
                 int bestT = -1;
                 Vector3 bestProj = p;
@@ -8417,7 +8491,10 @@ namespace UoFiddler.Plugin.Granny3D
                     if (tri.a < 0 || tri.b < 0 || tri.c < 0 ||
                         tri.a >= src.BaseVertices.Length || tri.b >= src.BaseVertices.Length || tri.c >= src.BaseVertices.Length)
                         continue;
-                    Vector3 A = src.BaseVertices[tri.a], B = src.BaseVertices[tri.b], C = src.BaseVertices[tri.c];
+                    var sPos = (src.DeformedCache != null && src.DeformedCache.Length == src.BaseVertices.Length)
+                        ? src.DeformedCache
+                        : src.BaseVertices;
+                    Vector3 A = sPos[tri.a], B = sPos[tri.b], C = sPos[tri.c];
                     Vector3 proj = ClosestPointOnTriangle(p, A, B, C);
                     float d = (proj - p).LengthSquared;
                     if (d < bestD) { bestD = d; bestT = t; bestProj = proj; }
@@ -8426,7 +8503,10 @@ namespace UoFiddler.Plugin.Granny3D
 
                 var bt = ctx.Tris[bestT];
                 var s2 = ctx.Sources[bt.srcIdx];
-                Vector3 A2 = s2.BaseVertices[bt.a], B2 = s2.BaseVertices[bt.b], C2 = s2.BaseVertices[bt.c];
+                var s2Pos = (s2.DeformedCache != null && s2.DeformedCache.Length == s2.BaseVertices.Length)
+                    ? s2.DeformedCache
+                    : s2.BaseVertices;
+                Vector3 A2 = s2Pos[bt.a], B2 = s2Pos[bt.b], C2 = s2Pos[bt.c];
                 Vector3 bary = Barycentric(bestProj, A2, B2, C2);
                 var map = ctx.SourceBoneMaps[bt.srcIdx];
 
@@ -8512,6 +8592,23 @@ namespace UoFiddler.Plugin.Granny3D
                 return;
             }
 
+            // Separate targets from sources:
+            // If the user selected a group/parent node or both character + accessory in one lot:
+            // automatically treat accessories as targets and character body parts as sources!
+            var realTargets = new List<int>();
+            foreach (int ti in idxs)
+            {
+                if (ti < 0 || ti >= _loadedMeshes.Count) continue;
+                var m = _loadedMeshes[ti];
+                bool isBody = (m.CutoutRole == MeshCutoutRole.Body || !string.IsNullOrEmpty(m.CharSlot)) &&
+                              m.Skin != null && m.Skin.Length > 0 && m.Bones != null && m.Bones.Count >= 10;
+                if (!isBody) realTargets.Add(ti);
+            }
+            if (realTargets.Count > 0 && realTargets.Count < idxs.Count)
+            {
+                idxs = realTargets;
+            }
+
             _wrapPreviewBusy = true;
             try
             {
@@ -8523,6 +8620,17 @@ namespace UoFiddler.Plugin.Granny3D
                     return;
                 }
                 var ctx = BuildWrapCtx(sources, masterHost);
+
+                Matrix4[] invSkin = null;
+                if (masterHost.SkinMatrices != null && masterHost.SkinMatrices.Length == masterHost.Bones.Count)
+                {
+                    invSkin = new Matrix4[masterHost.SkinMatrices.Length];
+                    for (int b = 0; b < invSkin.Length; b++)
+                    {
+                        try { invSkin[b] = Matrix4.Invert(masterHost.SkinMatrices[b]); }
+                        catch { invSkin[b] = Matrix4.Identity; }
+                    }
+                }
 
                 for (int k = 0; k < _loadedMeshes.Count; k++)
                     if (_loadedMeshes[k].PreviewActive) RestoreWrapPreview(_loadedMeshes[k]);
@@ -8546,9 +8654,47 @@ namespace UoFiddler.Plugin.Granny3D
 
                     target.PreviewSavedWrapSource = target.WrapSource;
                     target.PreviewSavedWrapSkin = target.WrapSkin;
+                    target.PreviewSavedBaseVertices = (Vector3[])target.BaseVertices.Clone();
+                    target.PreviewSavedAttachOffset = target.AttachOffset;
+                    target.PreviewSavedAttachRotation = target.AttachRotation;
+                    target.PreviewSavedPartScale = target.PartScale;
+                    target.PreviewSavedPartScaleVec = target.PartScaleVec;
                     target.PreviewActive = true;
                     target.WrapSource = masterHost;
                     target.WrapSkin = wrap;
+
+                    if (invSkin != null)
+                    {
+                        bool tweaked = IsMeshTweaked(target);
+                        var newBase = new Vector3[target.BaseVertices.Length];
+                        for (int v = 0; v < target.BaseVertices.Length; v++)
+                        {
+                            Vector3 p = tweaked ? ApplyMeshTweak(target, target.BaseVertices[v], false, default) : target.BaseVertices[v];
+                            var outInf = (wrap != null && v < wrap.Length) ? wrap[v] : null;
+                            if (outInf != null && outInf.Length > 0)
+                            {
+                                Vector3 bindP = Vector3.Zero;
+                                for (int m = 0; m < outInf.Length; m++)
+                                {
+                                    int bid = outInf[m].BoneId;
+                                    if (bid >= 0 && bid < invSkin.Length)
+                                        bindP += Vector3.TransformPosition(p, invSkin[bid]) * outInf[m].Weight;
+                                    else
+                                        bindP += p * outInf[m].Weight;
+                                }
+                                newBase[v] = bindP;
+                            }
+                            else
+                            {
+                                newBase[v] = p;
+                            }
+                        }
+                        target.BaseVertices = newBase;
+                        target.AttachOffset = Vector3.Zero;
+                        target.AttachRotation = Vector3.Zero;
+                        target.PartScale = 1f;
+                        target.PartScaleVec = Vector3.One;
+                    }
 
                     boundTotal += bound; vertTotal += wrap.Length; meshes++;
                 }
@@ -8578,6 +8724,15 @@ namespace UoFiddler.Plugin.Granny3D
             if (!lm.PreviewActive) return;
             lm.WrapSource = lm.PreviewSavedWrapSource;
             lm.WrapSkin = lm.PreviewSavedWrapSkin;
+            if (lm.PreviewSavedBaseVertices != null)
+            {
+                lm.BaseVertices = lm.PreviewSavedBaseVertices;
+                lm.AttachOffset = lm.PreviewSavedAttachOffset;
+                lm.AttachRotation = lm.PreviewSavedAttachRotation;
+                lm.PartScale = lm.PreviewSavedPartScale;
+                lm.PartScaleVec = lm.PreviewSavedPartScaleVec;
+                lm.PreviewSavedBaseVertices = null;
+            }
             lm.PreviewSavedWrapSource = null;
             lm.PreviewSavedWrapSkin = null;
             lm.PreviewActive = false;
@@ -8606,6 +8761,7 @@ namespace UoFiddler.Plugin.Granny3D
                 lm.HasAttachMatrix = false;
                 lm.AttachBoneName = null;
                 lm.CutoutRole = MeshCutoutRole.Accessory;
+                lm.PreviewSavedBaseVertices = null;
                 lm.PreviewSavedWrapSource = null;
                 lm.PreviewSavedWrapSkin = null;
                 lm.PreviewActive = false;
@@ -11723,6 +11879,12 @@ namespace UoFiddler.Plugin.Granny3D
             if (lm.Bones == null || lm.Bones.Count <= 4) return;        // standalone prop / tiny skeleton
             if (lm.BaseVertices == null || lm.BaseVertices.Length == 0) return;
             if (lm.BaseVertices.Length > 512) return;                   // only small accessories
+            string lName = (lm.Name ?? "").ToLowerInvariant();
+            if (lName.Contains("tunic") || lName.Contains("shirt") || lName.Contains("robe") ||
+                lName.Contains("dress") || lName.Contains("skirt") || lName.Contains("pants") ||
+                lName.Contains("jacket") || lName.Contains("coat") || lName.Contains("armor") ||
+                lName.Contains("weld"))
+                return;
 
             Vector3 c = Vector3.Zero;
             foreach (var v in lm.BaseVertices) c += v;
@@ -13280,67 +13442,69 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
                 else
-                for (int v = 0; v < vcount; v++)
                 {
-                    Vector3 orig = lm.BaseVertices[v];
-                    if (rigid)
+                    Parallel.For(0, vcount, v =>
                     {
-                        lm.DeformedCache[v] = Vector3.TransformPosition(orig, lm.AttachMatrix);
-                        continue;
-                    }
-                    if (!skinned)
-                    {
-                        Vector3 pos = hasTweak ? ApplyMeshTweak(lm, orig, false, default) : orig;
-                        if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
-                            pos += riderOffset;
-                        lm.DeformedCache[v] = pos;
-                        continue;
-                    }
-
-                    // Wrap uses the body mesh's weights/matrices; otherwise the mesh's own.
-                    var influences = hasWrap
-                        ? (v < lm.WrapSkin.Length ? lm.WrapSkin[v] : null)
-                        : (v < lm.Skin.Length ? lm.Skin[v] : null);
-                    if (influences == null || influences.Length == 0)
-                    {
-                        Vector3 pos = hasTweak ? ApplyMeshTweak(lm, orig, false, default) : orig;
-                        if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
-                            pos += riderOffset;
-                        lm.DeformedCache[v] = pos;
-                        continue;
-                    }
-
-                    Matrix4[] mats = hasWrap ? lm.WrapSource.SkinMatrices : lm.SkinMatrices;
-                    int boneCount = hasWrap ? lm.WrapSource.Bones.Count : lm.Bones.Count;
-
-                    bool thick = lm.Thickness != 0f && lm.BaseVertexNormals != null && v < lm.BaseVertexNormals.Length;
-                    Vector3 baseN = thick ? lm.BaseVertexNormals[v] : Vector3.Zero;
-
-                    Vector3 def = Vector3.Zero;
-                    Vector3 dnorm = Vector3.Zero;
-                    float totalW = 0f;
-                    for (int k = 0; k < influences.Length; k++)
-                    {
-                        int bId = influences[k].BoneId;
-                        if (bId >= 0 && bId < boneCount)
+                        Vector3 orig = lm.BaseVertices[v];
+                        if (rigid)
                         {
-                            def += Vector3.TransformPosition(orig, mats[bId]) * influences[k].Weight;
-                            if (thick) dnorm += Vector3.TransformNormal(baseN, mats[bId]) * influences[k].Weight;
-                            totalW += influences[k].Weight;
+                            lm.DeformedCache[v] = Vector3.TransformPosition(orig, lm.AttachMatrix);
+                            return;
                         }
-                    }
-                    Vector3 skinnedPos = totalW > 0.0001f ? (Math.Abs(totalW - 1f) > 0.001f ? def / totalW : def) : orig;
+                        if (!skinned)
+                        {
+                            Vector3 pos = hasTweak ? ApplyMeshTweak(lm, orig, false, default) : orig;
+                            if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
+                                pos += riderOffset;
+                            lm.DeformedCache[v] = pos;
+                            return;
+                        }
 
-                    // Per-part tweak: apply full ApplyMeshTweak (bilateral sagittal mirror, scale, offset, rotation, thickness)
-                    if (hasTweak)
-                    {
-                        skinnedPos = ApplyMeshTweak(lm, skinnedPos, thick, dnorm);
-                    }
-                    else if (thick && dnorm.LengthSquared > 1e-12f)
-                    {
-                        skinnedPos += Vector3.Normalize(dnorm) * lm.Thickness;
-                    }
-                    lm.DeformedCache[v] = skinnedPos;
+                        // Wrap uses the body mesh's weights/matrices; otherwise the mesh's own.
+                        var influences = hasWrap
+                            ? (v < lm.WrapSkin.Length ? lm.WrapSkin[v] : null)
+                            : (v < lm.Skin.Length ? lm.Skin[v] : null);
+                        if (influences == null || influences.Length == 0)
+                        {
+                            Vector3 pos = hasTweak ? ApplyMeshTweak(lm, orig, false, default) : orig;
+                            if (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero)
+                                pos += riderOffset;
+                            lm.DeformedCache[v] = pos;
+                            return;
+                        }
+
+                        Matrix4[] mats = hasWrap ? lm.WrapSource.SkinMatrices : lm.SkinMatrices;
+                        int boneCount = hasWrap ? lm.WrapSource.Bones.Count : lm.Bones.Count;
+
+                        bool thick = lm.Thickness != 0f && lm.BaseVertexNormals != null && v < lm.BaseVertexNormals.Length;
+                        Vector3 baseN = thick ? lm.BaseVertexNormals[v] : Vector3.Zero;
+
+                        Vector3 def = Vector3.Zero;
+                        Vector3 dnorm = Vector3.Zero;
+                        float totalW = 0f;
+                        for (int k = 0; k < influences.Length; k++)
+                        {
+                            int bId = influences[k].BoneId;
+                            if (bId >= 0 && bId < boneCount)
+                            {
+                                def += Vector3.TransformPosition(orig, mats[bId]) * influences[k].Weight;
+                                if (thick) dnorm += Vector3.TransformNormal(baseN, mats[bId]) * influences[k].Weight;
+                                totalW += influences[k].Weight;
+                            }
+                        }
+                        Vector3 skinnedPos = totalW > 0.0001f ? (Math.Abs(totalW - 1f) > 0.001f ? def / totalW : def) : orig;
+
+                        // Per-part tweak: apply full ApplyMeshTweak (bilateral sagittal mirror, scale, offset, rotation, thickness)
+                        if (hasTweak)
+                        {
+                            skinnedPos = ApplyMeshTweak(lm, skinnedPos, thick, dnorm);
+                        }
+                        else if (thick && dnorm.LengthSquared > 1e-12f)
+                        {
+                            skinnedPos += Vector3.Normalize(dnorm) * lm.Thickness;
+                        }
+                        lm.DeformedCache[v] = skinnedPos;
+                    });
                 }
 
                 int cornerCount = lm.Indices.Length;
@@ -13392,7 +13556,7 @@ namespace UoFiddler.Plugin.Granny3D
                     });
                 }
 
-                for (int c = 0; c < cornerCount; c++)
+                Parallel.For(0, cornerCount, c =>
                 {
                     int vi = lm.CornerVertex[c];
                     Vector3 p = (vi >= 0 && vi < vcount) ? lm.DeformedCache[vi] : Vector3.Zero;
@@ -13464,7 +13628,7 @@ namespace UoFiddler.Plugin.Granny3D
                         lm.Interleaved[c * 8 + 4] = tn.Y;
                         lm.Interleaved[c * 8 + 5] = tn.Z;
                     }
-                }
+                });
 
                 GL.BindBuffer(BufferTarget.ArrayBuffer, lm.Vbo);
                 GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, lm.Interleaved.Length * sizeof(float), lm.Interleaved);
@@ -15258,84 +15422,112 @@ namespace UoFiddler.Plugin.Granny3D
                     ? cut.bounds
                     : (Func<LoadedMesh, bool>)(lm => lm.CutoutRole != MeshCutoutRole.Mount);
 
-                var blocks = new VdAnimBlock[VdExport.DirCount];
+                var modelToViews = new Matrix4[VdExport.DirCount];
+                for (int d = 0; d < VdExport.DirCount; d++)
+                    modelToViews[d] = vscale * UoViewMatrix(d);
+
+                var minXs = new float[VdExport.DirCount];
+                var maxXs = new float[VdExport.DirCount];
+                var minYs = new float[VdExport.DirCount];
+                var maxYs = new float[VdExport.DirCount];
                 for (int d = 0; d < VdExport.DirCount; d++)
                 {
-                    Matrix4 modelToView = vscale * UoViewMatrix(d);
+                    minXs[d] = float.MaxValue; maxXs[d] = float.MinValue;
+                    minYs[d] = float.MaxValue; maxYs[d] = float.MinValue;
+                }
 
-                    // Pass 1: exact projected bounds over every frame of this direction,
-                    // so the whole silhouette fits whatever the pose (fixes parts being
-                    // cut below the ground line).
-                    float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
-                    for (int f = 0; f < n; f++)
-                    {
-                        float t = dur * f / n;
-                        PoseSkeletons(t, actionOffset);
-                        foreach (var clm in clothMeshes) ApplyBakeCloth(clm, t);
-                        RefreshVertexBuffers(false, actionOffset);
-                        AccumulateBounds(modelToView, ref minX, ref maxX, ref minY, ref maxY, boundsFilter);
-                    }
-                    if (minX > maxX) { minX = -1f; maxX = 1f; minY = -1f; maxY = 1f; }
+                // Pass 1: exact projected bounds over all frames and directions simultaneously.
+                // Poses and skins each frame ONLY ONCE across all 5 directions (5x faster)!
+                for (int f = 0; f < n; f++)
+                {
+                    float t = dur * f / n;
+                    PoseSkeletons(t, actionOffset);
+                    foreach (var clm in clothMeshes) ApplyBakeCloth(clm, t);
+                    RefreshVertexBuffers(false, actionOffset);
+                    for (int d = 0; d < VdExport.DirCount; d++)
+                        AccumulateBounds(modelToViews[d], ref minXs[d], ref maxXs[d], ref minYs[d], ref maxYs[d], boundsFilter);
+                }
 
-                    float bw = Math.Max(1e-4f, maxX - minX);
-                    float bh = Math.Max(1e-4f, maxY - minY);
+                var cws = new int[VdExport.DirCount];
+                var chs = new int[VdExport.DirCount];
+                var rws = new int[VdExport.DirCount];
+                var rhs = new int[VdExport.DirCount];
+                var mvps = new Matrix4[VdExport.DirCount];
+                var centerXs = new int[VdExport.DirCount];
+                var centerYs = new int[VdExport.DirCount];
+                var camOffXs = new int[VdExport.DirCount];
+                var camOffYs = new int[VdExport.DirCount];
+
+                for (int d = 0; d < VdExport.DirCount; d++)
+                {
+                    if (minXs[d] > maxXs[d]) { minXs[d] = -1f; maxXs[d] = 1f; minYs[d] = -1f; maxYs[d] = 1f; }
+
+                    float bw = Math.Max(1e-4f, maxXs[d] - minXs[d]);
+                    float bh = Math.Max(1e-4f, maxYs[d] - minYs[d]);
 
                     float ppu = (size > 0) ? Math.Max(1e-6f, size / bh) : previewPpu;
                     int cw = Math.Max(8, (int)Math.Ceiling(bw * ppu) + 2 * pad);
                     int ch = Math.Max(8, (int)Math.Ceiling(bh * ppu) + 2 * pad);
-                    // Clamp the supersampled FBO to a safe size; shrink ppu so the
-                    // model still fits the same world extent (no cropping).
                     const int maxR = 2048;
                     if (cw * ss > maxR || ch * ss > maxR)
                     {
-                        float f = Math.Min(maxR / (float)(cw * ss), maxR / (float)(ch * ss));
-                        ppu *= f;
+                        float factor = Math.Min(maxR / (float)(cw * ss), maxR / (float)(ch * ss));
+                        ppu *= factor;
                         cw = Math.Max(8, (int)Math.Ceiling(bw * ppu) + 2 * pad);
                         ch = Math.Max(8, (int)Math.Ceiling(bh * ppu) + 2 * pad);
                     }
                     int rw = cw * ss, rh = ch * ss;
-
                     float viewW = cw / ppu, viewH = ch / ppu;
-                    float shiftX = -(minX + maxX) * 0.5f;
-                    float shiftY = -(minY + maxY) * 0.5f;
+                    float shiftX = -(minXs[d] + maxXs[d]) * 0.5f;
+                    float shiftY = -(minYs[d] + maxYs[d]) * 0.5f;
                     Matrix4 proj = Matrix4.CreateOrthographic(viewW, viewH, -5000f, 5000f);
-                    Matrix4 mvp = modelToView * Matrix4.CreateTranslation(shiftX, shiftY, 0f) * proj;
+                    Matrix4 mvp = modelToViews[d] * Matrix4.CreateTranslation(shiftX, shiftY, 0f) * proj;
 
-                    // Feet pivot -> UO Center (origin row = Center.Y + Height).
                     float anchorZ = _uoFeetOnLine ? _normMin.Z : (_normMin.Z + _normMax.Z) * 0.5f;
                     Vector3 va = Vector3.TransformPosition(
-                        new Vector3(-_refCenter.X * _refScale, -_refCenter.Y * _refScale, anchorZ), modelToView);
-                    // Rotation axis X is always 0 in view space (model rotates around normalized origin 0,0),
-                    // matching DrawUoDirection which uses shiftX = _uoOffX without subtracting va.X.
-                    // va.X was non-zero for quadrupeds/centaurs (whose Y center != 0), causing an unwanted
-                    // horizontal shift in directions 1 (SW), 2 (W), 3 (NW).
-                    int centerX = (int)Math.Round((0.5f + shiftX / viewW) * cw);
-                    int centerY = (int)Math.Round((0.5f - (va.Y + shiftY) / viewH) * ch) - ch;
+                        new Vector3(-_refCenter.X * _refScale, -_refCenter.Y * _refScale, anchorZ), modelToViews[d]);
+                    int cx = (int)Math.Round((0.5f + shiftX / viewW) * cw);
+                    int cy = (int)Math.Round((0.5f - (va.Y + shiftY) / viewH) * ch) - ch;
 
-                    // Apply camera offset from the interactive UO viewport (right preview)
-                    // so the exported .vd sprite matches the visual alignment exactly.
                     int cameraOffX = (int)Math.Round(_uoOffX * ppu);
                     int cameraOffY = (int)Math.Round(_uoOffY * ppu);
-                    centerX -= cameraOffX;
-                    centerY += cameraOffY;
-                    centerY -= offsetY;
+                    cx -= cameraOffX;
+                    cy += cameraOffY;
+                    cy -= offsetY;
 
-                    // Pass 2: render every frame, then box-downsample (SSAA).
-                    var frames = new List<Bitmap>(n);
-                    for (int f = 0; f < n; f++)
+                    cws[d] = cw; chs[d] = ch; rws[d] = rw; rhs[d] = rh;
+                    mvps[d] = mvp; centerXs[d] = cx; centerYs[d] = cy;
+                    camOffXs[d] = cameraOffX; camOffYs[d] = cameraOffY;
+                }
+
+                // Pass 2: render all frames across all directions.
+                // Poses and skins each frame ONLY ONCE across all 5 directions (5x faster)!
+                var framesPerDir = new List<Bitmap>[VdExport.DirCount];
+                for (int d = 0; d < VdExport.DirCount; d++)
+                    framesPerDir[d] = new List<Bitmap>(n);
+
+                for (int f = 0; f < n; f++)
+                {
+                    float t = dur * f / n;
+                    PoseSkeletons(t, actionOffset);
+                    foreach (var clm in clothMeshes) ApplyBakeCloth(clm, t);
+                    RefreshVertexBuffers(false, actionOffset);
+
+                    for (int d = 0; d < VdExport.DirCount; d++)
                     {
-                        float t = dur * f / n;
-                        PoseSkeletons(t, actionOffset);
-                        foreach (var clm in clothMeshes) ApplyBakeCloth(clm, t);
-                        RefreshVertexBuffers(false, actionOffset);
                         using (var big = cutout.HasValue
-                                   ? RenderFrameCutout(rw, rh, mvp, cut.occluder, cut.target)
-                                   : RenderFrame(rw, rh, mvp, lm2 => lm2.CutoutRole != MeshCutoutRole.Mount))
-                            frames.Add(DownsampleBox(big, cw, ch));
+                                   ? RenderFrameCutout(rws[d], rhs[d], mvps[d], cut.occluder, cut.target)
+                                   : RenderFrame(rws[d], rhs[d], mvps[d], lm2 => lm2.CutoutRole != MeshCutoutRole.Mount))
+                            framesPerDir[d].Add(DownsampleBox(big, cws[d], chs[d]));
                     }
-                    blocks[d] = VdExport.BuildBlock(frames, centerX, centerY);
-                    foreach (var b in frames) b.Dispose();
-                    Log($"  bake dir={d} frames={n} px={cw}x{ch} ss={ss} center=({centerX},{centerY}) camOff=({cameraOffX},{cameraOffY}) offsetY={offsetY} actOff=({actionOffset.X:F2},{actionOffset.Y:F2},{actionOffset.Z:F2}) ({Path.GetFileName(animPath)})");
+                }
+
+                var blocks = new VdAnimBlock[VdExport.DirCount];
+                for (int d = 0; d < VdExport.DirCount; d++)
+                {
+                    blocks[d] = VdExport.BuildBlock(framesPerDir[d], centerXs[d], centerYs[d]);
+                    foreach (var b in framesPerDir[d]) b.Dispose();
+                    Log($"  bake dir={d} frames={n} px={cws[d]}x{chs[d]} ss={ss} center=({centerXs[d]},{centerYs[d]}) camOff=({camOffXs[d]},{camOffYs[d]}) offsetY={offsetY} actOff=({actionOffset.X:F2},{actionOffset.Y:F2},{actionOffset.Z:F2}) ({Path.GetFileName(animPath)})");
                 }
                 return blocks;
             }
@@ -15358,14 +15550,31 @@ namespace UoFiddler.Plugin.Granny3D
         {
             foreach (var lm in _loadedMeshes)
             {
-                if (lm.Interleaved == null || lm.Hidden) continue;
+                if (lm.Hidden) continue;
                 if (filter != null && !filter(lm)) continue;
-                float[] f = lm.Interleaved;
-                for (int c = 0; c + 7 < f.Length; c += 8)
+                var dc = lm.DeformedCache;
+                if (dc != null && dc.Length > 0)
                 {
-                    Vector3 v = Vector3.TransformPosition(new Vector3(f[c], f[c + 1], f[c + 2]), modelToView);
-                    if (v.X < minX) minX = v.X; if (v.X > maxX) maxX = v.X;
-                    if (v.Y < minY) minY = v.Y; if (v.Y > maxY) maxY = v.Y;
+                    for (int i = 0; i < dc.Length; i++)
+                    {
+                        Vector3 p = dc[i];
+                        Vector3 v = Vector3.TransformPosition(new Vector3(
+                            (p.X - _refCenter.X) * _refScale,
+                            (p.Y - _refCenter.Y) * _refScale,
+                            (p.Z - _refCenter.Z) * _refScale), modelToView);
+                        if (v.X < minX) minX = v.X; if (v.X > maxX) maxX = v.X;
+                        if (v.Y < minY) minY = v.Y; if (v.Y > maxY) maxY = v.Y;
+                    }
+                }
+                else if (lm.Interleaved != null)
+                {
+                    float[] f = lm.Interleaved;
+                    for (int c = 0; c + 7 < f.Length; c += 8)
+                    {
+                        Vector3 v = Vector3.TransformPosition(new Vector3(f[c], f[c + 1], f[c + 2]), modelToView);
+                        if (v.X < minX) minX = v.X; if (v.X > maxX) maxX = v.X;
+                        if (v.Y < minY) minY = v.Y; if (v.Y > maxY) maxY = v.Y;
+                    }
                 }
             }
         }
