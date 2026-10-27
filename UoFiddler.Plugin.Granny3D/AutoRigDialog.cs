@@ -4223,7 +4223,7 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int b = 0; b < nb; b++)
                     skinMats[b] = _previewModel.Bones[b].InverseBindMatrix * _boneWorldMatrices[b];
 
-                for (int i = 0; i < _meshVertexCount; i++)
+                void DeformVertex(int i)
                 {
                     int vi = _indices[i];
                     var p0 = _baseVertices[vi];
@@ -4261,6 +4261,18 @@ namespace UoFiddler.Plugin.Granny3D
                     _animatedInterleaved[off + 5] = _interleaved != null ? _interleaved[off + 5] : 1f;
                     _animatedInterleaved[off + 6] = _interleaved != null ? _interleaved[off + 6] : 0f;
                     _animatedInterleaved[off + 7] = _interleaved != null ? _interleaved[off + 7] : 0f;
+                }
+
+                if (_meshVertexCount > 2048)
+                {
+                    Parallel.For(0, _meshVertexCount, DeformVertex);
+                }
+                else
+                {
+                    for (int i = 0; i < _meshVertexCount; i++)
+                    {
+                        DeformVertex(i);
+                    }
                 }
 
                 // Upload deformed vertices
@@ -4627,7 +4639,13 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 var ctx = new AssimpContext();
-                var scene = ctx.ImportFile(filePath, PostProcessSteps.Triangulate | PostProcessSteps.GenerateSmoothNormals);
+                var scene = ctx.ImportFile(filePath,
+                    PostProcessSteps.Triangulate |
+                    PostProcessSteps.JoinIdenticalVertices |
+                    PostProcessSteps.GenerateSmoothNormals |
+                    PostProcessSteps.OptimizeMeshes |
+                    PostProcessSteps.OptimizeGraph |
+                    PostProcessSteps.RemoveRedundantMaterials);
                 if (scene == null)
                 {
                     MessageBox.Show("Impossible de charger le fichier 3D.", "Erreur 3D", MessageBoxButtons.OK, MessageBoxIcon.Warning);

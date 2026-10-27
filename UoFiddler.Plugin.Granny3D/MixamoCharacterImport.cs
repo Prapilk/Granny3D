@@ -81,8 +81,12 @@ namespace UoFiddler.Plugin.Granny3D
             using var ctx = new AssimpContext();
             var scene = ctx.ImportFile(fbxPath,
                 PostProcessSteps.Triangulate |
+                PostProcessSteps.JoinIdenticalVertices |
                 PostProcessSteps.LimitBoneWeights |
-                PostProcessSteps.GenerateNormals);
+                PostProcessSteps.GenerateNormals |
+                PostProcessSteps.OptimizeMeshes |
+                PostProcessSteps.OptimizeGraph |
+                PostProcessSteps.RemoveRedundantMaterials);
 
             if (scene == null || scene.MeshCount == 0 || scene.RootNode == null) return null;
 
@@ -1718,7 +1722,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (part.Skin == null || part.Skin.Length != part.Vertices.Length)
                 part.Skin = new VertexInfluence[part.Vertices.Length][];
 
-            for (int v = 0; v < part.Vertices.Length; v++)
+            void ProcessVertex(int v)
             {
                 var p = part.Vertices[v];
                 float absX = MathF.Abs(p.X);
@@ -1794,7 +1798,7 @@ namespace UoFiddler.Plugin.Granny3D
                     else if (segments.Count > 0) fallbackId = segments[0].BoneId;
 
                     part.Skin[v] = new[] { new VertexInfluence { BoneId = fallbackId, Weight = 1.0f } };
-                    continue;
+                    return;
                 }
 
                 float sum = 0f;
@@ -1810,6 +1814,18 @@ namespace UoFiddler.Plugin.Granny3D
                     };
                 }
                 part.Skin[v] = infs;
+            }
+
+            if (part.Vertices.Length > 1024)
+            {
+                Parallel.For(0, part.Vertices.Length, ProcessVertex);
+            }
+            else
+            {
+                for (int v = 0; v < part.Vertices.Length; v++)
+                {
+                    ProcessVertex(v);
+                }
             }
         }
 

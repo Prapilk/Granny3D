@@ -46,6 +46,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         public int Vbo;
         public int Vao;
+        public bool BufferUpToDate = false;
         public int TextureId = -1;
         public string TextureName = string.Empty;
         public bool HasTexture = false;
@@ -6695,6 +6696,7 @@ namespace UoFiddler.Plugin.Granny3D
             GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, 6 * sizeof(float));
 
             GL.BindVertexArray(0);
+            lm.BufferUpToDate = true;
         }
 
         private void DestroyMesh(LoadedMesh lm)
@@ -11150,9 +11152,16 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (!any) return;
 
+            Vector3 oldCenter = _refCenter;
+            float oldScale = _refScale;
             _refCenter = new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f);
             float maxDim = Math.Max(maxX - minX, Math.Max(maxY - minY, maxZ - minZ));
             _refScale = maxDim > 0 ? 2f / maxDim : 1f;
+
+            if (oldCenter != _refCenter || Math.Abs(oldScale - _refScale) > 1e-5f)
+            {
+                foreach (var m in _loadedMeshes) m.BufferUpToDate = false;
+            }
 
             _normMin = new Vector3(
                 (minX - _refCenter.X) * _refScale,
@@ -13164,6 +13173,12 @@ namespace UoFiddler.Plugin.Granny3D
                 bool cloth = lm.IsCloth && lm.ClothPos != null && lm.Weld != null;
                 if (lm.ForceBaseDisplay) { skinned = false; rigid = false; cloth = false; }
 
+                bool isAnimated = skinned || rigid || cloth || (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero);
+                if (!isAnimated && lm.BufferUpToDate)
+                {
+                    continue;
+                }
+
                 // Effective per-axis scale = global * per-axis.
                 Vector3 pscale = new Vector3(
                     lm.PartScale * lm.PartScaleVec.X,
@@ -13392,6 +13407,7 @@ namespace UoFiddler.Plugin.Granny3D
 
                 GL.BindBuffer(BufferTarget.ArrayBuffer, lm.Vbo);
                 GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, lm.Interleaved.Length * sizeof(float), lm.Interleaved);
+                lm.BufferUpToDate = true;
             }
 
             // Mesh-mesh clothing collision runs after every DeformedCache is built, so
