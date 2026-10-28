@@ -14764,6 +14764,21 @@ namespace UoFiddler.Plugin.Granny3D
         //   29 Horse_Attack2H -> fidget
         private static string MountClipKeywordForAction(int action, VdTargetDef target = null)
         {
+            string actionName = (target != null && target.ActionNames != null && action >= 0 && action < target.ActionNames.Length)
+                ? target.ActionNames[action]
+                : "";
+
+            bool isMount = (!string.IsNullOrEmpty(actionName) && (actionName.IndexOf("Horse", StringComparison.OrdinalIgnoreCase) >= 0 || actionName.IndexOf("Mount", StringComparison.OrdinalIgnoreCase) >= 0))
+                || (target != null && target.ActionCount == 35 && action >= 23 && action <= 29)
+                || (target != null && target.Uop && action >= 29 && action <= 31);
+
+            if (!isMount) return null;
+
+            string nl = actionName.ToLowerInvariant();
+            if (nl.Contains("walk")) return "walk";
+            if (nl.Contains("run")) return "run";
+            if (nl.Contains("fidget") || nl.Contains("bow") || nl.Contains("2h")) return "fidget";
+
             if (target != null && target.Uop)
             {
                 switch (action)
@@ -14782,7 +14797,7 @@ namespace UoFiddler.Plugin.Granny3D
                 case 27: return "fidget";
                 case 28: return "idle";
                 case 29: return "fidget";
-                default: return null;
+                default: return "idle";
             }
         }
 
@@ -15022,13 +15037,19 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         // Render a single preview frame for VdRemapForm showing the live cutout / render result.
-        private Bitmap RenderExportPreviewFrame(string animPath, int direction, float timeNorm,
+        private Bitmap RenderExportPreviewFrame(int actionIdx, VdTargetDef targetDef,
+            string animPath, int direction, float timeNorm,
             Vector3 actionOffset,
             (Func<LoadedMesh, bool> occluder, Func<LoadedMesh, bool> target, Func<LoadedMesh, bool> bounds)? cutout,
             int size = 0)
         {
             if (!_glReady || glControl == null || !glControl.IsHandleCreated || _loadedMeshes.Count == 0)
                 return null;
+
+            if (_mountMesh == null || !_loadedMeshes.Contains(_mountMesh))
+            {
+                _mountMesh = _loadedMeshes.Find(m => m.CutoutRole == MeshCutoutRole.Mount);
+            }
 
             var savedAnim = _currentAnimation;
             float savedTime = _currentTime;
@@ -15056,6 +15077,15 @@ namespace UoFiddler.Plugin.Granny3D
                 if (dur <= 0.0001f) dur = 1f;
                 float t = Math.Max(0f, Math.Min(dur, dur * timeNorm));
 
+                // Mount is an occluder ONLY on mounted actions!
+                string mountKw = MountClipKeywordForAction(actionIdx, targetDef);
+                bool allowMount = cutout.HasValue && _mountMesh != null && !string.IsNullOrEmpty(mountKw);
+                if (allowMount)
+                {
+                    EnsureMountAnimation(animPath, dur, mountKw);
+                    glControl.MakeCurrent();
+                }
+
                 // Pose skeletons
                 PoseSkeletons(t, actionOffset);
 
@@ -15078,7 +15108,8 @@ namespace UoFiddler.Plugin.Granny3D
                 if (cutout.HasValue)
                 {
                     var baseOccluder = cutout.Value.occluder;
-                    Func<LoadedMesh, bool> occ = lm => baseOccluder(lm) || lm.CutoutRole == MeshCutoutRole.Mount;
+                    Func<LoadedMesh, bool> occ = lm =>
+                        baseOccluder(lm) || (allowMount && lm.CutoutRole == MeshCutoutRole.Mount);
                     cut = (occ, cutout.Value.target, cutout.Value.bounds);
                 }
 
@@ -15127,7 +15158,7 @@ namespace UoFiddler.Plugin.Granny3D
 
                 using (var big = cutout.HasValue
                            ? RenderFrameCutout(rw, rh, mvp, cut.occluder, cut.target)
-                           : RenderFrame(rw, rh, mvp, lm2 => lm2.CutoutRole != MeshCutoutRole.Mount))
+                           : RenderFrame(rw, rh, mvp, lm2 => lm2.CutoutRole != MeshCutoutRole.Mount || allowMount))
                 {
                     return DownsampleBox(big, cw, ch);
                 }
@@ -15158,9 +15189,9 @@ namespace UoFiddler.Plugin.Granny3D
             if (sources.Count == 0) { Log("Export .vd : aucune animation source trouvee."); return; }
             var allSources = GatherAllExportAnimSources(out var allDisplay);
 
-            Func<string, int, float, Vector3, int, Bitmap> previewRenderer = (animPath, dir, time, actOff, size) =>
+            Func<int, VdTargetDef, string, int, float, Vector3, int, Bitmap> previewRenderer = (actionIdx, targetDef, animPath, dir, time, actOff, size) =>
             {
-                return RenderExportPreviewFrame(animPath, dir, time, actOff, cutout, size);
+                return RenderExportPreviewFrame(actionIdx, targetDef, animPath, dir, time, actOff, cutout, size);
             };
 
             string roleSummary;
@@ -15191,6 +15222,11 @@ namespace UoFiddler.Plugin.Granny3D
                 foreach (var om in occluderMeshes.Take(3))
                     sb.AppendLine($" • {Path.GetFileName(om.SourcePath)} [{om.CutoutRole}]");
                 if (occluderMeshes.Count > 3) sb.AppendLine($" • ... (+{occluderMeshes.Count - 3})");
+
+                if (_mountMesh != null)
+                {
+                    sb.AppendLine($"Monture : {Path.GetFileName(_mountMesh.SourcePath)} (actions montées uniquement)");
+                }
 
                 roleSummary = sb.ToString();
 
@@ -15373,6 +15409,10 @@ namespace UoFiddler.Plugin.Granny3D
                 // A selected mount is an occluder only on the mounted actions (23-29),
                 // each using its own clip (walk/run/idle/fidget). Other actions export
                 // with no mount at all.
+                if (_mountMesh == null || !_loadedMeshes.Contains(_mountMesh))
+                {
+                    _mountMesh = _loadedMeshes.Find(m => m.CutoutRole == MeshCutoutRole.Mount);
+                }
                 bool allowMount = cutout.HasValue && _mountMesh != null && !string.IsNullOrEmpty(mountKeyword);
                 if (allowMount)
                 {

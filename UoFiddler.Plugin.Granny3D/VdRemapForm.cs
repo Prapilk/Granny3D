@@ -48,7 +48,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Button _btnChooseMap;
         private Button _btnAll;
 
-        private readonly Func<string, int, float, Vector3, int, Bitmap> _previewRenderer;
+        private readonly Func<int, VdTargetDef, string, int, float, Vector3, int, Bitmap> _previewRenderer;
         private Panel _pnlPreview;
         private PictureBox _picPreview;
         private ComboBox _cmbPreviewAction;
@@ -73,7 +73,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         public VdRemapForm(List<VdTargetDef> targets, List<string> sources, string stripPrefix = null,
             List<string> allSources = null, List<string> allDisplay = null, string basePath = null,
-            Func<string, int, float, Vector3, int, Bitmap> previewRenderer = null,
+            Func<int, VdTargetDef, string, int, float, Vector3, int, Bitmap> previewRenderer = null,
             string exportModeTitle = null, string cutoutInfo = null,
             bool hasCutoutWarning = false, string cutoutWarningText = null,
             int cameraOffY = 0)
@@ -394,7 +394,13 @@ namespace UoFiddler.Plugin.Granny3D
             Controls.Add(top);
 
             InitMulMobList();
-            if (_cmbTarget.Items.Count > 0) _cmbTarget.SelectedIndex = 0;
+            int defaultIdx = 0;
+            if (!string.IsNullOrEmpty(stripPrefix) && (stripPrefix.StartsWith("H_Male", StringComparison.OrdinalIgnoreCase) || stripPrefix.StartsWith("H_Female", StringComparison.OrdinalIgnoreCase)))
+            {
+                int humIdx = _targets.FindIndex(t => t.Key == "equipment_mul");
+                if (humIdx >= 0) defaultIdx = humIdx;
+            }
+            if (_cmbTarget.Items.Count > 0) _cmbTarget.SelectedIndex = defaultIdx;
         }
 
         private void BuildPreviewControls(Panel pnl, string modeTitle, string cutoutInfo, bool hasWarning, string warningText)
@@ -682,7 +688,8 @@ namespace UoFiddler.Plugin.Granny3D
 
             try
             {
-                var bmp = _previewRenderer(path, dir, t, off, size);
+                var target = _cmbTarget.SelectedItem as VdTargetDef;
+                var bmp = _previewRenderer(a, target, path, dir, t, off, size);
                 var old = _previewBmp;
                 _previewBmp = bmp;
                 old?.Dispose();
@@ -693,7 +700,11 @@ namespace UoFiddler.Plugin.Granny3D
                     string clipName = !string.IsNullOrEmpty(path) ? Path.GetFileName(path) : "(aucune anim)";
                     int fCount = (a < _nudFrames.Count) ? (int)_nudFrames[a].Value : 0;
                     string fText = fCount > 0 ? $"{fCount} fr (forcé UO/manuel)" : "Auto (durée × FPS)";
-                    _lblActionDetail.Text = $"Action {a:D2} : {clipName}\nOffset 3D : ({off.X:F2}, {off.Y:F2}, {off.Z:F2}) | {fText}";
+                    string actName = (target != null && a < target.ActionNames.Length) ? target.ActionNames[a] : "";
+                    string mountStatus = IsMountAction(a, actName, target)
+                        ? " | 🐎 Action Montée (Cutout monture ACTIF)"
+                        : " | 🚶 Action à pied (Cutout monture INACTIF)";
+                    _lblActionDetail.Text = $"Action {a:D2} : {clipName}{mountStatus}\nOffset 3D : ({off.X:F2}, {off.Y:F2}, {off.Z:F2}) | {fText}";
                 }
             }
             catch (Exception ex)
