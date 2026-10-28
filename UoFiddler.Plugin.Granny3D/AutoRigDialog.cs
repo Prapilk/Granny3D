@@ -262,6 +262,11 @@ namespace UoFiddler.Plugin.Granny3D
         private bool _isPaintingWeights = false;
         private Vector3 _brush3DPos = Vector3.Zero;
         private bool _hasBrush3DHit = false;
+        private Vector3[]? _animBaseVertices;
+        private int _brushClosestVertex = -1;
+        private int[]? _symmetricVertexMap;
+        private Button btnBrushPipette = null!;
+        private bool _isPipetteActive = false;
         private int _colorVbo;
 
         private class AnimTestItem
@@ -633,12 +638,32 @@ namespace UoFiddler.Plugin.Granny3D
                 glControl.Invalidate();
             };
 
+            btnBrushPipette = new Button
+            {
+                Text = "💧 Pipette (Alt+Clic)",
+                AutoSize = true,
+                BackColor = Color.FromArgb(35, 35, 45),
+                ForeColor = Color.Cyan,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(8, 4, 0, 0),
+                Cursor = Cursors.Hand
+            };
+            btnBrushPipette.FlatAppearance.BorderColor = Color.DarkCyan;
+            btnBrushPipette.Click += (s, e) =>
+            {
+                _isPipetteActive = !_isPipetteActive;
+                btnBrushPipette.BackColor = _isPipetteActive ? Color.FromArgb(80, 80, 20) : Color.FromArgb(35, 35, 45);
+                btnBrushPipette.ForeColor = _isPipetteActive ? Color.Yellow : Color.Cyan;
+            };
+
             pnlBrushControls.Controls.Add(cmbBrushMode);
             pnlBrushControls.Controls.Add(lblRadius);
             pnlBrushControls.Controls.Add(nudBrushRadius);
             pnlBrushControls.Controls.Add(lblPower);
             pnlBrushControls.Controls.Add(nudBrushPower);
             pnlBrushControls.Controls.Add(chkBrushMirror);
+            pnlBrushControls.Controls.Add(btnBrushPipette);
             pnlBrushControls.Controls.Add(lblBrushBone);
 
             pnlCamTools.Controls.Add(chkWeightBrush);
@@ -3685,6 +3710,7 @@ namespace UoFiddler.Plugin.Granny3D
             _fingerFlexAmount = 0f;
             if (lblFingerFlex != null) lblFingerFlex.Text = "✋ Test Flexion Doigts / Poing : 0%";
             _boneWorldMatrices = null;
+            _animBaseVertices = null;
 
             // Re-upload rest pose interleaved buffer
             if (_interleaved != null) UploadMeshToGl();
@@ -5096,13 +5122,15 @@ namespace UoFiddler.Plugin.Granny3D
                 if (_animatedInterleaved == null || _animatedInterleaved.Length != _meshVertexCount * 8)
                     _animatedInterleaved = new float[_meshVertexCount * 8];
 
+                if (_animBaseVertices == null || _animBaseVertices.Length != _baseVertices.Length)
+                    _animBaseVertices = new Vector3[_baseVertices.Length];
+
                 var skinMats = new Matrix4[nb];
                 for (int b = 0; b < nb; b++)
                     skinMats[b] = _previewModel.Bones[b].InverseBindMatrix * _boneWorldMatrices[b];
 
-                void DeformVertex(int i)
+                void DeformBaseVertex(int vi)
                 {
-                    int vi = _indices[i];
                     var p0 = _baseVertices[vi];
                     var infs = skinToUse[vi];
 
@@ -5129,6 +5157,26 @@ namespace UoFiddler.Plugin.Granny3D
                         pAnim = p0;
                     }
 
+                    _animBaseVertices[vi] = pAnim;
+                }
+
+                if (_baseVertices.Length > 2048)
+                {
+                    Parallel.For(0, _baseVertices.Length, DeformBaseVertex);
+                }
+                else
+                {
+                    for (int vi = 0; vi < _baseVertices.Length; vi++)
+                    {
+                        DeformBaseVertex(vi);
+                    }
+                }
+
+                void FillInterleaved(int i)
+                {
+                    int vi = _indices[i];
+                    Vector3 pAnim = _animBaseVertices[vi];
+
                     int off = i * 8;
                     _animatedInterleaved[off + 0] = pAnim.X;
                     _animatedInterleaved[off + 1] = pAnim.Y;
@@ -5142,13 +5190,13 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (_meshVertexCount > 2048)
                 {
-                    Parallel.For(0, _meshVertexCount, DeformVertex);
+                    Parallel.For(0, _meshVertexCount, FillInterleaved);
                 }
                 else
                 {
                     for (int i = 0; i < _meshVertexCount; i++)
                     {
-                        DeformVertex(i);
+                        FillInterleaved(i);
                     }
                 }
 
@@ -6409,7 +6457,16 @@ void main() {
                 DrawBrushRing(mvp, _brush3DPos, r, new Vector4(1.0f, 0.85f, 0.1f, 0.95f));
                 if (chkBrushMirror != null && chkBrushMirror.Checked)
                 {
-                    DrawBrushRing(mvp, new Vector3(-_brush3DPos.X, _brush3DPos.Y, _brush3DPos.Z), r, new Vector4(0.3f, 0.85f, 1.0f, 0.75f));
+                    Vector3 mirrorPos = new Vector3(-_brush3DPos.X, _brush3DPos.Y, _brush3DPos.Z);
+                    if (_isAnimTesting && _animBaseVertices != null && _brushClosestVertex >= 0)
+                    {
+                        int vSym = GetSymmetricVertexIndex(_brushClosestVertex);
+                        if (vSym >= 0 && vSym < _animBaseVertices.Length)
+                        {
+                            mirrorPos = _animBaseVertices[vSym];
+                        }
+                    }
+                    DrawBrushRing(mvp, mirrorPos, r, new Vector4(0.3f, 0.85f, 1.0f, 0.75f));
                 }
             }
 
@@ -6857,6 +6914,24 @@ void main() {
             {
                 if (chkWeightBrush != null && chkWeightBrush.Checked)
                 {
+                    bool isAlt = ModifierKeys.HasFlag(Keys.Alt) || _isPipetteActive;
+                    if (isAlt)
+                    {
+                        if (PickBoneFromVertexUnderCursor(e.X, e.Y))
+                        {
+                            if (_isPipetteActive)
+                            {
+                                _isPipetteActive = false;
+                                if (btnBrushPipette != null)
+                                {
+                                    btnBrushPipette.BackColor = Color.FromArgb(35, 35, 45);
+                                    btnBrushPipette.ForeColor = Color.Cyan;
+                                }
+                            }
+                        }
+                        return;
+                    }
+
                     int pickedMarker = PickMarkerAtScreen(e.X, e.Y);
                     if (pickedMarker >= 0)
                     {
@@ -7542,6 +7617,131 @@ void main() {
             return -1;
         }
 
+        private void BuildSymmetricVertexMap()
+        {
+            if (_baseVertices == null || _baseVertices.Length == 0)
+            {
+                _symmetricVertexMap = null;
+                return;
+            }
+
+            int n = _baseVertices.Length;
+            _symmetricVertexMap = new int[n];
+            for (int i = 0; i < n; i++) _symmetricVertexMap[i] = -1;
+
+            float tol = 0.005f;
+            float tolSq = tol * tol;
+            float bucketSize = 0.02f;
+            var buckets = new Dictionary<(int, int), List<int>>();
+
+            for (int i = 0; i < n; i++)
+            {
+                int by = (int)MathF.Floor(_baseVertices[i].Y / bucketSize);
+                int bz = (int)MathF.Floor(_baseVertices[i].Z / bucketSize);
+                var key = (by, bz);
+                if (!buckets.TryGetValue(key, out var list))
+                {
+                    list = new List<int>();
+                    buckets[key] = list;
+                }
+                list.Add(i);
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                if (_symmetricVertexMap[i] >= 0) continue;
+
+                var v = _baseVertices[i];
+                if (MathF.Abs(v.X) < 0.001f)
+                {
+                    _symmetricVertexMap[i] = i;
+                    continue;
+                }
+
+                Vector3 target = new Vector3(-v.X, v.Y, v.Z);
+                int by = (int)MathF.Floor(target.Y / bucketSize);
+                int bz = (int)MathF.Floor(target.Z / bucketSize);
+
+                int bestJ = -1;
+                float bestDistSq = tolSq;
+
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        if (buckets.TryGetValue((by + dy, bz + dz), out var list))
+                        {
+                            foreach (int j in list)
+                            {
+                                float d2 = (_baseVertices[j] - target).LengthSquared;
+                                if (d2 < bestDistSq)
+                                {
+                                    bestDistSq = d2;
+                                    bestJ = j;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (bestJ >= 0)
+                {
+                    _symmetricVertexMap[i] = bestJ;
+                    _symmetricVertexMap[bestJ] = i;
+                }
+                else
+                {
+                    _symmetricVertexMap[i] = i;
+                }
+            }
+        }
+
+        private int GetSymmetricVertexIndex(int vIdx)
+        {
+            if (_symmetricVertexMap == null || _symmetricVertexMap.Length != (_baseVertices?.Length ?? 0))
+            {
+                BuildSymmetricVertexMap();
+            }
+            if (_symmetricVertexMap != null && vIdx >= 0 && vIdx < _symmetricVertexMap.Length)
+            {
+                return _symmetricVertexMap[vIdx];
+            }
+            return vIdx;
+        }
+
+        private bool PickBoneFromVertexUnderCursor(int mouseX, int mouseY)
+        {
+            if (RaycastMeshSurface(mouseX, mouseY, out Vector3 hitPoint))
+            {
+                if (_brushClosestVertex >= 0 && _rawSkin != null && _brushClosestVertex < _rawSkin.Length)
+                {
+                    var infs = _rawSkin[_brushClosestVertex];
+                    if (infs != null && infs.Length > 0)
+                    {
+                        var bestInf = infs.OrderByDescending(x => x.Weight).First();
+                        if (bestInf.Weight > 0.001f && bestInf.BoneId >= 0 && _previewModel != null && bestInf.BoneId < _previewModel.Bones.Count)
+                        {
+                            string boneName = _previewModel.Bones[bestInf.BoneId].Name;
+                            int mIdx = _markers.FindIndex(m => string.Equals(m.BoneName, boneName, StringComparison.OrdinalIgnoreCase));
+                            if (mIdx >= 0)
+                            {
+                                _selectedMarkerIndex = mIdx;
+                                _selectedMarkerIndices.Clear();
+                                _selectedMarkerIndices.Add(mIdx);
+                                if (mIdx < cbJoints.Items.Count) cbJoints.SelectedIndex = mIdx;
+                                UpdateNudValues();
+                                UpdateBrushActiveBoneLabel();
+                                if (chkHeatmap != null && chkHeatmap.Checked) UpdateHeatmapColors();
+                                glControl.Invalidate();
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
         private bool RaycastMeshSurface(int mouseX, int mouseY, out Vector3 hitPoint)
         {
             hitPoint = Vector3.Zero;
@@ -7573,11 +7773,13 @@ void main() {
             Vector3 rayEnd = farClip.Xyz / farClip.W;
             Vector3 rayDir = (rayEnd - rayStart).Normalized();
 
-            var verts = (_isClothingAdaptMode && _adaptedVertices != null) ? _adaptedVertices : _baseVertices;
+            var verts = (_isAnimTesting && _animBaseVertices != null) ? _animBaseVertices :
+                        ((_isClothingAdaptMode && _adaptedVertices != null) ? _adaptedVertices : _baseVertices);
             if (verts != null && _indices != null && _indices.Length >= 3)
             {
                 float closestT = float.MaxValue;
                 bool found = false;
+                int bestVertex = -1;
 
                 for (int i = 0; i < _indices.Length; i += 3)
                 {
@@ -7596,6 +7798,15 @@ void main() {
                         {
                             closestT = t;
                             found = true;
+                            Vector3 hitCand = rayStart + rayDir * t;
+                            float d0 = (hitCand - v0).LengthSquared;
+                            float d1 = (hitCand - v1).LengthSquared;
+                            float d2 = (hitCand - v2).LengthSquared;
+                            int bestV = i0;
+                            float minD = d0;
+                            if (d1 < minD) { minD = d1; bestV = i1; }
+                            if (d2 < minD) { minD = d2; bestV = i2; }
+                            bestVertex = bestV;
                         }
                     }
                 }
@@ -7603,6 +7814,7 @@ void main() {
                 if (found)
                 {
                     hitPoint = rayStart + rayDir * closestT;
+                    _brushClosestVertex = bestVertex;
                     return true;
                 }
             }
@@ -7619,6 +7831,21 @@ void main() {
                 if (t > 0f)
                 {
                     hitPoint = rayStart + rayDir * t;
+                    if (verts != null && verts.Length > 0)
+                    {
+                        int bestV = -1;
+                        float bestDistSq = float.MaxValue;
+                        for (int vi = 0; vi < verts.Length; vi++)
+                        {
+                            float d = (verts[vi] - hitPoint).LengthSquared;
+                            if (d < bestDistSq)
+                            {
+                                bestDistSq = d;
+                                bestV = vi;
+                            }
+                        }
+                        _brushClosestVertex = bestV;
+                    }
                     return true;
                 }
             }
@@ -7672,15 +7899,22 @@ void main() {
             int mode = cmbBrushMode.SelectedIndex;
             bool mirror = chkBrushMirror.Checked;
 
-            ApplyBrushToVertices(hitPoint, boneIdx, radius, power, mode);
+            var modifiedIndices = ApplyBrushToVertices(hitPoint, boneIdx, radius, power, mode);
 
-            if (mirror)
+            if (mirror && modifiedIndices != null && modifiedIndices.Count > 0)
             {
                 int symBoneIdx = GetSymmetricBoneIndex(boneIdx);
                 if (symBoneIdx >= 0)
                 {
-                    Vector3 mirrorPos = new Vector3(-hitPoint.X, hitPoint.Y, hitPoint.Z);
-                    ApplyBrushToVertices(mirrorPos, symBoneIdx, radius, power, mode);
+                    foreach (int vi in modifiedIndices)
+                    {
+                        int symVi = GetSymmetricVertexIndex(vi);
+                        if (symVi >= 0 && symVi < _rawSkin.Length)
+                        {
+                            float w = GetVertexWeight(vi, boneIdx);
+                            SetVertexWeight(symVi, symBoneIdx, w);
+                        }
+                    }
                 }
             }
 
@@ -7696,10 +7930,11 @@ void main() {
             glControl.Invalidate();
         }
 
-        private void ApplyBrushToVertices(Vector3 center, int boneIdx, float radius, float power, int mode)
+        private List<int>? ApplyBrushToVertices(Vector3 center, int boneIdx, float radius, float power, int mode)
         {
-            var verts = (_isClothingAdaptMode && _adaptedVertices != null) ? _adaptedVertices : _baseVertices;
-            if (verts == null || _rawSkin == null) return;
+            var verts = (_isAnimTesting && _animBaseVertices != null) ? _animBaseVertices :
+                        ((_isClothingAdaptMode && _adaptedVertices != null) ? _adaptedVertices : _baseVertices);
+            if (verts == null || _rawSkin == null) return null;
 
             float r2 = radius * radius;
             var inRangeIndices = new List<int>();
@@ -7710,7 +7945,7 @@ void main() {
                 if (d2 <= r2) inRangeIndices.Add(i);
             }
 
-            if (inRangeIndices.Count == 0) return;
+            if (inRangeIndices.Count == 0) return null;
 
             if (mode == 2) // Smooth
             {
@@ -7763,6 +7998,8 @@ void main() {
                     SetVertexWeight(vi, boneIdx, newW);
                 }
             }
+
+            return inRangeIndices;
         }
 
         private float GetVertexWeight(int vIdx, int boneIdx)

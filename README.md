@@ -47,13 +47,33 @@ Designed for Ultima Online shard creators, artists, and modders to inspect, asse
 
 ### 💾 6. Complete `.vd` (Ultima Online Animation) Exporter
 - **Animation mapping matrix**: map UO action slots (*Walk*, *Run*, *Idle*, *Combat*, *Attack*, *Cast*, *Die*, etc.) to source animations.
-- **Live export preview**: test the complete action playback and framing before writing files.
+- **Per-action frame control**: customize the exact number of frames per action (e.g. 5, 8, 10 frames) or leave as `Auto` based on clip duration.
+- **MUL animation frame copier**: copy the exact frame distribution from any classic UO creature (`anim*.mul`) by selecting its name or Body ID (e.g., Ogre, Centaur, Dragon, Human) for 100% authentic timing in-game.
+- **Directional centering & pivot compensation**: perfectly aligned 5-direction isometric rendering. Eliminates lateral shift on quadrupeds, mounts, and centaurs across profile (West) and diagonal (South-West, North-West) views.
+- **Smart mount cutout occlusion**: dynamically occludes the rider only during mounted actions (*Walk*, *Run*, *Idle*, *Fidget* on horse) and displays the character unoccluded on all ground actions.
+- **Live export preview**: real-time frame-by-frame and direction preview with accurate occluders and grounding before baking.
 - **Save / Load mapping profiles**: export configurations can be saved and reused across multiple meshes.
 - **Cutout roles**: distinguish visible Body meshes from occluders (Accessory, Mount) for accurate layered rendering.
 
 ### 🎨 7. Native Palette & Hue Support (`hues.mul`)
 - Direct integration with UOFiddler's `hues.mul`.
 - Color picker popup dialog, partial hue mode, and desaturation toggle.
+
+---
+
+## 🌟 Dernières Nouveautés & Correctifs Récents
+
+- **Gestion des frames par action & Copie depuis les fichiers MUL** :
+  - Ajout d'une colonne *Frames* dédiée dans la matrice d'export `.vd`.
+  - Outil intégré de duplication du nombre de frames depuis n'importe quelle créature UO existante (sélection par Body ID ou nom de créature dans les MULs).
+  - Mode "Auto" intelligent conservé par défaut, avec protection anti-réentrance lors de la saisie.
+- **Correctif d'alignement directionnel & Centrage (.vd & preview)** :
+  - Résolution du décalage latéral observé sur les créatures asymétriques le long de l'axe longitudinal (centaures, chevaux, quadrupèdes).
+  - L'ancre horizontale $X$ (`centerX`) est désormais rigoureusement verrouillée sur le pivot de rotation normalisé du modèle et le décalage caméra, éliminant tout décalage parasite en vue Ouest / profil.
+  - Correspondance exacte pixel par pixel entre la fenêtre de prévisualisation et le fichier `.vd` final dans UOFiddler / Ultima Online.
+- **Rôle de découpe monture contextuelle (Cutout / Occluder)** :
+  - Les montures sélectionnées en tant qu'occulteurs ne masquent désormais le cavalier que sur les actions montées (actions 23-29 et UOP 29-31), laissant les actions à pied totalement libres d'occlusion.
+  - Synchronisation en direct dans la fenêtre de prévisualisation d'export.
 
 ---
 
