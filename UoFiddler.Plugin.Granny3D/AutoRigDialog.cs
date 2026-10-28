@@ -181,6 +181,8 @@ namespace UoFiddler.Plugin.Granny3D
             public bool IsFemale { get; set; }
             public bool IsCustom { get; set; }
 
+            public VertexInfluence[][]? RawSkin { get; set; }
+
             public string ActionName { get; set; } = string.Empty;
         }
 
@@ -249,6 +251,17 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
         private CheckBox chkHeatmap = null!;
+        private CheckBox chkWeightBrush = null!;
+        private FlowLayoutPanel pnlBrushControls = null!;
+        private ComboBox cmbBrushMode = null!;
+        private NumericUpDown nudBrushRadius = null!;
+        private NumericUpDown nudBrushPower = null!;
+        private CheckBox chkBrushMirror = null!;
+        private Label lblBrushBone = null!;
+
+        private bool _isPaintingWeights = false;
+        private Vector3 _brush3DPos = Vector3.Zero;
+        private bool _hasBrush3DHit = false;
         private int _colorVbo;
 
         private class AnimTestItem
@@ -507,6 +520,129 @@ namespace UoFiddler.Plugin.Granny3D
                 glControl.Invalidate();
             };
             pnlCamTools.Controls.Add(chkHeatmap);
+
+            chkWeightBrush = new CheckBox
+            {
+                Text = Localization.Tr("brush_chk_toggle", "🖌️ Pinceau Poids"),
+                Checked = false,
+                ForeColor = Color.Orange,
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                Margin = new Padding(12, 6, 0, 0)
+            };
+
+            pnlBrushControls = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0),
+                Padding = new Padding(0),
+                Visible = false
+            };
+
+            cmbBrushMode = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(22, 22, 24),
+                ForeColor = Color.Gold,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+                Width = 115,
+                Margin = new Padding(8, 4, 0, 0)
+            };
+            cmbBrushMode.Items.AddRange(new object[] {
+                "➕ Ajouter (+)",
+                "➖ Gommer (-)",
+                "〰 Lisser",
+                "🎯 Remplacer (=)"
+            });
+            cmbBrushMode.SelectedIndex = 0;
+
+            var lblRadius = new Label
+            {
+                Text = "Rayon :",
+                ForeColor = Color.Gainsboro,
+                AutoSize = true,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
+                Margin = new Padding(8, 7, 0, 0)
+            };
+            nudBrushRadius = new NumericUpDown
+            {
+                DecimalPlaces = 2,
+                Minimum = 0.02m,
+                Maximum = 1.00m,
+                Increment = 0.02m,
+                Value = 0.10m,
+                Width = 55,
+                BackColor = Color.FromArgb(22, 22, 24),
+                ForeColor = Color.Gainsboro,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
+                Margin = new Padding(2, 4, 0, 0)
+            };
+
+            var lblPower = new Label
+            {
+                Text = "Force :",
+                ForeColor = Color.Gainsboro,
+                AutoSize = true,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
+                Margin = new Padding(8, 7, 0, 0)
+            };
+            nudBrushPower = new NumericUpDown
+            {
+                DecimalPlaces = 2,
+                Minimum = 0.05m,
+                Maximum = 1.00m,
+                Increment = 0.05m,
+                Value = 0.25m,
+                Width = 55,
+                BackColor = Color.FromArgb(22, 22, 24),
+                ForeColor = Color.Gainsboro,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
+                Margin = new Padding(2, 4, 0, 0)
+            };
+
+            chkBrushMirror = new CheckBox
+            {
+                Text = "⮃ Symétrie X",
+                Checked = true,
+                ForeColor = Color.SkyBlue,
+                AutoSize = true,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
+                Margin = new Padding(8, 6, 0, 0)
+            };
+
+            lblBrushBone = new Label
+            {
+                Text = "🦴 Os: (Sélectionnez une croix)",
+                ForeColor = Color.PaleGreen,
+                AutoSize = true,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+                Margin = new Padding(10, 7, 0, 0)
+            };
+
+            chkWeightBrush.CheckedChanged += (s, e) =>
+            {
+                pnlBrushControls.Visible = chkWeightBrush.Checked;
+                if (chkWeightBrush.Checked)
+                {
+                    if (!chkHeatmap.Checked) chkHeatmap.Checked = true;
+                    UpdateBrushActiveBoneLabel();
+                }
+                glControl.Invalidate();
+            };
+
+            pnlBrushControls.Controls.Add(cmbBrushMode);
+            pnlBrushControls.Controls.Add(lblRadius);
+            pnlBrushControls.Controls.Add(nudBrushRadius);
+            pnlBrushControls.Controls.Add(lblPower);
+            pnlBrushControls.Controls.Add(nudBrushPower);
+            pnlBrushControls.Controls.Add(chkBrushMirror);
+            pnlBrushControls.Controls.Add(lblBrushBone);
+
+            pnlCamTools.Controls.Add(chkWeightBrush);
+            pnlCamTools.Controls.Add(pnlBrushControls);
 
             glControl = new GLControl
             {
@@ -801,7 +937,8 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = Localization.Tr("rig_grp_markers", "4. Positionnement des Articulations (Croix 3D)"),
                 Dock = DockStyle.Top,
-                Height = 540,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -1116,11 +1253,25 @@ namespace UoFiddler.Plugin.Granny3D
             pnlMirrorBtns.Controls.Add(btnMirrorLtoR);
             pnlMirrorBtns.Controls.Add(btnMirrorRtoL);
 
-            var lblJoint = new Label { Text = Localization.Tr("rig_lbl_sel_cross", "Croix sélectionnée :"), Location = new Point(12, 178), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            var pnlJointSelRow = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 34,
+                Padding = new Padding(0, 3, 0, 3)
+            };
+
+            var lblJoint = new Label
+            {
+                Text = Localization.Tr("rig_lbl_sel_cross", "Croix sélectionnée :"),
+                Location = new Point(2, 6),
+                AutoSize = true,
+                ForeColor = Color.Gainsboro,
+                Font = new Font("Segoe UI", 9F, FontStyle.Regular)
+            };
             cbJoints = new ComboBox
             {
-                Location = new Point(145, 175),
-                Width = 175,
+                Location = new Point(135, 3),
+                Width = 190,
                 DropDownWidth = 380,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(22, 22, 24),
@@ -1137,13 +1288,14 @@ namespace UoFiddler.Plugin.Granny3D
                 if (_selectedMarkerIndex >= 0) _selectedMarkerIndices.Add(_selectedMarkerIndex);
                 UpdateNudValues();
                 if (chkHeatmap != null && chkHeatmap.Checked) UpdateHeatmapColors();
+                UpdateBrushActiveBoneLabel();
                 glControl.Invalidate();
             };
 
             var btnSelectAll = new Button
             {
                 Text = Localization.Tr("rig_btn_sel_all", "🎯 Tout"),
-                Location = new Point(325, 174),
+                Location = new Point(332, 2),
                 Size = new Size(72, 26),
                 BackColor = Color.FromArgb(45, 55, 75),
                 ForeColor = Color.White,
@@ -1156,7 +1308,7 @@ namespace UoFiddler.Plugin.Granny3D
             var btnDeselectAll = new Button
             {
                 Text = Localization.Tr("rig_btn_desel_all", "🧹 Aucun"),
-                Location = new Point(402, 174),
+                Location = new Point(408, 2),
                 Size = new Size(70, 26),
                 BackColor = Color.FromArgb(45, 45, 50),
                 ForeColor = Color.Gainsboro,
@@ -1166,7 +1318,18 @@ namespace UoFiddler.Plugin.Granny3D
             btnDeselectAll.FlatAppearance.BorderColor = Color.FromArgb(65, 65, 70);
             btnDeselectAll.Click += (s, e) => DeselectAllMarkers();
 
-            var pnlCoords = new Panel { Location = new Point(12, 209), Size = new Size(480, 36), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            pnlJointSelRow.Controls.Add(lblJoint);
+            pnlJointSelRow.Controls.Add(cbJoints);
+            pnlJointSelRow.Controls.Add(btnSelectAll);
+            pnlJointSelRow.Controls.Add(btnDeselectAll);
+
+            var pnlCoords = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 34,
+                Padding = new Padding(0, 2, 0, 2),
+                Font = new Font("Segoe UI", 9F, FontStyle.Regular)
+            };
             Label CreateLbl(string txt, int x) => new Label { Text = txt, Location = new Point(x, 8), AutoSize = true, ForeColor = Color.Gainsboro };
 
             nudX = new NumericUpDown { DecimalPlaces = 3, Minimum = -10, Maximum = 10, Increment = 0.01m, Location = new Point(25, 6), Width = 85, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
@@ -1188,7 +1351,13 @@ namespace UoFiddler.Plugin.Granny3D
             pnlCoords.Controls.Add(nudZ);
 
             // Rotation Controls Panel
-            pnlRotControls = new Panel { Location = new Point(12, 249), Size = new Size(480, 32), Font = new Font("Segoe UI", 9F, FontStyle.Regular) };
+            pnlRotControls = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 32,
+                Padding = new Padding(0, 2, 0, 2),
+                Font = new Font("Segoe UI", 9F, FontStyle.Regular)
+            };
             nudRoll = new NumericUpDown { DecimalPlaces = 1, Minimum = -180, Maximum = 180, Increment = 5m, Location = new Point(115, 4), Width = 75, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gold };
             nudPitch = new NumericUpDown { DecimalPlaces = 1, Minimum = -90, Maximum = 90, Increment = 5m, Location = new Point(245, 4), Width = 70, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
             nudYaw = new NumericUpDown { DecimalPlaces = 1, Minimum = -90, Maximum = 90, Increment = 5m, Location = new Point(365, 4), Width = 70, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.Gainsboro };
@@ -1208,7 +1377,12 @@ namespace UoFiddler.Plugin.Granny3D
             pnlRotControls.Controls.Add(nudYaw);
 
             // Quick Rotation Presets Panel
-            pnlRotBtns = new Panel { Location = new Point(12, 282), Size = new Size(480, 28) };
+            pnlRotBtns = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 30,
+                Padding = new Padding(0, 2, 0, 2)
+            };
             Button CreateRotBtn(string text, int x, int width, Action act)
             {
                 var b = new Button
@@ -1235,11 +1409,12 @@ namespace UoFiddler.Plugin.Granny3D
             // Skeleton Scale Presets Panel
             var pnlSkelScale = new FlowLayoutPanel
             {
-                Location = new Point(12, 314),
-                Size = new Size(480, 30),
+                Dock = DockStyle.Top,
+                Height = 30,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Margin = new Padding(0)
+                Margin = new Padding(0),
+                Padding = new Padding(0, 2, 0, 2)
             };
             var lblSkelScale = new Label
             {
@@ -1278,11 +1453,12 @@ namespace UoFiddler.Plugin.Granny3D
             // Auto Fit & Center Skeleton Panel
             var pnlSkelFit = new FlowLayoutPanel
             {
-                Location = new Point(12, 346),
-                Size = new Size(480, 32),
+                Dock = DockStyle.Top,
+                Height = 32,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Margin = new Padding(0)
+                Margin = new Padding(0),
+                Padding = new Padding(0, 2, 0, 2)
             };
 
             var btnFitSkel = new Button
@@ -1317,11 +1493,12 @@ namespace UoFiddler.Plugin.Granny3D
 
             var pnlArmTPose = new FlowLayoutPanel
             {
-                Location = new Point(12, 380),
-                Size = new Size(480, 30),
+                Dock = DockStyle.Top,
+                Height = 32,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Margin = new Padding(0)
+                Margin = new Padding(0),
+                Padding = new Padding(0, 2, 0, 2)
             };
 
             var btnAlignArmsTPose = new Button
@@ -1341,8 +1518,10 @@ namespace UoFiddler.Plugin.Granny3D
             lblRotTip = new Label
             {
                 Text = Localization.Tr("rig_lbl_rot_tip", "💡 Ctrl + glisser = multi-sélection. Les boutons d'échelle agissent sur la sélection (ou tout le squelette)."),
-                Location = new Point(12, 414),
-                AutoSize = true,
+                Dock = DockStyle.Top,
+                Height = 22,
+                Padding = new Padding(0, 4, 0, 0),
+                AutoSize = false,
                 ForeColor = Color.Orange,
                 Font = new Font("Segoe UI", 8F, FontStyle.Bold)
             };
@@ -1350,12 +1529,13 @@ namespace UoFiddler.Plugin.Granny3D
             var btnResetPose = new Button
             {
                 Text = Localization.Tr("rig_btn_reset_pose", "🔄 Réinitialiser les repères Biped UO par défaut"),
-                Dock = DockStyle.Bottom,
+                Dock = DockStyle.Top,
                 Height = 28,
                 BackColor = Color.FromArgb(45, 45, 48),
                 ForeColor = Color.Gainsboro,
                 FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9F, FontStyle.Regular)
+                Font = new Font("Segoe UI", 9F, FontStyle.Regular),
+                Margin = new Padding(0, 4, 0, 0)
             };
             btnResetPose.Click += (s, e) =>
             {
@@ -1378,25 +1558,28 @@ namespace UoFiddler.Plugin.Granny3D
                 glControl.Invalidate();
             };
 
-            grpMarkers.Controls.Add(btnResetPose);
-            grpMarkers.Controls.Add(lblRotTip);
-            grpMarkers.Controls.Add(pnlArmTPose);
-            grpMarkers.Controls.Add(pnlSkelFit);
-            grpMarkers.Controls.Add(pnlSkelScale);
-            grpMarkers.Controls.Add(pnlRotBtns);
-            grpMarkers.Controls.Add(pnlRotControls);
-            grpMarkers.Controls.Add(pnlCoords);
-            grpMarkers.Controls.Add(btnDeselectAll);
-            grpMarkers.Controls.Add(btnSelectAll);
-            grpMarkers.Controls.Add(cbJoints);
-            grpMarkers.Controls.Add(lblJoint);
-            grpMarkers.Controls.Add(pnlMirrorBtns);
-            grpMarkers.Controls.Add(pnlTemplateBtns);
-            grpMarkers.Controls.Add(pnlSkinBtns);
-            grpMarkers.Controls.Add(pnlTopRigBtns);
-            grpMarkers.Controls.Add(pnlAdaptationControls);
-            grpMarkers.Controls.Add(lblJointTip);
-            grpMarkers.Controls.Add(pnlModeSwitch);
+            void AddRowToMarkers(Control c)
+            {
+                grpMarkers.Controls.Add(c);
+                c.SendToBack();
+            }
+
+            AddRowToMarkers(pnlModeSwitch);
+            AddRowToMarkers(lblJointTip);
+            AddRowToMarkers(pnlAdaptationControls);
+            AddRowToMarkers(pnlTopRigBtns);
+            AddRowToMarkers(pnlSkinBtns);
+            AddRowToMarkers(pnlTemplateBtns);
+            AddRowToMarkers(pnlMirrorBtns);
+            AddRowToMarkers(pnlJointSelRow);
+            AddRowToMarkers(pnlCoords);
+            AddRowToMarkers(pnlRotControls);
+            AddRowToMarkers(pnlRotBtns);
+            AddRowToMarkers(pnlSkelScale);
+            AddRowToMarkers(pnlSkelFit);
+            AddRowToMarkers(pnlArmTPose);
+            AddRowToMarkers(lblRotTip);
+            AddRowToMarkers(btnResetPose);
 
             // 5. Animation Preview Group
             var grpAnim = new GroupBox
@@ -1701,6 +1884,19 @@ namespace UoFiddler.Plugin.Granny3D
                 });
             }
 
+            if (_rawSkin != null)
+            {
+                state.RawSkin = new VertexInfluence[_rawSkin.Length][];
+                for (int i = 0; i < _rawSkin.Length; i++)
+                {
+                    if (_rawSkin[i] != null)
+                    {
+                        state.RawSkin[i] = new VertexInfluence[_rawSkin[i].Length];
+                        Array.Copy(_rawSkin[i], state.RawSkin[i], _rawSkin[i].Length);
+                    }
+                }
+            }
+
             return state;
         }
 
@@ -1875,6 +2071,25 @@ namespace UoFiddler.Plugin.Granny3D
                     cbJoints.SelectedIndex = 0;
                     _selectedMarkerIndex = 0;
                     _selectedMarkerIndices.Add(0);
+                }
+
+                if (state.RawSkin != null)
+                {
+                    _rawSkin = new VertexInfluence[state.RawSkin.Length][];
+                    for (int i = 0; i < state.RawSkin.Length; i++)
+                    {
+                        if (state.RawSkin[i] != null)
+                        {
+                            _rawSkin[i] = new VertexInfluence[state.RawSkin[i].Length];
+                            Array.Copy(state.RawSkin[i], _rawSkin[i], state.RawSkin[i].Length);
+                        }
+                    }
+                    if (_previewModel != null && _previewModel.Parts.Count > 0)
+                    {
+                        _previewModel.Parts[0].Skin = _rawSkin;
+                    }
+                    if (chkHeatmap != null && chkHeatmap.Checked) UpdateHeatmapColors();
+                    if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
                 }
 
                 UpdateNudValues();
@@ -6187,7 +6402,18 @@ void main() {
                 DrawJointMarkers(mvp);
             }
 
-            // 5. Draw 2D Marquee Selection Box
+            // 5. Draw 3D Weight Brush Cursor
+            if (chkWeightBrush != null && chkWeightBrush.Checked && _hasBrush3DHit)
+            {
+                float r = (float)nudBrushRadius.Value;
+                DrawBrushRing(mvp, _brush3DPos, r, new Vector4(1.0f, 0.85f, 0.1f, 0.95f));
+                if (chkBrushMirror != null && chkBrushMirror.Checked)
+                {
+                    DrawBrushRing(mvp, new Vector3(-_brush3DPos.X, _brush3DPos.Y, _brush3DPos.Z), r, new Vector4(0.3f, 0.85f, 1.0f, 0.75f));
+                }
+            }
+
+            // 6. Draw 2D Marquee Selection Box
             if (_isBoxSelecting)
             {
                 DrawScreenSelectionBox();
@@ -6629,6 +6855,28 @@ void main() {
 
             if (e.Button == MouseButtons.Left)
             {
+                if (chkWeightBrush != null && chkWeightBrush.Checked)
+                {
+                    int pickedMarker = PickMarkerAtScreen(e.X, e.Y);
+                    if (pickedMarker >= 0)
+                    {
+                        _selectedMarkerIndex = pickedMarker;
+                        _selectedMarkerIndices.Clear();
+                        _selectedMarkerIndices.Add(pickedMarker);
+                        if (pickedMarker < cbJoints.Items.Count) cbJoints.SelectedIndex = pickedMarker;
+                        UpdateNudValues();
+                        UpdateBrushActiveBoneLabel();
+                        if (chkHeatmap != null && chkHeatmap.Checked) UpdateHeatmapColors();
+                        glControl.Invalidate();
+                        return;
+                    }
+
+                    _isPaintingWeights = true;
+                    PushUndoState("Pinceau de poids");
+                    ApplyWeightBrushAtScreen(e.X, e.Y);
+                    return;
+                }
+
                 int picked = PickMarkerAtScreen(e.X, e.Y);
 
                 if (isCtrl)
@@ -6809,6 +7057,17 @@ void main() {
             int dy = e.Y - _lastMousePos.Y;
             _lastMousePos = e.Location;
 
+            if (chkWeightBrush != null && chkWeightBrush.Checked)
+            {
+                _hasBrush3DHit = RaycastMeshSurface(e.X, e.Y, out _brush3DPos);
+                if (_isPaintingWeights && _hasBrush3DHit)
+                {
+                    ApplyWeightBrushAt3DPos(_brush3DPos);
+                }
+                glControl.Invalidate();
+                if (_isPaintingWeights) return;
+            }
+
             if (_isBoxSelecting)
             {
                 _boxSelectCurrent = e.Location;
@@ -6931,6 +7190,12 @@ void main() {
 
         private void GlControl_MouseUp(object? sender, MouseEventArgs e)
         {
+            if (_isPaintingWeights)
+            {
+                _isPaintingWeights = false;
+                glControl.Invalidate();
+            }
+
             if (_isBoxSelecting)
             {
                 _isBoxSelecting = false;
@@ -7233,6 +7498,442 @@ void main() {
             RefreshAnimatedPoseIfTesting();
             glControl.Invalidate();
             MessageBox.Show($"{count} articulation(s) synchronisée(s) par miroir.", "Miroir Symétrique", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        // ==========================================
+        // WEIGHT BRUSH (PINCEAU DE POIDS 3D)
+        // ==========================================
+        private void UpdateBrushActiveBoneLabel()
+        {
+            if (lblBrushBone == null) return;
+            int bIdx = GetActiveBrushBoneIndex();
+            if (bIdx >= 0 && _previewModel != null && bIdx < _previewModel.Bones.Count)
+            {
+                string name = _previewModel.Bones[bIdx].Name;
+                lblBrushBone.Text = $"🦴 Os : {name}";
+                lblBrushBone.ForeColor = Color.PaleGreen;
+            }
+            else
+            {
+                lblBrushBone.Text = "🦴 Os : (Sélectionnez une croix)";
+                lblBrushBone.ForeColor = Color.OrangeRed;
+            }
+        }
+
+        private int GetActiveBrushBoneIndex()
+        {
+            if (_selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count && _previewModel != null)
+            {
+                string bName = _markers[_selectedMarkerIndex].BoneName;
+                return _previewModel.Bones.FindIndex(b => string.Equals(b.Name, bName, StringComparison.OrdinalIgnoreCase));
+            }
+            return -1;
+        }
+
+        private int GetSymmetricBoneIndex(int boneIdx)
+        {
+            if (_previewModel == null || boneIdx < 0 || boneIdx >= _previewModel.Bones.Count) return -1;
+            string curName = _previewModel.Bones[boneIdx].Name;
+            var m = _markers.FirstOrDefault(x => string.Equals(x.BoneName, curName, StringComparison.OrdinalIgnoreCase));
+            if (m != null && !string.IsNullOrEmpty(m.SymmetricBoneName))
+            {
+                return _previewModel.Bones.FindIndex(b => string.Equals(b.Name, m.SymmetricBoneName, StringComparison.OrdinalIgnoreCase));
+            }
+            return -1;
+        }
+
+        private bool RaycastMeshSurface(int mouseX, int mouseY, out Vector3 hitPoint)
+        {
+            hitPoint = Vector3.Zero;
+            if (glControl.Width <= 0 || glControl.Height <= 0) return false;
+
+            float aspect = (float)glControl.Width / Math.Max(1, glControl.Height);
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, 0.05f, 100.0f);
+
+            float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
+            float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
+
+            Vector3 eyeOffset = new Vector3(
+                _cameraDist * MathF.Sin(radYaw) * MathF.Cos(radPitch),
+                -_cameraDist * MathF.Cos(radYaw) * MathF.Cos(radPitch),
+                _cameraDist * MathF.Sin(radPitch)
+            );
+            Vector3 eye = _cameraTarget + _cameraPan + eyeOffset;
+            Matrix4 view = Matrix4.LookAt(eye, _cameraTarget + _cameraPan, Vector3.UnitZ);
+            Matrix4 invViewProj = Matrix4.Invert(view * proj);
+
+            float xNdc = (2.0f * mouseX / glControl.Width) - 1.0f;
+            float yNdc = 1.0f - (2.0f * mouseY / glControl.Height);
+
+            Vector4 nearClip = new Vector4(xNdc, yNdc, -1.0f, 1.0f) * invViewProj;
+            Vector4 farClip = new Vector4(xNdc, yNdc, 1.0f, 1.0f) * invViewProj;
+            if (nearClip.W == 0f || farClip.W == 0f) return false;
+
+            Vector3 rayStart = nearClip.Xyz / nearClip.W;
+            Vector3 rayEnd = farClip.Xyz / farClip.W;
+            Vector3 rayDir = (rayEnd - rayStart).Normalized();
+
+            var verts = (_isClothingAdaptMode && _adaptedVertices != null) ? _adaptedVertices : _baseVertices;
+            if (verts != null && _indices != null && _indices.Length >= 3)
+            {
+                float closestT = float.MaxValue;
+                bool found = false;
+
+                for (int i = 0; i < _indices.Length; i += 3)
+                {
+                    int i0 = _indices[i];
+                    int i1 = _indices[i + 1];
+                    int i2 = _indices[i + 2];
+                    if (i0 < 0 || i0 >= verts.Length || i1 < 0 || i1 >= verts.Length || i2 < 0 || i2 >= verts.Length) continue;
+
+                    var v0 = verts[i0];
+                    var v1 = verts[i1];
+                    var v2 = verts[i2];
+
+                    if (RayIntersectsTriangle(rayStart, rayDir, v0, v1, v2, out float t))
+                    {
+                        if (t > 0.01f && t < closestT)
+                        {
+                            closestT = t;
+                            found = true;
+                        }
+                    }
+                }
+
+                if (found)
+                {
+                    hitPoint = rayStart + rayDir * closestT;
+                    return true;
+                }
+            }
+
+            // Fallback: intersect with plane through active marker or camera target perpendicular to camera view ray
+            Vector3 planePoint = (_selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
+                ? _markers[_selectedMarkerIndex].Position
+                : (_cameraTarget + _cameraPan);
+            Vector3 planeNormal = -rayDir;
+            float denom = Vector3.Dot(planeNormal, rayDir);
+            if (Math.Abs(denom) > 1e-4f)
+            {
+                float t = Vector3.Dot(planePoint - rayStart, planeNormal) / denom;
+                if (t > 0f)
+                {
+                    hitPoint = rayStart + rayDir * t;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool RayIntersectsTriangle(Vector3 rayOrigin, Vector3 rayDir, Vector3 v0, Vector3 v1, Vector3 v2, out float t)
+        {
+            t = 0f;
+            Vector3 edge1 = v1 - v0;
+            Vector3 edge2 = v2 - v0;
+            Vector3 h = Vector3.Cross(rayDir, edge2);
+            float a = Vector3.Dot(edge1, h);
+
+            if (a > -1e-6f && a < 1e-6f) return false;
+
+            float f = 1.0f / a;
+            Vector3 s = rayOrigin - v0;
+            float u = f * Vector3.Dot(s, h);
+
+            if (u < 0.0f || u > 1.0f) return false;
+
+            Vector3 q = Vector3.Cross(s, edge1);
+            float v = f * Vector3.Dot(rayDir, q);
+
+            if (v < 0.0f || u + v > 1.0f) return false;
+
+            t = f * Vector3.Dot(edge2, q);
+            return t > 1e-5f;
+        }
+
+        private void ApplyWeightBrushAtScreen(int mouseX, int mouseY)
+        {
+            if (RaycastMeshSurface(mouseX, mouseY, out Vector3 hitPoint))
+            {
+                _brush3DPos = hitPoint;
+                _hasBrush3DHit = true;
+                ApplyWeightBrushAt3DPos(hitPoint);
+            }
+        }
+
+        private void ApplyWeightBrushAt3DPos(Vector3 hitPoint)
+        {
+            if (_previewModel == null || _previewModel.Bones.Count == 0 || _rawSkin == null) return;
+            int boneIdx = GetActiveBrushBoneIndex();
+            if (boneIdx < 0) return;
+
+            float radius = (float)nudBrushRadius.Value;
+            float power = (float)nudBrushPower.Value;
+            int mode = cmbBrushMode.SelectedIndex;
+            bool mirror = chkBrushMirror.Checked;
+
+            ApplyBrushToVertices(hitPoint, boneIdx, radius, power, mode);
+
+            if (mirror)
+            {
+                int symBoneIdx = GetSymmetricBoneIndex(boneIdx);
+                if (symBoneIdx >= 0)
+                {
+                    Vector3 mirrorPos = new Vector3(-hitPoint.X, hitPoint.Y, hitPoint.Z);
+                    ApplyBrushToVertices(mirrorPos, symBoneIdx, radius, power, mode);
+                }
+            }
+
+            if (chkHeatmap != null && chkHeatmap.Checked)
+            {
+                UpdateHeatmapColors();
+            }
+            if (_isClothingAdaptMode)
+            {
+                UpdateClothingAdaptationDeformation();
+            }
+            RefreshAnimatedPoseIfTesting();
+            glControl.Invalidate();
+        }
+
+        private void ApplyBrushToVertices(Vector3 center, int boneIdx, float radius, float power, int mode)
+        {
+            var verts = (_isClothingAdaptMode && _adaptedVertices != null) ? _adaptedVertices : _baseVertices;
+            if (verts == null || _rawSkin == null) return;
+
+            float r2 = radius * radius;
+            var inRangeIndices = new List<int>();
+
+            for (int i = 0; i < verts.Length; i++)
+            {
+                float d2 = (verts[i] - center).LengthSquared;
+                if (d2 <= r2) inRangeIndices.Add(i);
+            }
+
+            if (inRangeIndices.Count == 0) return;
+
+            if (mode == 2) // Smooth
+            {
+                float sumW = 0f;
+                foreach (int vi in inRangeIndices)
+                {
+                    sumW += GetVertexWeight(vi, boneIdx);
+                }
+                float avgW = sumW / inRangeIndices.Count;
+
+                foreach (int vi in inRangeIndices)
+                {
+                    float dist = (verts[vi] - center).Length;
+                    float factor = MathF.Max(0f, 1.0f - (dist / radius)) * power * 0.25f;
+                    float curW = GetVertexWeight(vi, boneIdx);
+                    float newW = MathHelper.Lerp(curW, avgW, factor);
+                    SetVertexWeight(vi, boneIdx, newW);
+                }
+            }
+            else if (mode == 0) // Add (+)
+            {
+                foreach (int vi in inRangeIndices)
+                {
+                    float dist = (verts[vi] - center).Length;
+                    float factor = MathF.Max(0f, 1.0f - (dist / radius)) * power * 0.12f;
+                    float curW = GetVertexWeight(vi, boneIdx);
+                    float newW = Math.Min(1.0f, curW + factor);
+                    SetVertexWeight(vi, boneIdx, newW);
+                }
+            }
+            else if (mode == 1) // Subtract / Erase (-)
+            {
+                foreach (int vi in inRangeIndices)
+                {
+                    float dist = (verts[vi] - center).Length;
+                    float factor = MathF.Max(0f, 1.0f - (dist / radius)) * power * 0.12f;
+                    float curW = GetVertexWeight(vi, boneIdx);
+                    float newW = Math.Max(0.0f, curW - factor);
+                    SetVertexWeight(vi, boneIdx, newW);
+                }
+            }
+            else if (mode == 3) // Replace (=)
+            {
+                foreach (int vi in inRangeIndices)
+                {
+                    float dist = (verts[vi] - center).Length;
+                    float factor = MathF.Max(0f, 1.0f - (dist / radius)) * 0.20f;
+                    float curW = GetVertexWeight(vi, boneIdx);
+                    float newW = MathHelper.Lerp(curW, power, factor);
+                    SetVertexWeight(vi, boneIdx, newW);
+                }
+            }
+        }
+
+        private float GetVertexWeight(int vIdx, int boneIdx)
+        {
+            if (_rawSkin == null || vIdx < 0 || vIdx >= _rawSkin.Length) return 0f;
+            var infs = _rawSkin[vIdx];
+            if (infs == null) return 0f;
+            for (int k = 0; k < infs.Length; k++)
+            {
+                if (infs[k].BoneId == boneIdx) return infs[k].Weight;
+            }
+            return 0f;
+        }
+
+        private void SetVertexWeight(int vIdx, int boneIdx, float newWeight)
+        {
+            if (_rawSkin == null || vIdx < 0 || vIdx >= _rawSkin.Length) return;
+
+            newWeight = MathHelper.Clamp(newWeight, 0f, 1f);
+            var infList = new List<VertexInfluence>();
+            if (_rawSkin[vIdx] != null)
+            {
+                infList.AddRange(_rawSkin[vIdx]);
+            }
+
+            int existingIdx = infList.FindIndex(inf => inf.BoneId == boneIdx);
+
+            if (newWeight >= 0.999f)
+            {
+                infList.Clear();
+                infList.Add(new VertexInfluence { BoneId = boneIdx, Weight = 1.0f });
+            }
+            else if (newWeight <= 0.0001f)
+            {
+                if (existingIdx >= 0) infList.RemoveAt(existingIdx);
+                float sum = infList.Sum(x => x.Weight);
+                if (sum > 0.0001f)
+                {
+                    for (int k = 0; k < infList.Count; k++)
+                    {
+                        var inf = infList[k];
+                        inf.Weight /= sum;
+                        infList[k] = inf;
+                    }
+                }
+            }
+            else
+            {
+                if (existingIdx >= 0)
+                {
+                    infList[existingIdx] = new VertexInfluence { BoneId = boneIdx, Weight = newWeight };
+                }
+                else
+                {
+                    infList.Add(new VertexInfluence { BoneId = boneIdx, Weight = newWeight });
+                }
+
+                float sumOthers = 0f;
+                for (int k = 0; k < infList.Count; k++)
+                {
+                    if (infList[k].BoneId != boneIdx) sumOthers += infList[k].Weight;
+                }
+
+                float targetOtherSum = 1.0f - newWeight;
+                if (sumOthers > 0.0001f)
+                {
+                    float factor = targetOtherSum / sumOthers;
+                    for (int k = 0; k < infList.Count; k++)
+                    {
+                        if (infList[k].BoneId != boneIdx)
+                        {
+                            var inf = infList[k];
+                            inf.Weight *= factor;
+                            infList[k] = inf;
+                        }
+                    }
+                }
+                else
+                {
+                    int parentBone = 0;
+                    if (_previewModel != null && boneIdx < _previewModel.Bones.Count && _previewModel.Bones[boneIdx].ParentId >= 0)
+                    {
+                        parentBone = _previewModel.Bones[boneIdx].ParentId;
+                    }
+                    if (parentBone != boneIdx)
+                    {
+                        infList.Add(new VertexInfluence { BoneId = parentBone, Weight = targetOtherSum });
+                    }
+                }
+            }
+
+            infList = infList.Where(x => x.Weight > 0.001f).OrderByDescending(x => x.Weight).Take(4).ToList();
+            float total = infList.Sum(x => x.Weight);
+            if (total > 0.0001f)
+            {
+                for (int k = 0; k < infList.Count; k++)
+                {
+                    var inf = infList[k];
+                    inf.Weight /= total;
+                    infList[k] = inf;
+                }
+            }
+
+            _rawSkin[vIdx] = infList.ToArray();
+
+            if (_previewModel != null && _previewModel.Parts.Count > 0)
+            {
+                int curOffset = 0;
+                for (int p = 0; p < _previewModel.Parts.Count; p++)
+                {
+                    var part = _previewModel.Parts[p];
+                    if (vIdx >= curOffset && vIdx < curOffset + part.Vertices.Length)
+                    {
+                        if (part.Skin != null && (vIdx - curOffset) < part.Skin.Length)
+                        {
+                            part.Skin[vIdx - curOffset] = _rawSkin[vIdx];
+                        }
+                        break;
+                    }
+                    curOffset += part.Vertices.Length;
+                }
+            }
+        }
+
+        private void DrawBrushRing(Matrix4 mvp, Vector3 center, float radius, Vector4 color)
+        {
+            const int segments = 24;
+            var lines = new List<float>();
+
+            // 1. Ring in XY plane
+            for (int i = 0; i < segments; i++)
+            {
+                float a0 = (i / (float)segments) * MathHelper.TwoPi;
+                float a1 = ((i + 1) / (float)segments) * MathHelper.TwoPi;
+                lines.Add(center.X + MathF.Cos(a0) * radius);
+                lines.Add(center.Y + MathF.Sin(a0) * radius);
+                lines.Add(center.Z);
+                lines.Add(center.X + MathF.Cos(a1) * radius);
+                lines.Add(center.Y + MathF.Sin(a1) * radius);
+                lines.Add(center.Z);
+            }
+
+            // 2. Ring in XZ plane
+            for (int i = 0; i < segments; i++)
+            {
+                float a0 = (i / (float)segments) * MathHelper.TwoPi;
+                float a1 = ((i + 1) / (float)segments) * MathHelper.TwoPi;
+                lines.Add(center.X + MathF.Cos(a0) * radius);
+                lines.Add(center.Y);
+                lines.Add(center.Z + MathF.Sin(a0) * radius);
+                lines.Add(center.X + MathF.Cos(a1) * radius);
+                lines.Add(center.Y);
+                lines.Add(center.Z + MathF.Sin(a1) * radius);
+            }
+
+            // 3. Ring in YZ plane
+            for (int i = 0; i < segments; i++)
+            {
+                float a0 = (i / (float)segments) * MathHelper.TwoPi;
+                float a1 = ((i + 1) / (float)segments) * MathHelper.TwoPi;
+                lines.Add(center.X);
+                lines.Add(center.Y + MathF.Cos(a0) * radius);
+                lines.Add(center.Z + MathF.Sin(a0) * radius);
+                lines.Add(center.X);
+                lines.Add(center.Y + MathF.Cos(a1) * radius);
+                lines.Add(center.Z + MathF.Sin(a1) * radius);
+            }
+
+            GL.Disable(EnableCap.DepthTest);
+            DrawLinesImmediate(mvp, lines.ToArray(), color, 2.0f);
+            GL.Enable(EnableCap.DepthTest);
         }
 
         private void UpdateHeatmapColors()
