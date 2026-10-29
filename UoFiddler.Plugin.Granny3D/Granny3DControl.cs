@@ -9928,9 +9928,26 @@ namespace UoFiddler.Plugin.Granny3D
                     // Preserve and intelligently update texture name (never overwrite with empty!)
                     string texToSet = !string.IsNullOrEmpty(lm.TextureName) ? lm.TextureName :
                                       (!string.IsNullOrEmpty(lm.TextureFilePath) ? Path.GetFileName(lm.TextureFilePath) : string.Empty);
+                    if (string.IsNullOrEmpty(texToSet) && !string.IsNullOrEmpty(part.TextureName))
+                        texToSet = part.TextureName;
                     if (!string.IsNullOrEmpty(texToSet))
                     {
                         part.TextureName = texToSet;
+                        lm.TextureName = texToSet;
+                    }
+                    if (string.IsNullOrEmpty(lm.MaterialName) && !string.IsNullOrEmpty(part.MaterialName))
+                        lm.MaterialName = part.MaterialName;
+                    if (!string.IsNullOrEmpty(lm.MaterialName))
+                        part.MaterialName = lm.MaterialName;
+                    else if (!string.IsNullOrEmpty(part.TextureName))
+                    {
+                        part.MaterialName = Path.GetFileNameWithoutExtension(part.TextureName);
+                        lm.MaterialName = part.MaterialName;
+                    }
+                    else if (!string.IsNullOrEmpty(lm.Name))
+                    {
+                        part.MaterialName = lm.Name;
+                        lm.MaterialName = lm.Name;
                     }
 
                     part.AttachBoneName = lm.AttachBoneName ?? string.Empty;

@@ -242,13 +242,25 @@ namespace UoFiddler.Plugin.Granny3D
             public float Yaw { get; set; }
         }
 
+        public class VertexWeightEntry
+        {
+            public int BoneId { get; set; }
+            public string? BoneName { get; set; }
+            public float Weight { get; set; }
+        }
+
         public class RigTemplateFile
         {
             public string TemplateName { get; set; } = string.Empty;
             public string SkeletonType { get; set; } = string.Empty;
             public DateTime CreatedAt { get; set; } = DateTime.Now;
             public List<RigMarkerTemplate> Markers { get; set; } = new();
+            public int VertexCount { get; set; }
+            public List<List<VertexWeightEntry>>? SkinWeights { get; set; }
         }
+
+        private bool _hasManualSkinWeights = false;
+        private bool _isSkeletonLockedToTarget = false;
 
         private CheckBox chkHeatmap = null!;
         private CheckBox chkWeightBrush = null!;
@@ -1079,8 +1091,23 @@ namespace UoFiddler.Plugin.Granny3D
                 _showGhostTargetBody = chkShowGhostBody.Checked;
                 glControl.Invalidate();
             };
+            var btnFitScaleTarget = new Button
+            {
+                Text = "📏 Aligner taille au corps (1.75m)",
+                AutoSize = true,
+                Height = 24,
+                BackColor = Color.FromArgb(40, 70, 95),
+                ForeColor = Color.PaleTurquoise,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8F, FontStyle.Bold),
+                Margin = new Padding(12, 0, 0, 0)
+            };
+            btnFitScaleTarget.FlatAppearance.BorderColor = Color.DarkCyan;
+            btnFitScaleTarget.Click += (s, e) => FitClothingScaleToTargetBody();
+
             pnlAdaptChecks.Controls.Add(chkMagnetSnap);
             pnlAdaptChecks.Controls.Add(chkShowGhostBody);
+            pnlAdaptChecks.Controls.Add(btnFitScaleTarget);
 
             var pnlAdaptBtns = new Panel { Dock = DockStyle.Top, Height = 30, Padding = new Padding(0, 2, 0, 0) };
             btnFreezeAdaptation = new Button
@@ -3745,6 +3772,8 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void EnsurePreviewModel()
         {
+            if (_isSkeletonLockedToTarget) return;
+
             if (_refBones == null || _refBones.Count == 0)
                 LoadReferenceBones();
 
@@ -3784,7 +3813,7 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     var part = _previewModel.Parts[pi];
                     bool hasSkin = part.Skin != null && part.Skin.Length == part.Vertices.Length && part.Skin.Any(x => x != null && x.Length > 0);
-                    if (!hasSkin || chkForceAutoSkin.Checked)
+                    if (!hasSkin || (chkForceAutoSkin.Checked && !_hasManualSkinWeights))
                     {
                         MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
                     }
@@ -3816,7 +3845,7 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     part.Skin = _rawSkin;
                 }
-                else
+                else if (!_hasManualSkinWeights || part.Skin == null)
                 {
                     MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
                     _rawSkin = part.Skin;
@@ -4295,19 +4324,36 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (!_isClothingAdaptMode || _adaptedVertices == null) return;
 
-            var res = MessageBox.Show(
-                "Voulez-vous figer la nouvelle pose adaptée sur le corps cible ?\n\n" +
-                "• Le vêtement déformé deviendra la nouvelle géométrie de repos permanente.\n" +
-                "• Les repères d'articulation seront validés sur le squelette cible.\n\n" +
-                "Cliquez sur OUI pour figer et recalculer un skinning volumétrique propre sur le corps cible (recommandé),\n" +
-                "ou sur NON pour figer en conservant les poids de skin actuels.",
-                "💾 Figer l'adaptation du vêtement",
-                MessageBoxButtons.YesNoCancel,
-                MessageBoxIcon.Question);
+            bool recalcSkin = false;
+            if (_hasManualSkinWeights)
+            {
+                var res = MessageBox.Show(
+                    "Vous avez modifié des poids de skinning au pinceau (heatmap).\n\n" +
+                    "Voulez-vous CONSERVER vos retouches manuelles ?\n\n" +
+                    "• Cliquez sur OUI pour CONSERVER vos retouches au pinceau (Recommandé).\n" +
+                    "• Cliquez sur NON pour les écraser et recalculer automatiquement le skinning sur le corps cible.",
+                    "💾 Figer l'adaptation - Retouches Heatmap",
+                    MessageBoxButtons.YesNoCancel,
+                    MessageBoxIcon.Question);
 
-            if (res == DialogResult.Cancel) return;
+                if (res == DialogResult.Cancel) return;
+                recalcSkin = (res == DialogResult.No);
+            }
+            else
+            {
+                var res = MessageBox.Show(
+                    "Voulez-vous figer la nouvelle pose adaptée sur le corps cible ?\n\n" +
+                    "• Le vêtement déformé deviendra la nouvelle géométrie de repos permanente.\n" +
+                    "• Les repères d'articulation seront validés sur le squelette cible.\n\n" +
+                    "Cliquez sur OUI pour figer et recalculer un skinning volumétrique propre sur le corps cible (recommandé),\n" +
+                    "ou sur NON pour figer en conservant les poids actuels.",
+                    "💾 Figer l'adaptation du vêtement",
+                    MessageBoxButtons.YesNoCancel,
+                    MessageBoxIcon.Question);
 
-            bool recalcSkin = (res == DialogResult.Yes);
+                if (res == DialogResult.Cancel) return;
+                recalcSkin = (res == DialogResult.Yes);
+            }
 
             // Apply frozen geometry
             _baseVertices = (Vector3[])_adaptedVertices.Clone();
@@ -4356,15 +4402,180 @@ namespace UoFiddler.Plugin.Granny3D
                 _rawSkin = allSkin.ToArray();
             }
 
+            // Forcer le squelette sur celui du corps cible pour un attachement exact dans le viewer principal
+            if (_previewModel != null && _refBones != null && _refBones.Count > 0)
+            {
+                try
+                {
+                    // Construire map nom -> index du squelette cible
+                    var targetByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    for (int ti = 0; ti < _refBones.Count; ti++)
+                        targetByName[_refBones[ti].Name] = ti;
+
+                    // Remapper le skin par nom d'os
+                    if (_rawSkin != null && _rawSkin.Length > 0)
+                    {
+                        for (int v = 0; v < _rawSkin.Length; v++)
+                        {
+                            var infs = _rawSkin[v];
+                            if (infs == null || infs.Length == 0) continue;
+                            var newInfs = new List<VertexInfluence>(infs.Length);
+                            float sum = 0f;
+                            for (int k = 0; k < infs.Length; k++)
+                            {
+                                int srcIdx = infs[k].BoneId;
+                                string bname = null;
+                                if (_previewModel.Bones != null && srcIdx >= 0 && srcIdx < _previewModel.Bones.Count)
+                                    bname = _previewModel.Bones[srcIdx].Name;
+                                if (!string.IsNullOrEmpty(bname) && targetByName.TryGetValue(bname, out int tIdx))
+                                {
+                                    newInfs.Add(new VertexInfluence { BoneId = tIdx, Weight = infs[k].Weight });
+                                    sum += infs[k].Weight;
+                                }
+                            }
+                            if (newInfs.Count == 0) continue;
+                            if (sum > 1e-6f)
+                            {
+                                for (int ni = 0; ni < newInfs.Count; ni++)
+                                {
+                                    var ni2 = newInfs[ni];
+                                    ni2.Weight = ni2.Weight / sum;
+                                    newInfs[ni] = ni2;
+                                }
+                            }
+                            // Garder top 4
+                            newInfs.Sort((a,b) => b.Weight.CompareTo(a.Weight));
+                            if (newInfs.Count > 4) newInfs.RemoveRange(4, newInfs.Count - 4);
+                            _rawSkin[v] = newInfs.ToArray();
+                        }
+                        // Appliquer aux parts
+                        int sOff = 0;
+                        foreach (var part in _previewModel.Parts)
+                        {
+                            int pc = part.Vertices.Length;
+                            if (pc > 0 && _rawSkin != null)
+                            {
+                                var pSkin = new VertexInfluence[pc][];
+                                for (int pv = 0; pv < pc && sOff + pv < _rawSkin.Length; pv++)
+                                    pSkin[pv] = _rawSkin[sOff + pv];
+                                part.Skin = pSkin;
+                                sOff += pc;
+                            }
+                        }
+                    }
+
+                    // Remplacer le squelette par celui du corps cible
+                    _previewModel.Bones = new List<GrannyBone>(_refBones.Count);
+                    for (int bi = 0; bi < _refBones.Count; bi++)
+                    {
+                        var rb = _refBones[bi];
+                        _previewModel.Bones.Add(new GrannyBone
+                        {
+                            Id = bi,
+                            ParentId = rb.ParentId,
+                            Name = rb.Name,
+                            LocalPosition = rb.LocalPosition,
+                            LocalRotation = rb.LocalRotation,
+                            InverseBindMatrix = rb.InverseBindMatrix
+                        });
+                    }
+
+                    // Synchroniser les repères sur le squelette cible figé
+                    foreach (var m in _markers)
+                    {
+                        if (_targetReferenceJointPositions.TryGetValue(m.BoneName, out Vector3 targetPos))
+                        {
+                            m.Position = targetPos;
+                            m.RotationDegrees = Vector3.Zero;
+                            m.IsSnapped = true;
+                        }
+                    }
+
+                    _isSkeletonLockedToTarget = true;
+                    if (!recalcSkin) _hasManualSkinWeights = true;
+                    if (chkForceAutoSkin != null) chkForceAutoSkin.Checked = false;
+                }
+                catch { }
+            }
+
             UploadMeshToGl();
             UpdateAdaptationUIState();
             glControl.Invalidate();
 
             MessageBox.Show(
-                "Pose figée avec succès !\n\nLe vêtement est désormais parfaitement adapté aux proportions et à la pose de repos du corps cible.",
+                "Pose figée avec succès !\n\nLe modèle est désormais adapté aux proportions et au squelette exact du corps cible.",
                 "Adaptation Réussie",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
+        }
+
+        private void FitClothingScaleToTargetBody()
+        {
+            if (!_isClothingAdaptMode || _unadaptedBaseVertices == null || _unadaptedBaseVertices.Length == 0) return;
+            CommitPendingNudUndo();
+            PushUndoState("Ajuster hauteur au corps cible");
+
+            float minZ = float.MaxValue, maxZ = float.MinValue;
+            foreach (var v in _unadaptedBaseVertices)
+            {
+                minZ = Math.Min(minZ, v.Z);
+                maxZ = Math.Max(maxZ, v.Z);
+            }
+
+            float currentH = maxZ - minZ;
+            float targetH = 1.75f;
+            if (rbCustom != null && rbCustom.Checked && _refBones != null && _refBones.Count > 0)
+            {
+                float refMinZ = float.MaxValue, refMaxZ = float.MinValue;
+                foreach (var b in _refBones)
+                {
+                    if (Math.Abs(b.InverseBindMatrix.Determinant) > 1e-5f)
+                    {
+                        float bz = Matrix4.Invert(b.InverseBindMatrix).Row3.Z;
+                        refMinZ = Math.Min(refMinZ, bz);
+                        refMaxZ = Math.Max(refMaxZ, bz);
+                    }
+                }
+                if (refMaxZ > refMinZ + 0.1f) targetH = (refMaxZ - refMinZ) * 1.1f;
+            }
+
+            if (currentH > 0.05f)
+            {
+                float factor = targetH / currentH;
+                float zOffset = -minZ * factor;
+
+                for (int i = 0; i < _unadaptedBaseVertices.Length; i++)
+                {
+                    var v = _unadaptedBaseVertices[i];
+                    _unadaptedBaseVertices[i] = new Vector3(v.X * factor, v.Y * factor, v.Z * factor + zOffset);
+                }
+
+                if (_sourceMarkerPositions != null)
+                {
+                    for (int i = 0; i < _sourceMarkerPositions.Length; i++)
+                    {
+                        var m = _sourceMarkerPositions[i];
+                        _sourceMarkerPositions[i] = new Vector3(m.X * factor, m.Y * factor, m.Z * factor + zOffset);
+                    }
+                }
+
+                int nb = _previewModel?.Bones?.Count ?? 0;
+                if (_sourceBoneWorld != null && _sourceInvBind != null)
+                {
+                    for (int i = 0; i < nb && i < _sourceBoneWorld.Length; i++)
+                    {
+                        var w = _sourceBoneWorld[i];
+                        var pos = w.Row3.Xyz;
+                        pos = new Vector3(pos.X * factor, pos.Y * factor, pos.Z * factor + zOffset);
+                        var rot = w.ExtractRotation();
+                        _sourceBoneWorld[i] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
+                        _sourceInvBind[i] = Matrix4.Invert(_sourceBoneWorld[i]);
+                    }
+                }
+
+                UpdateClothingAdaptationDeformation();
+                glControl.Invalidate();
+            }
         }
 
         private void SnapAllMarkersToTargetJoints()
@@ -4374,8 +4585,35 @@ namespace UoFiddler.Plugin.Granny3D
             PushUndoState("Aimanter tout sur le corps cible");
 
             ComputeTargetReferenceJoints();
-            int count = 0;
 
+            // Vérifier si le modèle a besoin d'être aligné en hauteur sur le corps cible
+            if (_unadaptedBaseVertices != null && _unadaptedBaseVertices.Length > 0)
+            {
+                float minZ = float.MaxValue, maxZ = float.MinValue;
+                foreach (var v in _unadaptedBaseVertices)
+                {
+                    minZ = Math.Min(minZ, v.Z);
+                    maxZ = Math.Max(maxZ, v.Z);
+                }
+                float currentH = maxZ - minZ;
+                float targetH = 1.75f;
+                if (MathF.Abs(currentH - targetH) > 0.12f)
+                {
+                    var ask = MessageBox.Show(
+                        $"Le modèle mesure actuellement {currentH:F2}m (alors que le corps cible mesure ~{targetH:F2}m).\n\n" +
+                        "Voulez-vous ajuster automatiquement sa hauteur à la taille exacte du corps cible ?",
+                        "📏 Adapter la taille au corps cible",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+
+                    if (ask == DialogResult.Yes)
+                    {
+                        FitClothingScaleToTargetBody();
+                    }
+                }
+            }
+
+            int count = 0;
             foreach (var m in _markers)
             {
                 if (_targetReferenceJointPositions.TryGetValue(m.BoneName, out Vector3 targetPos))
@@ -4412,7 +4650,45 @@ namespace UoFiddler.Plugin.Granny3D
             var skinMats = new Matrix4[nb];
             for (int b = 0; b < nb; b++)
             {
-                skinMats[b] = _sourceInvBind[b] * currentWorld[b];
+                Matrix4 boneTransform = _sourceInvBind[b] * currentWorld[b];
+
+                // Calcul de l'étirement/compression le long du segment d'os (adaptation exacte aux proportions cibles)
+                string? aimChild = MixamoCharacterImport.GetAimChildBoneName(_previewModel.Bones[b].Name);
+                if (!string.IsNullOrEmpty(aimChild) && _sourceMarkerPositions != null)
+                {
+                    int mIdx = _markers.FindIndex(m => string.Equals(m.BoneName, _previewModel.Bones[b].Name, StringComparison.OrdinalIgnoreCase));
+                    int cIdx = _markers.FindIndex(m => string.Equals(m.BoneName, aimChild, StringComparison.OrdinalIgnoreCase));
+                    if (mIdx >= 0 && cIdx >= 0 && mIdx < _sourceMarkerPositions.Length && cIdx < _sourceMarkerPositions.Length)
+                    {
+                        Vector3 vSrc = _sourceMarkerPositions[cIdx] - _sourceMarkerPositions[mIdx];
+                        Vector3 vTgt = _markers[cIdx].Position - _markers[mIdx].Position;
+                        float lenSrc = vSrc.Length;
+                        float lenTgt = vTgt.Length;
+                        if (lenSrc > 0.02f && lenTgt > 0.02f)
+                        {
+                            float sLen = lenTgt / lenSrc;
+                            sLen = MathHelper.Clamp(sLen, 0.25f, 4.0f);
+                            if (MathF.Abs(sLen - 1.0f) > 0.005f)
+                            {
+                                Vector3 vLocal = Vector3.TransformNormal(vSrc, _sourceInvBind[b]);
+                                if (vLocal.LengthSquared > 1e-4f)
+                                {
+                                    Vector3 u = vLocal.Normalized();
+                                    float factor = sLen - 1.0f;
+                                    var scaleMat = new Matrix4(
+                                        1.0f + factor * u.X * u.X, factor * u.X * u.Y, factor * u.X * u.Z, 0f,
+                                        factor * u.Y * u.X, 1.0f + factor * u.Y * u.Y, factor * u.Y * u.Z, 0f,
+                                        factor * u.Z * u.X, factor * u.Z * u.Y, 1.0f + factor * u.Z * u.Z, 0f,
+                                        0f, 0f, 0f, 1.0f
+                                    );
+                                    boneTransform = _sourceInvBind[b] * scaleMat * currentWorld[b];
+                                }
+                            }
+                        }
+                    }
+                }
+
+                skinMats[b] = boneTransform;
             }
 
             if (_adaptedVertices == null || _adaptedVertices.Length != _unadaptedBaseVertices.Length)
@@ -6166,7 +6442,32 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Cursor = Cursors.WaitCursor;
 
-                EnsurePreviewModel();
+                if (!_isSkeletonLockedToTarget)
+                {
+                    EnsurePreviewModel();
+                }
+                else
+                {
+                    // Si le squelette a été figé sur le corps cible (H_Male / H_Female),
+                    // s'assurer que le squelette est STRICTEMENT celui du corps cible avec ses matrices exactes
+                    if (_previewModel != null && _refBones != null && _refBones.Count > 0)
+                    {
+                        _previewModel.Bones = new List<GrannyBone>(_refBones.Count);
+                        for (int bi = 0; bi < _refBones.Count; bi++)
+                        {
+                            var rb = _refBones[bi];
+                            _previewModel.Bones.Add(new GrannyBone
+                            {
+                                Id = bi,
+                                ParentId = rb.ParentId,
+                                Name = rb.Name,
+                                LocalPosition = rb.LocalPosition,
+                                LocalRotation = rb.LocalRotation,
+                                InverseBindMatrix = rb.InverseBindMatrix
+                            });
+                        }
+                    }
+                }
 
                 string? err = null;
                 GrannyModelFile? model = _previewModel;
@@ -7466,9 +7767,39 @@ void main() {
                     }).ToList()
                 };
 
+                // Sauvegarder les poids de skinning (retouches heatmap au pinceau)
+                if (_rawSkin != null && _rawSkin.Length > 0)
+                {
+                    template.VertexCount = _rawSkin.Length;
+                    template.SkinWeights = new List<List<VertexWeightEntry>>(_rawSkin.Length);
+                    for (int v = 0; v < _rawSkin.Length; v++)
+                    {
+                        var infs = _rawSkin[v];
+                        if (infs == null || infs.Length == 0)
+                        {
+                            template.SkinWeights.Add(new List<VertexWeightEntry>());
+                        }
+                        else
+                        {
+                            var list = new List<VertexWeightEntry>(infs.Length);
+                            for (int k = 0; k < infs.Length; k++)
+                            {
+                                string bName = (_previewModel?.Bones != null && infs[k].BoneId >= 0 && infs[k].BoneId < _previewModel.Bones.Count)
+                                    ? _previewModel.Bones[infs[k].BoneId].Name
+                                    : string.Empty;
+                                list.Add(new VertexWeightEntry { BoneId = infs[k].BoneId, BoneName = bName, Weight = infs[k].Weight });
+                            }
+                            template.SkinWeights.Add(list);
+                        }
+                    }
+                }
+
                 string json = System.Text.Json.JsonSerializer.Serialize(template, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(sfd.FileName, json);
-                MessageBox.Show($"Gabarit sauvegardé avec succès ({template.Markers.Count} articulations) :\n\n{Path.GetFileName(sfd.FileName)}", "Gabarit Sauvegardé", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                string skinMsg = (template.SkinWeights != null && template.SkinWeights.Count > 0)
+                    ? $"\n• {template.SkinWeights.Count:N0} sommets avec poids de heatmap sauvegardés"
+                    : "";
+                MessageBox.Show($"Gabarit sauvegardé avec succès :\n• {template.Markers.Count} articulations{skinMsg}\n\nFichier : {Path.GetFileName(sfd.FileName)}", "Gabarit Sauvegardé", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
@@ -7514,12 +7845,62 @@ void main() {
                     }
                 }
 
+                int weightsRestored = 0;
+                if (template.SkinWeights != null && template.SkinWeights.Count > 0 && _rawSkin != null && _rawSkin.Length == template.SkinWeights.Count)
+                {
+                    for (int v = 0; v < _rawSkin.Length; v++)
+                    {
+                        var entries = template.SkinWeights[v];
+                        if (entries != null && entries.Count > 0)
+                        {
+                            var infs = new List<VertexInfluence>(entries.Count);
+                            foreach (var e in entries)
+                            {
+                                int bId = e.BoneId;
+                                if (!string.IsNullOrEmpty(e.BoneName) && _previewModel?.Bones != null)
+                                {
+                                    int matchedBone = _previewModel.Bones.FindIndex(b => string.Equals(b.Name, e.BoneName, StringComparison.OrdinalIgnoreCase));
+                                    if (matchedBone >= 0) bId = matchedBone;
+                                }
+                                infs.Add(new VertexInfluence { BoneId = bId, Weight = e.Weight });
+                            }
+                            _rawSkin[v] = infs.ToArray();
+                        }
+                        else
+                        {
+                            _rawSkin[v] = Array.Empty<VertexInfluence>();
+                        }
+                    }
+
+                    int sOff = 0;
+                    if (_previewModel?.Parts != null)
+                    {
+                        foreach (var part in _previewModel.Parts)
+                        {
+                            int pc = part.Vertices.Length;
+                            var pSkin = new VertexInfluence[pc][];
+                            for (int pv = 0; pv < pc && sOff + pv < _rawSkin.Length; pv++)
+                                pSkin[pv] = _rawSkin[sOff + pv];
+                            part.Skin = pSkin;
+                            sOff += pc;
+                        }
+                    }
+
+                    _hasManualSkinWeights = true;
+                    if (chkForceAutoSkin != null) chkForceAutoSkin.Checked = false;
+                    weightsRestored = template.SkinWeights.Count;
+                }
+
                 EnsurePreviewModel();
                 UpdateNudValues();
                 if (chkHeatmap != null && chkHeatmap.Checked) UpdateHeatmapColors();
                 RefreshAnimatedPoseIfTesting();
                 glControl.Invalidate();
-                MessageBox.Show($"Gabarit chargé avec succès : {matched} / {template.Markers.Count} articulations appliquées.", "Gabarit Appliqué", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                string skinReport = weightsRestored > 0
+                    ? $"\n• {weightsRestored:N0} sommets avec poids de heatmap restaurés avec succès !"
+                    : "";
+                MessageBox.Show($"Gabarit chargé avec succès :\n• {matched} / {template.Markers.Count} articulations appliquées.{skinReport}", "Gabarit Appliqué", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
@@ -7916,6 +8297,12 @@ void main() {
                         }
                     }
                 }
+            }
+
+            _hasManualSkinWeights = true;
+            if (chkForceAutoSkin != null && chkForceAutoSkin.Checked)
+            {
+                chkForceAutoSkin.Checked = false;
             }
 
             if (chkHeatmap != null && chkHeatmap.Checked)

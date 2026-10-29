@@ -1736,14 +1736,20 @@ namespace UoFiddler.Plugin.Granny3D
                     // Hemisphere separation based on bone name and actual geometric coordinate
                     bool isLeft = bName.Contains(" L ") || bName.Contains("Ponytail2") || bName.Contains("Left") || (segMidX > 0.04f);
                     bool isRight = bName.Contains(" R ") || bName.Contains("Ponytail1") || bName.Contains("Right") || (segMidX < -0.04f);
+                    bool isLeg = bName.Contains("Thigh") || bName.Contains("Calf") || bName.Contains("Foot") || bName.Contains("Toe");
+                    bool isArm = bName.Contains("UpperArm") || bName.Contains("Forearm") || bName.Contains("Hand") || bName.Contains("Finger") || bName.Contains("Clavicle");
 
                     if (isLeft && !isRight)
                     {
-                        if (segMidX > 0.02f && p.X < -0.02f) continue;
+                        if (isLeg && p.X < -0.001f) continue;
+                        if (isArm && p.X < -0.01f) continue;
+                        if (!isLeg && !isArm && segMidX > 0.02f && p.X < -0.02f) continue;
                     }
                     else if (isRight && !isLeft)
                     {
-                        if (segMidX < -0.02f && p.X > 0.02f) continue;
+                        if (isLeg && p.X > 0.001f) continue;
+                        if (isArm && p.X > 0.01f) continue;
+                        if (!isLeg && !isArm && segMidX < -0.02f && p.X > 0.02f) continue;
                     }
 
                     bool isUpperArm = bName.Contains("UpperArm");
@@ -1780,6 +1786,11 @@ namespace UoFiddler.Plugin.Granny3D
                         {
                             float pinchPen = (ribcageRadiusX - absX) * 3.0f;
                             dist += pinchPen;
+                        }
+                        else if (isStandardHumanoid && isLeg && absX < 0.025f)
+                        {
+                            float crotchPen = (0.025f - absX) * 2.5f;
+                            dist += crotchPen;
                         }
                     }
 
