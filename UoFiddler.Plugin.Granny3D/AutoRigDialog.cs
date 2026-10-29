@@ -3207,6 +3207,8 @@ namespace UoFiddler.Plugin.Granny3D
 
             for (int i = 0; i < bones.Count; i++) bones[i].Id = i;
             _liveOriginalBones = new List<GrannyBone>(bones);
+            _hasManualSkinWeights = true;
+            if (chkForceAutoSkin != null) chkForceAutoSkin.Checked = false;
 
             // Est-ce un squelette bipède humain classique (43 os ou doigts humains) ?
             bool isHumanBiped = (bones.Count == 43 || (bones.Count >= 20 && bones.Any(b => b.Name.IndexOf("Finger1", StringComparison.OrdinalIgnoreCase) >= 0))) &&
@@ -4926,13 +4928,22 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (_refBones == null || _refBones.Count == 0) LoadReferenceBones();
 
+            // 1. D'abord extraire toutes les positions mondiales des repères
             foreach (var m in _markers)
             {
                 int bIdx = FindMatchingBoneIndex(bones, m.BoneName);
                 if (bIdx >= 0 && bIdx < nb)
                 {
                     m.Position = boneWorldPos[bIdx];
+                }
+            }
 
+            // 2. Ensuite extraire les rotations relatives (en déduisant l'orientation qAim vers les enfants)
+            foreach (var m in _markers)
+            {
+                int bIdx = FindMatchingBoneIndex(bones, m.BoneName);
+                if (bIdx >= 0 && bIdx < nb)
+                {
                     // Recover rotation offset if reference bones exist
                     if (_refBones != null && _refBones.Count > 0)
                     {
@@ -4964,8 +4975,42 @@ namespace UoFiddler.Plugin.Granny3D
                             {
                                 var refWorld = Matrix4.Invert(_refBones[rotSourceIdx].InverseBindMatrix);
                                 var refRotMat = Matrix4.CreateFromQuaternion(refWorld.ExtractRotation());
+
+                                // Vérifier si l'os a un os enfant cible (Aim)
+                                string? aimChildName = MixamoCharacterImport.GetAimChildBoneName(m.BoneName);
+                                Matrix4 baseRefRot = refRotMat;
+                                if (!string.IsNullOrEmpty(aimChildName))
+                                {
+                                    var childMarker = _markers.FirstOrDefault(x => string.Equals(x.BoneName, aimChildName, StringComparison.OrdinalIgnoreCase));
+                                    int childRefIdx = -1;
+                                    if (rotSourceIdx != refIdx)
+                                    {
+                                        string symChildName = GetSymmetricBoneName(aimChildName) ?? aimChildName;
+                                        childRefIdx = FindMatchingBoneIndex(_refBones, symChildName);
+                                    }
+                                    else
+                                    {
+                                        childRefIdx = FindMatchingBoneIndex(_refBones, aimChildName);
+                                    }
+
+                                    if (childMarker != null && childRefIdx >= 0 && childRefIdx < _refBones.Count)
+                                    {
+                                        Vector3 pSelfRef = refWorld.Row3.Xyz;
+                                        Vector3 pChildRef = Matrix4.Invert(_refBones[childRefIdx].InverseBindMatrix).Row3.Xyz;
+                                        Vector3 vRef = pChildRef - pSelfRef;
+                                        Vector3 vTgt = childMarker.Position - m.Position;
+                                        if (vRef.LengthSquared > 1e-4f && vTgt.LengthSquared > 1e-4f)
+                                        {
+                                            vRef.Normalize();
+                                            vTgt.Normalize();
+                                            OpenTK.Mathematics.Quaternion qAim = MixamoCharacterImport.RotationBetweenVectors(vRef, vTgt);
+                                            baseRefRot = baseRefRot * Matrix4.CreateFromQuaternion(qAim);
+                                        }
+                                    }
+                                }
+
                                 var curRotMat = Matrix4.CreateFromQuaternion(boneWorldMat[bIdx].ExtractRotation());
-                                var diffMat = Matrix4.Invert(refRotMat) * curRotMat;
+                                var diffMat = Matrix4.Invert(baseRefRot) * curRotMat;
 
                                 float sinY = -diffMat.Row0.Z;
                                 float rotY = MathF.Asin(MathHelper.Clamp(sinY, -1f, 1f));
@@ -4980,6 +5025,10 @@ namespace UoFiddler.Plugin.Granny3D
                                 if (deg.LengthSquared > 0.01f)
                                 {
                                     m.RotationDegrees = deg;
+                                }
+                                else
+                                {
+                                    m.RotationDegrees = Vector3.Zero;
                                 }
                             }
                         }
@@ -5264,73 +5313,110 @@ namespace UoFiddler.Plugin.Granny3D
                     roots.Add(i);
             }
 
+            // Coordinate orientation compensation for 3ds Max Root Dummy tracks (e.g. Master_Blackthorn):
+            GrannyTrack? trMaster = _testAnim?.Tracks?.FirstOrDefault(t => t.Name != null && t.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase));
+            OpenTK.Mathematics.Quaternion rMaster = trMaster != null ? trMaster.EvaluateRot(time) : OpenTK.Mathematics.Quaternion.Identity;
+
             void EvalBone(int idx)
             {
                 var bone = _previewModel.Bones[idx];
                 GrannyTrack? track = null;
-                if (_testAnim.TracksByName != null && _testAnim.TracksByName.TryGetValue(bone.Name, out track))
+                if (_testAnim != null)
                 {
-                }
-                else
-                {
-                    track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, bone.Name, StringComparison.OrdinalIgnoreCase));
-                }
-
-                if (track == null)
-                {
-                    string bName = bone.Name;
-                    foreach (var (mix, uo) in MixamoRetarget.BoneMap)
+                    if (_testAnim.TracksByName != null && _testAnim.TracksByName.TryGetValue(bone.Name, out track))
                     {
-                        if (string.Equals(bName, mix, StringComparison.OrdinalIgnoreCase) ||
-                            bName.EndsWith(":" + (mix.Contains(':') ? mix.Substring(mix.IndexOf(':') + 1) : mix), StringComparison.OrdinalIgnoreCase))
+                    }
+                    else if (_testAnim.Tracks != null)
+                    {
+                        track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, bone.Name, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    if (track == null && _testAnim.Tracks != null)
+                    {
+                        string bName = bone.Name;
+                        foreach (var (mix, uo) in MixamoRetarget.BoneMap)
                         {
-                            track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, uo, StringComparison.OrdinalIgnoreCase));
-                            if (track != null) break;
-                        }
-                        else if (string.Equals(bName, uo, StringComparison.OrdinalIgnoreCase))
-                        {
-                            track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, mix, StringComparison.OrdinalIgnoreCase) ||
-                                                                        t.Name.EndsWith(":" + (mix.Contains(':') ? mix.Substring(mix.IndexOf(':') + 1) : mix), StringComparison.OrdinalIgnoreCase));
-                            if (track != null) break;
+                            if (string.Equals(bName, mix, StringComparison.OrdinalIgnoreCase) ||
+                                bName.EndsWith(":" + (mix.Contains(':') ? mix.Substring(mix.IndexOf(':') + 1) : mix), StringComparison.OrdinalIgnoreCase))
+                            {
+                                track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, uo, StringComparison.OrdinalIgnoreCase));
+                                if (track != null) break;
+                            }
+                            else if (string.Equals(bName, uo, StringComparison.OrdinalIgnoreCase))
+                            {
+                                track = _testAnim.Tracks.FirstOrDefault(t => string.Equals(t.Name, mix, StringComparison.OrdinalIgnoreCase) ||
+                                                                            t.Name.EndsWith(":" + (mix.Contains(':') ? mix.Substring(mix.IndexOf(':') + 1) : mix), StringComparison.OrdinalIgnoreCase));
+                                if (track != null) break;
+                            }
                         }
                     }
                 }
 
                 Matrix4 localTransform;
                 int p = GetParentIndex(_previewModel.Bones, idx);
-                bool isRoot = p < 0 || p >= nb || p == idx ||
-                              bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase);
+                bool isDummyRoot = bone.Name.Equals("__Root", StringComparison.OrdinalIgnoreCase) ||
+                                   bone.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase);
 
-                if (track != null)
+                bool isRoot = p < 0 || p >= nb || p == idx ||
+                              bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase) ||
+                              (p >= 0 && p < nb && (_previewModel.Bones[p].Name.Equals("__Root", StringComparison.OrdinalIgnoreCase) ||
+                                                    _previewModel.Bones[p].Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase)));
+
+                if (isDummyRoot)
+                {
+                    // __Root and Master_* are 3ds Max scene helper/dummy objects without skinning weights.
+                    // In UO/Iris mesh assets, keeping their rest bind prevents 3ds Max exporter coordinate flips from throwing the character off-axis.
+                    localTransform = Matrix4.CreateFromQuaternion(bone.LocalRotation) * Matrix4.CreateTranslation(bone.LocalPosition);
+                }
+                else if (track != null)
                 {
                     Vector3 pos;
-                    if (bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase) || isRoot)
+                    OpenTK.Mathematics.Quaternion rot;
+                    if (bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
                     {
-                        var refBip = _refBones?.FirstOrDefault(b => string.Equals(b.Name, bone.Name, StringComparison.OrdinalIgnoreCase));
-                        float refBindZ = refBip != null ? refBip.LocalPosition.Z : 0.937f;
-                        var animPos = track.EvaluatePos(time);
-                        float deltaZ = animPos.Z - refBindZ;
-                        pos = new Vector3(bone.LocalPosition.X, bone.LocalPosition.Y, bone.LocalPosition.Z + deltaZ);
-                    }
-                    else if (bone.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase))
-                    {
-                        pos = track.EvaluatePos(time);
-                    }
-                    else
-                    {
-                        // Skeletal bones preserve the user's fitted and scaled bone placement.
-                        // Dynamic translation from the clip is added as a relative delta
-                        // from the clip's rest pose rather than overriding the fitted position!
+                        rot = rMaster * track.EvaluateRot(time);
                         Vector3 delta = Vector3.Zero;
-                        if (track.Pos != null && track.Pos.Length > 1 && TrackPositionVaries(track, 0.005f))
+                        if (track.Pos != null && track.Pos.Length > 0)
                         {
                             Vector3 trPos = track.EvaluatePos(time);
                             Vector3 restPos = track.Pos[0];
-                            delta = trPos - restPos;
+                            Vector3 localDelta = trPos - restPos;
+                            delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
                         }
                         pos = bone.LocalPosition + delta;
                     }
-                    OpenTK.Mathematics.Quaternion rot = track.EvaluateRot(time);
+                    else if (isRoot)
+                    {
+                        rot = track.EvaluateRot(time);
+                        Vector3 delta = Vector3.Zero;
+                        if (track.Pos != null && track.Pos.Length > 0)
+                        {
+                            Vector3 trPos = track.EvaluatePos(time);
+                            Vector3 restPos = track.Pos[0];
+                            Vector3 localDelta = trPos - restPos;
+                            delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
+                        }
+                        pos = bone.LocalPosition + delta;
+                    }
+                    else
+                    {
+                        Vector3 delta = Vector3.Zero;
+                        if (bone.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase))
+                        {
+                            pos = track.EvaluatePos(time);
+                        }
+                        else
+                        {
+                            if (track.Pos != null && track.Pos.Length > 1 && TrackPositionVaries(track, 0.005f))
+                            {
+                                Vector3 trPos = track.EvaluatePos(time);
+                                Vector3 restPos = track.Pos[0];
+                                delta = trPos - restPos;
+                            }
+                            pos = bone.LocalPosition + delta;
+                        }
+                        rot = track.EvaluateRot(time);
+                    }
                     localTransform = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
                 }
                 else
