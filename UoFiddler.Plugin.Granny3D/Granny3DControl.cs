@@ -691,25 +691,72 @@ namespace UoFiddler.Plugin.Granny3D
         private Button _btnPushOutBody;
         private Button _btnShrinkSew;
 
-        // Collider Adaptation & Morphing controls & state
+        // Individual Per-Collider Definitions and State
+        public class ColliderDef
+        {
+            public string Id;
+            public string DisplayName;
+            public bool Enabled = true;
+            public Vector3 Offset = Vector3.Zero; // in cm: X (gauche/droite), Y (avant/arriere), Z (haut/bas)
+            public Vector3 Scale = Vector3.One;   // X (largeur), Y (profondeur), Z (hauteur)
+            public float Radius = 1.0f;           // Dimension factor
+            public float AutoRA = 0f;             // Calibrated tight radius at A
+            public float AutoRB = 0f;             // Calibrated tight radius at B
+        }
+
+        public class CharacterColliderConfig
+        {
+            public string ModelName { get; set; } = string.Empty;
+            public string ModelPath { get; set; } = string.Empty;
+            public float GlobalScale { get; set; } = 1.0f;
+            public float Clearance { get; set; } = 0.008f;
+            public Dictionary<string, ColliderItemConfig> Colliders { get; set; } = new Dictionary<string, ColliderItemConfig>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        public class ColliderItemConfig
+        {
+            public bool Enabled { get; set; } = true;
+            public float PosX { get; set; } = 0f;
+            public float PosY { get; set; } = 0f;
+            public float PosZ { get; set; } = 0f;
+            public float DimX { get; set; } = 1f;
+            public float DimY { get; set; } = 1f;
+            public float DimZ { get; set; } = 1f;
+            public float Radius { get; set; } = 1f;
+            public float AutoRA { get; set; } = 0f;
+            public float AutoRB { get; set; } = 0f;
+        }
+
+        private readonly Dictionary<string, ColliderDef> _colliders = new Dictionary<string, ColliderDef>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _colliderKeys = new List<string>
+        {
+            "poitrine", "torse", "abdomen", "bassin", "cou", "tete",
+            "bras_g", "bras_d", "avantbras_g", "avantbras_d",
+            "cuisse_g", "cuisse_d", "mollet_g", "mollet_d", "pieds"
+        };
+
         private GroupBox _grpColliders;
         private Button _btnAutoFitColliders;
+        private Button _btnSaveColliders;
+        private Button _btnLoadColliders;
         private Button _btnResetColliders;
         private CheckBox _chkColVisible;
-        private Label _lblColStatus;
-        private NumericUpDown _nudColTorso;
-        private NumericUpDown _nudColArms;
-        private NumericUpDown _nudColPelvis;
-        private NumericUpDown _nudColLegs;
-        private NumericUpDown _nudColHead;
+        private ComboBox _cmbColliderSelect;
+        private CheckBox _chkColliderActive;
+        private Label _lblSelectedColInfo;
+        private NumericUpDown _nudColPosX;
+        private NumericUpDown _nudColPosY;
+        private NumericUpDown _nudColPosZ;
+        private NumericUpDown _nudColDimX;
+        private NumericUpDown _nudColDimY;
+        private NumericUpDown _nudColDimZ;
+        private NumericUpDown _nudColRadius;
         private NumericUpDown _nudColMargin;
-
-        private float _colliderScaleTorso = 1.0f;
-        private float _colliderScaleArms = 1.0f;
-        private float _colliderScalePelvis = 1.0f;
-        private float _colliderScaleLegs = 1.0f;
-        private float _colliderScaleHead = 1.0f;
-        private readonly Dictionary<string, (float rA, float rB)> _autoFitCapsuleRadii = new Dictionary<string, (float, float)>(StringComparer.OrdinalIgnoreCase);
+        private NumericUpDown _nudColGlobalScale;
+        private Label _lblColFile;
+        private Label _lblColStatus;
+        private bool _suppressColEvents;
+        private float _colGlobalScale = 1.0f;
 
         // 3D Sculpt / Vertex Brush controls & state
         private GroupBox _grpSculptBrush;
@@ -1780,53 +1827,85 @@ namespace UoFiddler.Plugin.Granny3D
             btnBakeModifs.Click += (s, e) => BakeAndSaveSelectedMesh();
             grpEquip.Controls.Add(btnBakeModifs);
 
-            // ---- Collider Adaptation & Zone Scaling Panel ----
+            InitColliderDefs();
+
+            // ---- Collider Adaptation & Morphing Studio Panel ----
             _grpColliders = new GroupBox
             {
-                Text = Localization.Tr("grp_colliders_adjust", "🛡️ Colliders & Morphing"),
-                Location = new Point(775, 40),
+                Text = Localization.Tr("grp_colliders_adjust", "🛡️ Colliders & Morphing Studio"),
+                Location = new Point(775, 34),
                 Width = 355,
-                Height = 225,
+                Height = 324,
                 ForeColor = Color.LightGreen,
                 BackColor = Color.FromArgb(38, 38, 42)
             };
 
             _btnAutoFitColliders = new Button
             {
-                Text = Localization.Tr("btn_autofit_colliders", "🎯 Adapter colliders au corps"),
-                Location = new Point(10, 20),
-                Width = 225,
-                Height = 26,
+                Text = "🎯 Auto-Fit (Affûté)",
+                Location = new Point(8, 18),
+                Width = 114,
+                Height = 25,
                 BackColor = Color.FromArgb(40, 85, 55),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold)
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold)
             };
             _btnAutoFitColliders.FlatAppearance.BorderColor = Color.FromArgb(70, 150, 90);
             _btnAutoFitColliders.Click += (s, e) => AutoFitCapsulesToBodyMesh();
             _grpColliders.Controls.Add(_btnAutoFitColliders);
 
+            _btnSaveColliders = new Button
+            {
+                Text = "💾 Sauver",
+                Location = new Point(126, 18),
+                Width = 72,
+                Height = 25,
+                BackColor = Color.FromArgb(35, 85, 45),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold)
+            };
+            _btnSaveColliders.Click += (s, e) => SaveCurrentCharacterColliders();
+            _grpColliders.Controls.Add(_btnSaveColliders);
+
+            _btnLoadColliders = new Button
+            {
+                Text = "📂 Charger",
+                Location = new Point(202, 18),
+                Width = 76,
+                Height = 25,
+                BackColor = Color.FromArgb(50, 65, 85),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 7.5f)
+            };
+            _btnLoadColliders.Click += (s, e) => LoadCharacterCollidersDialog();
+            _grpColliders.Controls.Add(_btnLoadColliders);
+
             _btnResetColliders = new Button
             {
-                Text = Localization.Tr("btn_reset_colliders", "↺ Reset"),
-                Location = new Point(245, 20),
-                Width = 100,
-                Height = 26,
+                Text = "↺ Reset",
+                Location = new Point(282, 18),
+                Width = 65,
+                Height = 25,
                 BackColor = Color.FromArgb(60, 60, 68),
                 ForeColor = Color.Gainsboro,
-                FlatStyle = FlatStyle.Flat
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 7.5f)
             };
             _btnResetColliders.Click += (s, e) => ResetColliders();
             _grpColliders.Controls.Add(_btnResetColliders);
 
+            // Row 2: Visibility & Collider Selector
             _chkColVisible = new CheckBox
             {
-                Text = Localization.Tr("chk_col_visible", "👁 Afficher Colliders"),
-                Location = new Point(10, 52),
-                Width = 145,
+                Text = "👁 Colliders",
+                Location = new Point(8, 48),
+                Width = 92,
                 Height = 20,
                 ForeColor = Color.LightGreen,
-                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
+                Font = new Font("Segoe UI", 8f, FontStyle.Bold),
                 Checked = _showColliders
             };
             _chkColVisible.CheckedChanged += (s, e) =>
@@ -1838,77 +1917,93 @@ namespace UoFiddler.Plugin.Granny3D
             };
             _grpColliders.Controls.Add(_chkColVisible);
 
-            _lblColStatus = new Label
+            _grpColliders.Controls.Add(new Label { Text = "Collider :", Location = new Point(102, 50), Width = 55, ForeColor = Color.Gainsboro });
+            _cmbColliderSelect = new ComboBox
             {
-                Text = "Gabarit standard",
-                Location = new Point(160, 54),
-                Width = 185,
-                Height = 18,
+                Location = new Point(158, 47),
+                Width = 189,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(28, 28, 32),
+                ForeColor = Color.Gold,
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold)
+            };
+            foreach (var k in _colliderKeys)
+            {
+                _cmbColliderSelect.Items.Add(_colliders[k].DisplayName);
+            }
+            _cmbColliderSelect.SelectedIndex = 0; // Poitrine by default
+            _cmbColliderSelect.SelectedIndexChanged += (s, e) => OnColliderSelectionChanged();
+            _grpColliders.Controls.Add(_cmbColliderSelect);
+
+            // Row 3: Active checkbox & status of selected collider
+            _chkColliderActive = new CheckBox
+            {
+                Text = "Actif",
+                Location = new Point(8, 73),
+                Width = 55,
+                ForeColor = Color.Yellow,
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                Checked = true
+            };
+            _chkColliderActive.CheckedChanged += (s, e) => OnSelectedColliderParameterChanged();
+            _grpColliders.Controls.Add(_chkColliderActive);
+
+            _lblSelectedColInfo = new Label
+            {
+                Text = "Poitrine (Seins / Buste) - Frontal",
+                Location = new Point(66, 75),
+                Width = 280,
+                Height = 16,
                 ForeColor = Color.LightSkyBlue,
                 Font = new Font("Segoe UI", 7.5f)
             };
-            _grpColliders.Controls.Add(_lblColStatus);
+            _grpColliders.Controls.Add(_lblSelectedColInfo);
 
-            _grpColliders.Controls.Add(new Label
-            {
-                Text = "── Ajustements manuels par zone (échelle) ──",
-                Location = new Point(10, 76),
-                Width = 335,
-                Height = 16,
-                ForeColor = Color.DarkGray,
-                Font = new Font("Segoe UI", 7.5f)
-            });
+            // Row 4: Position (Offset X, Y, Z in cm) for selected collider
+            _grpColliders.Controls.Add(new Label { Text = "Pos (cm) :", Location = new Point(8, 98), Width = 60, ForeColor = Color.Gold, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) });
+            _grpColliders.Controls.Add(new Label { Text = "X", Location = new Point(70, 98), Width = 14, ForeColor = Color.Gray });
+            _nudColPosX = new NumericUpDown { Location = new Point(86, 96), Width = 66, Minimum = -50m, Maximum = 50m, Increment = 0.5m, DecimalPlaces = 1, Value = 0.0m, BackColor = Color.FromArgb(28, 28, 32), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            _nudColPosX.ValueChanged += (s, e) => OnSelectedColliderParameterChanged();
+            _grpColliders.Controls.Add(_nudColPosX);
 
-            NumericUpDown MakeColNud(int x, int y, int width = 70)
-            {
-                return new NumericUpDown
-                {
-                    Location = new Point(x, y),
-                    Width = width,
-                    Minimum = 0.50m,
-                    Maximum = 3.00m,
-                    Increment = 0.05m,
-                    DecimalPlaces = 2,
-                    Value = 1.00m,
-                    BackColor = Color.FromArgb(28, 28, 32),
-                    ForeColor = Color.White,
-                    BorderStyle = BorderStyle.FixedSingle
-                };
-            }
+            _grpColliders.Controls.Add(new Label { Text = "Y", Location = new Point(158, 98), Width = 14, ForeColor = Color.Gray });
+            _nudColPosY = new NumericUpDown { Location = new Point(174, 96), Width = 66, Minimum = -50m, Maximum = 50m, Increment = 0.5m, DecimalPlaces = 1, Value = 0.0m, BackColor = Color.FromArgb(28, 28, 32), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            _nudColPosY.ValueChanged += (s, e) => OnSelectedColliderParameterChanged();
+            _grpColliders.Controls.Add(_nudColPosY);
 
-            // Torso & Arms
-            _grpColliders.Controls.Add(new Label { Text = "Torse/Dos :", Location = new Point(10, 96), Width = 70, ForeColor = Color.Gainsboro });
-            _nudColTorso = MakeColNud(82, 94, 68);
-            _nudColTorso.ValueChanged += (s, e) => { _colliderScaleTorso = (float)_nudColTorso.Value; OnClothingEffectParameterChanged(); };
-            _grpColliders.Controls.Add(_nudColTorso);
+            _grpColliders.Controls.Add(new Label { Text = "Z", Location = new Point(246, 98), Width = 14, ForeColor = Color.Gray });
+            _nudColPosZ = new NumericUpDown { Location = new Point(262, 96), Width = 66, Minimum = -50m, Maximum = 50m, Increment = 0.5m, DecimalPlaces = 1, Value = 0.0m, BackColor = Color.FromArgb(28, 28, 32), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            _nudColPosZ.ValueChanged += (s, e) => OnSelectedColliderParameterChanged();
+            _grpColliders.Controls.Add(_nudColPosZ);
 
-            _grpColliders.Controls.Add(new Label { Text = "Bras/Épaules :", Location = new Point(165, 96), Width = 95, ForeColor = Color.Gainsboro });
-            _nudColArms = MakeColNud(265, 94, 80);
-            _nudColArms.ValueChanged += (s, e) => { _colliderScaleArms = (float)_nudColArms.Value; OnClothingEffectParameterChanged(); };
-            _grpColliders.Controls.Add(_nudColArms);
+            // Row 5: Dimensions / Scale (X = Largeur, Y = Profondeur avant/arrière, Z = Hauteur)
+            _grpColliders.Controls.Add(new Label { Text = "Dim (X,Y,Z) :", Location = new Point(8, 126), Width = 72, ForeColor = Color.LightCyan, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) });
+            _grpColliders.Controls.Add(new Label { Text = "X", Location = new Point(80, 126), Width = 14, ForeColor = Color.Gray });
+            _nudColDimX = new NumericUpDown { Location = new Point(96, 124), Width = 66, Minimum = 0.20m, Maximum = 4.00m, Increment = 0.05m, DecimalPlaces = 2, Value = 1.00m, BackColor = Color.FromArgb(28, 28, 32), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            _nudColDimX.ValueChanged += (s, e) => OnSelectedColliderParameterChanged();
+            _grpColliders.Controls.Add(_nudColDimX);
 
-            // Pelvis & Legs
-            _grpColliders.Controls.Add(new Label { Text = "Bassin :", Location = new Point(10, 124), Width = 70, ForeColor = Color.Gainsboro });
-            _nudColPelvis = MakeColNud(82, 122, 68);
-            _nudColPelvis.ValueChanged += (s, e) => { _colliderScalePelvis = (float)_nudColPelvis.Value; OnClothingEffectParameterChanged(); };
-            _grpColliders.Controls.Add(_nudColPelvis);
+            _grpColliders.Controls.Add(new Label { Text = "Y", Location = new Point(168, 126), Width = 14, ForeColor = Color.Gray });
+            _nudColDimY = new NumericUpDown { Location = new Point(184, 124), Width = 66, Minimum = 0.20m, Maximum = 4.00m, Increment = 0.05m, DecimalPlaces = 2, Value = 1.00m, BackColor = Color.FromArgb(28, 28, 32), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            _nudColDimY.ValueChanged += (s, e) => OnSelectedColliderParameterChanged();
+            _grpColliders.Controls.Add(_nudColDimY);
 
-            _grpColliders.Controls.Add(new Label { Text = "Jambes :", Location = new Point(165, 124), Width = 95, ForeColor = Color.Gainsboro });
-            _nudColLegs = MakeColNud(265, 122, 80);
-            _nudColLegs.ValueChanged += (s, e) => { _colliderScaleLegs = (float)_nudColLegs.Value; OnClothingEffectParameterChanged(); };
-            _grpColliders.Controls.Add(_nudColLegs);
+            _grpColliders.Controls.Add(new Label { Text = "Z", Location = new Point(256, 126), Width = 14, ForeColor = Color.Gray });
+            _nudColDimZ = new NumericUpDown { Location = new Point(272, 124), Width = 66, Minimum = 0.20m, Maximum = 4.00m, Increment = 0.05m, DecimalPlaces = 2, Value = 1.00m, BackColor = Color.FromArgb(28, 28, 32), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            _nudColDimZ.ValueChanged += (s, e) => OnSelectedColliderParameterChanged();
+            _grpColliders.Controls.Add(_nudColDimZ);
 
-            // Head & Margin
-            _grpColliders.Controls.Add(new Label { Text = "Tête/Cou :", Location = new Point(10, 152), Width = 70, ForeColor = Color.Gainsboro });
-            _nudColHead = MakeColNud(82, 150, 68);
-            _nudColHead.ValueChanged += (s, e) => { _colliderScaleHead = (float)_nudColHead.Value; OnClothingEffectParameterChanged(); };
-            _grpColliders.Controls.Add(_nudColHead);
+            // Row 6: Taille / Rayon multiplicateur du collider
+            _grpColliders.Controls.Add(new Label { Text = "Taille / Rayon :", Location = new Point(8, 154), Width = 95, ForeColor = Color.Gainsboro });
+            _nudColRadius = new NumericUpDown { Location = new Point(106, 152), Width = 66, Minimum = 0.20m, Maximum = 4.00m, Increment = 0.05m, DecimalPlaces = 2, Value = 1.00m, BackColor = Color.FromArgb(28, 28, 32), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            _nudColRadius.ValueChanged += (s, e) => OnSelectedColliderParameterChanged();
+            _grpColliders.Controls.Add(_nudColRadius);
 
-            _grpColliders.Controls.Add(new Label { Text = "Marge +cm :", Location = new Point(165, 152), Width = 95, ForeColor = Color.Gray });
+            _grpColliders.Controls.Add(new Label { Text = "Marge globale :", Location = new Point(184, 154), Width = 88, ForeColor = Color.Gray });
             _nudColMargin = new NumericUpDown
             {
-                Location = new Point(265, 150),
-                Width = 80,
+                Location = new Point(274, 152),
+                Width = 64,
                 Minimum = 0m,
                 Maximum = 15m,
                 Increment = 0.5m,
@@ -1927,23 +2022,53 @@ namespace UoFiddler.Plugin.Granny3D
             };
             _grpColliders.Controls.Add(_nudColMargin);
 
+            // Row 7: Global scale
+            _grpColliders.Controls.Add(new Label { Text = "Échelle globale :", Location = new Point(8, 182), Width = 95, ForeColor = Color.Gainsboro });
+            _nudColGlobalScale = new NumericUpDown { Location = new Point(106, 180), Width = 66, Minimum = 0.50m, Maximum = 2.50m, Increment = 0.05m, DecimalPlaces = 2, Value = 1.00m, BackColor = Color.FromArgb(28, 28, 32), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+            _nudColGlobalScale.ValueChanged += (s, e) => { _colGlobalScale = (float)_nudColGlobalScale.Value; OnClothingEffectParameterChanged(); };
+            _grpColliders.Controls.Add(_nudColGlobalScale);
+
+            _lblColStatus = new Label
+            {
+                Text = "Collider sélectionné en JAUNE / OR dans la vue 3D",
+                Location = new Point(180, 182),
+                Width = 168,
+                Height = 32,
+                ForeColor = Color.Gold,
+                Font = new Font("Segoe UI", 7.2f, FontStyle.Bold)
+            };
+            _grpColliders.Controls.Add(_lblColStatus);
+
+            _lblColFile = new Label
+            {
+                Text = "Fichier lié : <personnage>.collider.json (auto-isolé par modèle)",
+                Location = new Point(8, 218),
+                Width = 338,
+                Height = 30,
+                ForeColor = Color.FromArgb(170, 210, 170),
+                Font = new Font("Segoe UI", 7.2f)
+            };
+            _grpColliders.Controls.Add(_lblColFile);
+
             var lblColHelp = new Label
             {
-                Text = Localization.Tr("lbl_col_help", "🎯 Auto-Fit calibre les capsules sur le mesh morphé. Ajustez les multiplicateurs par zone pour élargir les colliders selon vos besoins."),
-                Location = new Point(10, 178),
-                Width = 335,
-                Height = 40,
-                ForeColor = Color.FromArgb(170, 185, 205),
-                Font = new Font("Segoe UI", 7.5f)
+                Text = Localization.Tr("lbl_col_help", "🎯 Auto-Fit affûte précisément chaque collider autour de son mesh. Poitrine, Torse et Abdomen sont complètement séparés avec leurs propres X,Y,Z."),
+                Location = new Point(8, 252),
+                Width = 338,
+                Height = 65,
+                ForeColor = Color.Gray,
+                Font = new Font("Segoe UI", 7.2f)
             };
             _grpColliders.Controls.Add(lblColHelp);
             grpEquip.Controls.Add(_grpColliders);
+
+            OnColliderSelectionChanged();
 
             // ---- 3D Sculpt / Vertex Brush Panel (placed right of the geometry/push/shrink buttons) ----
             _grpSculptBrush = new GroupBox
             {
                 Text = Localization.Tr("grp_sculpt_brush", "🖌️ Pinceau 3D & Retouche Sommets"),
-                Location = new Point(775, 275),
+                Location = new Point(775, 368),
                 Width = 355,
                 Height = 180,
                 ForeColor = Color.Gold,
@@ -6513,6 +6638,14 @@ namespace UoFiddler.Plugin.Granny3D
             _sceneExtras.Clear();
             if (tvLoaded != null) tvLoaded.Nodes.Clear();
             _currentModelPath = path;
+
+            // Auto-load per-character collider file if present, else reset to standard
+            ResetColliders(silent: true);
+            string autoColPath = GetCharacterColliderFilePath();
+            if (File.Exists(autoColPath))
+            {
+                LoadCharacterCollidersFromFile(autoColPath);
+            }
 
             // Stop and reset any running animation when loading a new model
             _currentAnimation = null;
@@ -12363,6 +12496,8 @@ namespace UoFiddler.Plugin.Granny3D
         {
             public Vector3 A, B;
             public float RA, RB;
+            public float ScaleX, ScaleY;
+            public string ColliderId;
             public string Name;
         }
 
@@ -13231,17 +13366,19 @@ namespace UoFiddler.Plugin.Granny3D
                         rB = 0.048f + clearance + _clothClearance; // 0.048f + clearance at jaw level
                     }
 
-                    // 1. Auto-fit override if calculated from morphed body mesh
-                    if (_autoFitCapsuleRadii.TryGetValue(segKey, out var autoR))
-                    {
-                        rA = autoR.rA + clearance + _clothClearance;
-                        rB = autoR.rB + clearance + _clothClearance;
-                    }
+                    var cDef = GetColliderForSegment(pName, bName);
+                    if (cDef != null && !cDef.Enabled) continue;
 
-                    // 2. Zone scale multiplier
-                    float zoneScale = GetZoneColliderScale(pName, bName);
-                    rA *= zoneScale;
-                    rB *= zoneScale;
+                    Vector3 segOff = cDef != null ? new Vector3(cDef.Offset.X / 100f, cDef.Offset.Y / 100f, cDef.Offset.Z / 100f) : Vector3.Zero;
+                    A += segOff;
+                    B += segOff;
+
+                    float cRad = cDef != null ? cDef.Radius : 1.0f;
+                    if (cDef != null && cDef.AutoRA > 0f) rA = cDef.AutoRA + clearance + _clothClearance;
+                    if (cDef != null && cDef.AutoRB > 0f) rB = cDef.AutoRB + clearance + _clothClearance;
+
+                    rA = rA * cRad * _colGlobalScale;
+                    rB = rB * cRad * _colGlobalScale;
 
                     if ((pName.ToLowerInvariant().Contains("head") || bName.ToLowerInvariant().Contains("head")) && IsNeckBone(bName))
                     {
@@ -13252,6 +13389,9 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         A = A, B = B,
                         RA = rA, RB = rB,
+                        ScaleX = cDef != null ? cDef.Scale.X : 1f,
+                        ScaleY = cDef != null ? cDef.Scale.Y : 1f,
+                        ColliderId = cDef != null ? cDef.Id : "",
                         Name = bName
                     });
                 }
@@ -13275,19 +13415,67 @@ namespace UoFiddler.Plugin.Granny3D
                         string headKey = $"{m.Bones[headIdx].Name}->HeadTop";
                         if (seenSegments.Add(headKey))
                         {
-                            float rHead = CapsuleRadiusFor("head", clearance);
-                            if (_autoFitCapsuleRadii.TryGetValue(headKey, out var autoHead))
+                            var headDef = _colliders.TryGetValue("tete", out var hd) ? hd : null;
+                            if (headDef == null || headDef.Enabled)
                             {
-                                rHead = autoHead.rA + clearance + _clothClearance;
+                                Vector3 headOff = headDef != null ? new Vector3(headDef.Offset.X / 100f, headDef.Offset.Y / 100f, headDef.Offset.Z / 100f) : Vector3.Zero;
+                                Vector3 aHead = hPos + headOff;
+                                Vector3 bHead = hPos + hDir * 0.14f + headOff;
+                                float rHead = (headDef != null && headDef.AutoRA > 0f ? headDef.AutoRA : CapsuleRadiusFor("head", 0f)) * (headDef != null ? headDef.Radius : 1f) * _colGlobalScale + clearance + _clothClearance;
+                                caps.Add(new ClothCapsule
+                                {
+                                    A = aHead,
+                                    B = bHead,
+                                    RA = rHead,
+                                    RB = rHead,
+                                    ScaleX = headDef != null ? headDef.Scale.X : 1f,
+                                    ScaleY = headDef != null ? headDef.Scale.Y : 1f,
+                                    ColliderId = "tete",
+                                    Name = m.Bones[headIdx].Name + "_Cranium"
+                                });
                             }
-                            rHead *= _colliderScaleHead;
+                        }
+                    }
+                }
+                // 3. Poitrine (Chest / Breasts) Frontal Collider - completely separate from Torse and Abdomen!
+                if (_colliders.TryGetValue("poitrine", out var breastDef) && breastDef.Enabled)
+                {
+                    int chestIdx = m.Bones.FindIndex(b => b.Name.IndexOf("chest", StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (chestIdx < 0)
+                        chestIdx = m.Bones.FindIndex(b => b.Name.IndexOf("spine2", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("spine_2", StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (chestIdx < 0)
+                        chestIdx = m.Bones.FindIndex(b => b.Name.IndexOf("spine1", StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (chestIdx < 0)
+                        chestIdx = m.Bones.FindIndex(b => IsTorsoBone(b.Name));
+
+                    if (chestIdx >= 0 && chestIdx < m.WorldMatrices.Length)
+                    {
+                        var wm = m.WorldMatrices[chestIdx];
+                        Vector3 chestPos = new Vector3(wm.M41, wm.M42, wm.M43);
+
+                        float baseFwdY = 0.065f + (breastDef.Offset.Y / 100f);
+                        float offX = breastDef.Offset.X / 100f;
+                        float offZ = breastDef.Offset.Z / 100f;
+                        float spreadX = 0.065f * breastDef.Scale.X;
+
+                        Vector3 bA = chestPos + new Vector3(-spreadX + offX, baseFwdY, offZ);
+                        Vector3 bB = chestPos + new Vector3(+spreadX + offX, baseFwdY, offZ);
+
+                        float rBreast = (breastDef.AutoRA > 0f ? breastDef.AutoRA : 0.065f) * breastDef.Radius * _colGlobalScale + clearance + _clothClearance;
+
+                        string brKey = $"{m.Bones[chestIdx].Name}->BreastFront";
+                        if (seenSegments.Add(brKey))
+                        {
                             caps.Add(new ClothCapsule
                             {
-                                A = hPos,
-                                B = hPos + hDir * 0.14f,
-                                RA = rHead,
-                                RB = rHead,
-                                Name = m.Bones[headIdx].Name + "_Cranium"
+                                A = bA,
+                                B = bB,
+                                RA = rBreast,
+                                RB = rBreast,
+                                ScaleX = breastDef.Scale.X,
+                                ScaleY = breastDef.Scale.Y,
+                                ColliderId = "poitrine",
+                                Name = m.Bones[chestIdx].Name + "_Poitrine"
                             });
                         }
                     }
@@ -13359,50 +13547,158 @@ namespace UoFiddler.Plugin.Granny3D
             return 0.070f + totalClearance;
         }
 
-        private float GetZoneColliderScale(string pName, string bName)
+        private void InitColliderDefs()
         {
-            if (IsTorsoBone(pName) || IsTorsoBone(bName))
-                return _colliderScaleTorso;
+            if (_colliders.Count > 0) return;
+            void AddCol(string id, string name, float defRadius = 1.0f, float defDimX = 1f, float defDimY = 1f, float defDimZ = 1f)
+            {
+                _colliders[id] = new ColliderDef
+                {
+                    Id = id,
+                    DisplayName = name,
+                    Enabled = true,
+                    Offset = Vector3.Zero,
+                    Scale = new Vector3(defDimX, defDimY, defDimZ),
+                    Radius = defRadius
+                };
+            }
 
-            if (IsShoulderBone(pName) || IsShoulderBone(bName) ||
-                IsUpperArmBone(pName) || IsUpperArmBone(bName) ||
-                IsForearmBone(pName) || IsForearmBone(bName) ||
-                IsHandBone(pName) || IsHandBone(bName))
-                return _colliderScaleArms;
-
-            if (IsThighBone(pName) || IsThighBone(bName) ||
-                IsCalfBone(pName) || IsCalfBone(bName) ||
-                IsFootBone(pName) || IsFootBone(bName))
-                return _colliderScaleLegs;
-
-            if (IsPelvisBone(pName) || IsPelvisBone(bName))
-                return _colliderScalePelvis;
-
-            if (IsNeckBone(pName) || IsNeckBone(bName))
-                return _colliderScaleHead;
-
-            return 1.0f;
+            AddCol("poitrine", "Poitrine (Seins / Buste)", 1.0f, 1.0f, 1.15f, 1.0f);
+            AddCol("torse", "Torse (Haut / Cage thoracique)", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("abdomen", "Abdomen (Ventre / Taille)", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("bassin", "Bassin (Hanches / Fessier)", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("cou", "Cou", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("tete", "Tête", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("bras_g", "Bras Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("bras_d", "Bras Droit", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("avantbras_g", "Avant-bras Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("avantbras_d", "Avant-bras Droit", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("cuisse_g", "Cuisse Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("cuisse_d", "Cuisse Droite", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("mollet_g", "Mollet Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("mollet_d", "Mollet Droit", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("pieds", "Pieds", 1.0f, 1.0f, 1.0f, 1.0f);
         }
 
-        // 🎯 Auto-Fit Colliders to Morphed Body Mesh:
-        // Analyzes the actual vertex positions of the character body mesh along each bone segment,
-        // measuring the maximum radial distance from the bone axis, and automatically adapts each
-        // capsule radius (RA, RB) so 100% of the morphed geometry is enclosed within the colliders.
+        private void OnColliderSelectionChanged()
+        {
+            if (_cmbColliderSelect == null || _cmbColliderSelect.SelectedIndex < 0) return;
+            string selectedKey = _colliderKeys[_cmbColliderSelect.SelectedIndex];
+            if (!_colliders.TryGetValue(selectedKey, out var cDef)) return;
+
+            _suppressColEvents = true;
+            try
+            {
+                if (_chkColliderActive != null) _chkColliderActive.Checked = cDef.Enabled;
+                if (_nudColPosX != null) _nudColPosX.Value = (decimal)Math.Clamp(cDef.Offset.X, (float)_nudColPosX.Minimum, (float)_nudColPosX.Maximum);
+                if (_nudColPosY != null) _nudColPosY.Value = (decimal)Math.Clamp(cDef.Offset.Y, (float)_nudColPosY.Minimum, (float)_nudColPosY.Maximum);
+                if (_nudColPosZ != null) _nudColPosZ.Value = (decimal)Math.Clamp(cDef.Offset.Z, (float)_nudColPosZ.Minimum, (float)_nudColPosZ.Maximum);
+
+                if (_nudColDimX != null) _nudColDimX.Value = (decimal)Math.Clamp(cDef.Scale.X, (float)_nudColDimX.Minimum, (float)_nudColDimX.Maximum);
+                if (_nudColDimY != null) _nudColDimY.Value = (decimal)Math.Clamp(cDef.Scale.Y, (float)_nudColDimY.Minimum, (float)_nudColDimY.Maximum);
+                if (_nudColDimZ != null) _nudColDimZ.Value = (decimal)Math.Clamp(cDef.Scale.Z, (float)_nudColDimZ.Minimum, (float)_nudColDimZ.Maximum);
+                if (_nudColRadius != null) _nudColRadius.Value = (decimal)Math.Clamp(cDef.Radius, (float)_nudColRadius.Minimum, (float)_nudColRadius.Maximum);
+
+                if (_lblSelectedColInfo != null)
+                {
+                    string fitInfo = cDef.AutoRA > 0f ? $"Auto-Fit : r={Math.Round(cDef.AutoRA * 100f, 1)}cm" : "Rayon standard";
+                    _lblSelectedColInfo.Text = $"{cDef.DisplayName} ({fitInfo})";
+                }
+            }
+            finally
+            {
+                _suppressColEvents = false;
+            }
+
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+        }
+
+        private void OnSelectedColliderParameterChanged()
+        {
+            if (_suppressColEvents || _cmbColliderSelect == null || _cmbColliderSelect.SelectedIndex < 0) return;
+            string selectedKey = _colliderKeys[_cmbColliderSelect.SelectedIndex];
+            if (!_colliders.TryGetValue(selectedKey, out var cDef)) return;
+
+            if (_chkColliderActive != null) cDef.Enabled = _chkColliderActive.Checked;
+            if (_nudColPosX != null) cDef.Offset.X = (float)_nudColPosX.Value;
+            if (_nudColPosY != null) cDef.Offset.Y = (float)_nudColPosY.Value;
+            if (_nudColPosZ != null) cDef.Offset.Z = (float)_nudColPosZ.Value;
+
+            if (_nudColDimX != null) cDef.Scale.X = (float)_nudColDimX.Value;
+            if (_nudColDimY != null) cDef.Scale.Y = (float)_nudColDimY.Value;
+            if (_nudColDimZ != null) cDef.Scale.Z = (float)_nudColDimZ.Value;
+            if (_nudColRadius != null) cDef.Radius = (float)_nudColRadius.Value;
+
+            OnClothingEffectParameterChanged();
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+        }
+
+        private ColliderDef GetColliderForSegment(string pName, string bName)
+        {
+            InitColliderDefs();
+            string p = (pName ?? "").ToLowerInvariant();
+            string b = (bName ?? "").ToLowerInvariant();
+
+            if (b.Contains("poitrine") || b.Contains("breast"))
+                return _colliders["poitrine"];
+
+            if (b.Contains("head"))
+                return _colliders["tete"];
+            if (b.Contains("neck") || p.Contains("neck"))
+                return _colliders["cou"];
+
+            if (b.Contains("forearm") || b.Contains("fore_arm") || b.Contains("wrist") || b.Contains("hand"))
+                return (b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")) ? _colliders["avantbras_g"] : _colliders["avantbras_d"];
+
+            if (b.Contains("arm") || b.Contains("shoulder") || b.Contains("clavicle"))
+                return (b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")) ? _colliders["bras_g"] : _colliders["bras_d"];
+
+            if (b.Contains("foot") || b.Contains("toe") || b.Contains("ankle"))
+                return _colliders["pieds"];
+
+            if (b.Contains("calf") || b.Contains("shin") || b.Contains("knee"))
+                return (b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")) ? _colliders["mollet_g"] : _colliders["mollet_d"];
+
+            if (b.Contains("thigh") || b.Contains("leg"))
+                return (b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")) ? _colliders["cuisse_g"] : _colliders["cuisse_d"];
+
+            if (b.Contains("pelvis") || (p.Contains("pelvis") && !b.Contains("spine")))
+                return _colliders["bassin"];
+
+            if (b.Contains("spine1") || b.Contains("spine_1") || b.Contains("belly") || b.Contains("abdomen") || (p.Contains("pelvis") && b.Contains("spine")))
+                return _colliders["abdomen"];
+
+            if (b.Contains("chest") || b.Contains("spine2") || b.Contains("spine_2") || b.Contains("rib") || b.Contains("torso"))
+                return _colliders["torse"];
+
+            return _colliders["torse"];
+        }
+
+        private static float GetPercentile(List<float> values, float percentile)
+        {
+            if (values == null || values.Count == 0) return 0f;
+            values.Sort();
+            int idx = (int)Math.Clamp(Math.Floor(values.Count * percentile), 0, values.Count - 1);
+            return values[idx];
+        }
+
+        // 🎯 Auto-Fit Affûté (Sharp Anatomical Fitting):
+        // Partitionne les sommets du mesh selon leur os d'influence strict et calcule le profil radial
+        // affûté (94e percentile + 3mm de sécurité) pour épouser exactement la silhouette sans créer de boule.
         private void AutoFitCapsulesToBodyMesh()
         {
+            InitColliderDefs();
             if (_loadedMeshes == null || _loadedMeshes.Count == 0)
             {
                 Log("Auto-fit colliders : Aucun mesh chargé.");
                 return;
             }
 
-            // 1. Gather all body meshes of the character
             var bodyMeshes = new List<LoadedMesh>();
             foreach (var m in _loadedMeshes)
             {
                 if (m == null || m.Hidden || m.IsCloth || m.PushOutOfBody || m.ShrinkSew) continue;
-                if (m.CutoutRole == MeshCutoutRole.Body)
-                    bodyMeshes.Add(m);
+                if (m.CutoutRole == MeshCutoutRole.Body) bodyMeshes.Add(m);
             }
             if (bodyMeshes.Count == 0)
             {
@@ -13419,7 +13715,6 @@ namespace UoFiddler.Plugin.Granny3D
                 return;
             }
 
-            // 2. Find the skeleton host mesh
             LoadedMesh hostMesh = bodyMeshes.Find(m => m.WorldMatrices != null && m.Bones != null && m.Bones.Count >= 2);
             if (hostMesh == null)
             {
@@ -13431,10 +13726,14 @@ namespace UoFiddler.Plugin.Granny3D
                 return;
             }
 
-            _autoFitCapsuleRadii.Clear();
+            foreach (var c in _colliders.Values)
+            {
+                c.AutoRA = 0f;
+                c.AutoRB = 0f;
+            }
+
             int bn = hostMesh.Bones.Count;
-            int adaptedCount = 0;
-            var seenSegments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var segments = new List<(int p, int i, string pName, string bName, Vector3 A, Vector3 B, ColliderDef cDef)>();
 
             for (int i = 0; i < bn; i++)
             {
@@ -13444,155 +13743,344 @@ namespace UoFiddler.Plugin.Granny3D
 
                 string bName = hostMesh.Bones[i].Name;
                 string pName = hostMesh.Bones[p].Name;
-
                 if (!IsBodyCapsuleSegment(pName, bName)) continue;
-                string segKey = $"{pName}->{bName}";
-                if (!seenSegments.Add(segKey)) continue;
 
                 var wa = hostMesh.WorldMatrices[p];
                 var wb = hostMesh.WorldMatrices[i];
                 Vector3 A = new Vector3(wa.M41, wa.M42, wa.M43);
                 Vector3 B = new Vector3(wb.M41, wb.M42, wb.M43);
-                Vector3 S = B - A;
-                float len = S.Length;
-                if (len < 0.03f) continue;
-                Vector3 u = S / len;
+                if (Vector3.Distance(A, B) < 0.03f) continue;
 
-                float maxNearA = 0f;
-                float maxNearB = 0f;
-                float maxOverall = 0f;
-                int vertCount = 0;
+                var cDef = GetColliderForSegment(pName, bName);
+                segments.Add((p, i, pName, bName, A, B, cDef));
+            }
 
-                foreach (var bm in bodyMeshes)
+            var colRadiiA = new Dictionary<string, List<float>>(StringComparer.OrdinalIgnoreCase);
+            var colRadiiB = new Dictionary<string, List<float>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in _colliders.Keys)
+            {
+                colRadiiA[key] = new List<float>();
+                colRadiiB[key] = new List<float>();
+            }
+
+            foreach (var bm in bodyMeshes)
+            {
+                Vector3[] verts = bm.DeformedCache ?? bm.BaseVertices;
+                if (verts == null || verts.Length == 0) continue;
+                int vc = verts.Length;
+
+                for (int v = 0; v < vc; v++)
                 {
-                    Vector3[] verts = bm.DeformedCache ?? bm.BaseVertices;
-                    if (verts == null || verts.Length == 0) continue;
+                    Vector3 V = verts[v];
+                    int bestSegIdx = -1;
+                    float bestWeight = 0f;
 
-                    int bmP = p;
-                    int bmI = i;
-                    if (!ReferenceEquals(bm, hostMesh) && bm.Bones != null && bm.Bones.Count > 0)
+                    if (bm.Skin != null && v < bm.Skin.Length && bm.Skin[v] != null)
                     {
-                        bmP = bm.Bones.FindIndex(b => string.Equals(b.Name, pName, StringComparison.OrdinalIgnoreCase));
-                        bmI = bm.Bones.FindIndex(b => string.Equals(b.Name, bName, StringComparison.OrdinalIgnoreCase));
-                    }
-
-                    int vc = verts.Length;
-                    for (int v = 0; v < vc; v++)
-                    {
-                        Vector3 V = verts[v];
-                        float infWeight = 0f;
-
-                        if (bm.Skin != null && v < bm.Skin.Length && bm.Skin[v] != null)
+                        var sinf = bm.Skin[v];
+                        for (int k = 0; k < sinf.Length; k++)
                         {
-                            var sinf = bm.Skin[v];
-                            for (int k = 0; k < sinf.Length; k++)
+                            int bid = sinf[k].BoneId;
+                            float w = sinf[k].Weight;
+                            if (w > bestWeight)
                             {
-                                int bid = sinf[k].BoneId;
-                                if ((bmP >= 0 && bid == bmP) || (bmI >= 0 && bid == bmI))
+                                int sIdx = segments.FindIndex(s => s.i == bid || s.p == bid);
+                                if (sIdx >= 0)
                                 {
-                                    infWeight += sinf[k].Weight;
+                                    bestWeight = w;
+                                    bestSegIdx = sIdx;
                                 }
                             }
                         }
+                    }
 
-                        Vector3 ap = V - A;
-                        float t = Vector3.Dot(ap, u) / len;
-
-                        bool relevant = false;
-                        if (infWeight > 0.05f)
+                    if (bestSegIdx < 0)
+                    {
+                        float minDistSq = float.MaxValue;
+                        for (int s = 0; s < segments.Count; s++)
                         {
-                            relevant = true;
-                        }
-                        else if (infWeight == 0f && t >= -0.1f && t <= 1.1f)
-                        {
-                            float tClamp = Math.Max(0f, Math.Min(1f, t));
-                            Vector3 q = A + S * tClamp;
-                            if ((V - q).LengthSquared < 0.35f * 0.35f)
+                            Vector3 segA = segments[s].A;
+                            Vector3 segB = segments[s].B;
+                            Vector3 sVec = segB - segA;
+                            float sLen2 = sVec.LengthSquared;
+                            if (sLen2 < 1e-6f) continue;
+                            float st = Math.Clamp(Vector3.Dot(V - segA, sVec) / sLen2, 0f, 1f);
+                            Vector3 pt = segA + sVec * st;
+                            float dsq = (V - pt).LengthSquared;
+                            if (dsq < minDistSq)
                             {
-                                relevant = true;
+                                minDistSq = dsq;
+                                bestSegIdx = s;
                             }
                         }
-
-                        if (!relevant) continue;
-
-                        float tClamped = Math.Max(0f, Math.Min(1f, t));
-                        Vector3 closest = A + S * tClamped;
-                        float dist = (V - closest).Length;
-
-                        // Outlier filter (ignore hair, distant props or stray accessories)
-                        if (dist > 0.40f) continue;
-
-                        if (t <= 0.6f && dist > maxNearA) maxNearA = dist;
-                        if (t >= 0.4f && dist > maxNearB) maxNearB = dist;
-                        if (dist > maxOverall) maxOverall = dist;
-                        vertCount++;
                     }
-                }
 
-                if (vertCount > 0 && maxOverall > 0.01f)
-                {
-                    float baseRA = CapsuleRadiusFor(pName, 0f);
-                    float baseRB = CapsuleRadiusFor(bName, 0f);
+                    if (bestSegIdx < 0) continue;
 
-                    // Add +5mm margin so the skin sits comfortably inside the collider
-                    float fitRA = Math.Max(baseRA, Math.Max(maxNearA, maxOverall * 0.90f) + 0.005f);
-                    float fitRB = Math.Max(baseRB, Math.Max(maxNearB, maxOverall * 0.90f) + 0.005f);
+                    var seg = segments[bestSegIdx];
+                    Vector3 S = seg.B - seg.A;
+                    float len2 = S.LengthSquared;
+                    if (len2 < 1e-6f) continue;
 
-                    _autoFitCapsuleRadii[segKey] = (fitRA, fitRB);
-                    adaptedCount++;
+                    float t = Math.Clamp(Vector3.Dot(V - seg.A, S) / len2, 0f, 1f);
+                    Vector3 proj = seg.A + S * t;
+                    float dist = (V - proj).Length;
+
+                    if (dist > 0.28f) continue;
+
+                    string colId = seg.cDef.Id;
+                    if (t <= 0.5f)
+                        colRadiiA[colId].Add(dist);
+                    else
+                        colRadiiB[colId].Add(dist);
                 }
             }
 
-            // Head / Cranium synthesis
-            int headIdx = hostMesh.Bones.FindIndex(b => b.Name.IndexOf("head", StringComparison.OrdinalIgnoreCase) >= 0 && b.Name.IndexOf("nub", StringComparison.OrdinalIgnoreCase) < 0);
-            if (headIdx >= 0 && headIdx < hostMesh.WorldMatrices.Length)
+            int adaptedCount = 0;
+            foreach (var kv in _colliders)
             {
-                string headKey = $"{hostMesh.Bones[headIdx].Name}->HeadTop";
-                Vector3 hPos = new Vector3(hostMesh.WorldMatrices[headIdx].M41, hostMesh.WorldMatrices[headIdx].M42, hostMesh.WorldMatrices[headIdx].M43);
-                float maxHeadDist = 0f;
-                foreach (var bm in bodyMeshes)
+                string id = kv.Key;
+                var cDef = kv.Value;
+                if (id == "poitrine") continue;
+
+                var rA = colRadiiA[id];
+                var rB = colRadiiB[id];
+
+                if (rA.Count >= 5 || rB.Count >= 5)
                 {
-                    Vector3[] verts = bm.DeformedCache ?? bm.BaseVertices;
-                    if (verts == null) continue;
-                    for (int v = 0; v < verts.Length; v++)
+                    float fitA = rA.Count >= 5 ? GetPercentile(rA, 0.94f) + 0.003f : 0f;
+                    float fitB = rB.Count >= 5 ? GetPercentile(rB, 0.94f) + 0.003f : 0f;
+
+                    if (fitA > 0.02f && fitB > 0.02f)
                     {
-                        float d = (verts[v] - hPos).Length;
-                        if (d < 0.25f && d > maxHeadDist) maxHeadDist = d;
+                        cDef.AutoRA = fitA;
+                        cDef.AutoRB = fitB;
+                        adaptedCount++;
+                    }
+                    else if (fitA > 0.02f)
+                    {
+                        cDef.AutoRA = fitA;
+                        cDef.AutoRB = fitA;
+                        adaptedCount++;
+                    }
+                    else if (fitB > 0.02f)
+                    {
+                        cDef.AutoRA = fitB;
+                        cDef.AutoRB = fitB;
+                        adaptedCount++;
                     }
                 }
-                float baseRHead = CapsuleRadiusFor("head", 0f);
-                float fitRHead = Math.Max(baseRHead, maxHeadDist > 0.02f ? maxHeadDist + 0.005f : baseRHead);
-                _autoFitCapsuleRadii[headKey] = (fitRHead, fitRHead);
-                adaptedCount++;
+            }
+
+            // Poitrine (Breasts / Pectoraux) Frontal Auto-Fit
+            if (_colliders.TryGetValue("poitrine", out var brDef))
+            {
+                int chestIdx = hostMesh.Bones.FindIndex(b => b.Name.IndexOf("chest", StringComparison.OrdinalIgnoreCase) >= 0);
+                if (chestIdx < 0) chestIdx = hostMesh.Bones.FindIndex(b => b.Name.IndexOf("spine2", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("spine_2", StringComparison.OrdinalIgnoreCase) >= 0);
+                if (chestIdx < 0) chestIdx = hostMesh.Bones.FindIndex(b => IsTorsoBone(b.Name));
+
+                if (chestIdx >= 0 && chestIdx < hostMesh.WorldMatrices.Length)
+                {
+                    var wm = hostMesh.WorldMatrices[chestIdx];
+                    Vector3 chestPos = new Vector3(wm.M41, wm.M42, wm.M43);
+
+                    var fwdList = new List<float>();
+                    foreach (var bm in bodyMeshes)
+                    {
+                        Vector3[] verts = bm.DeformedCache ?? bm.BaseVertices;
+                        if (verts == null) continue;
+                        for (int v = 0; v < verts.Length; v++)
+                        {
+                            Vector3 V = verts[v];
+                            if (Math.Abs(V.Z - chestPos.Z) < 0.14f && V.Y > chestPos.Y)
+                            {
+                                float dy = V.Y - chestPos.Y;
+                                if (dy < 0.28f) fwdList.Add(dy);
+                            }
+                        }
+                    }
+
+                    if (fwdList.Count >= 8)
+                    {
+                        float peakFwd = GetPercentile(fwdList, 0.95f);
+                        if (peakFwd > 0.04f)
+                        {
+                            float tightRadius = Math.Max(0.055f, peakFwd * 0.50f + 0.003f);
+                            brDef.AutoRA = tightRadius;
+                            brDef.AutoRB = tightRadius;
+                            brDef.Offset.Y = (float)Math.Round((peakFwd - tightRadius - 0.065f) * 100f, 1);
+                            brDef.Scale.Y = 1.0f;
+                            adaptedCount++;
+                        }
+                    }
+                }
             }
 
             _showColliders = true;
             if (chkShowColliders != null) chkShowColliders.Checked = true;
             if (_chkColVisible != null) _chkColVisible.Checked = true;
-            if (_lblColStatus != null) _lblColStatus.Text = $"✓ Adapté ({adaptedCount} segments)";
 
-            Log($"Colliders adaptés au corps avec succès ({adaptedCount} segments calibrés sur le mesh morphé).");
+            OnColliderSelectionChanged();
+
+            if (_lblColStatus != null) _lblColStatus.Text = $"✓ Affûté ({adaptedCount} colliders ajustés au mesh)";
+            Log($"Auto-Fit affûté terminé : {adaptedCount} colliders parfaitement ajustés autour du mesh (0 boule).");
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
 
-        private void ResetColliders()
+        private string GetCharacterColliderFilePath()
         {
-            _autoFitCapsuleRadii.Clear();
-            _colliderScaleTorso = 1.0f;
-            _colliderScaleArms = 1.0f;
-            _colliderScalePelvis = 1.0f;
-            _colliderScaleLegs = 1.0f;
-            _colliderScaleHead = 1.0f;
+            if (!string.IsNullOrEmpty(_currentModelPath))
+            {
+                try
+                {
+                    string dir = Path.GetDirectoryName(_currentModelPath);
+                    string name = Path.GetFileNameWithoutExtension(_currentModelPath);
+                    if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                    {
+                        return Path.Combine(dir, name + ".collider.json");
+                    }
+                }
+                catch { }
+            }
 
-            if (_nudColTorso != null) _nudColTorso.Value = 1.00m;
-            if (_nudColArms != null) _nudColArms.Value = 1.00m;
-            if (_nudColPelvis != null) _nudColPelvis.Value = 1.00m;
-            if (_nudColLegs != null) _nudColLegs.Value = 1.00m;
-            if (_nudColHead != null) _nudColHead.Value = 1.00m;
-            if (_lblColStatus != null) _lblColStatus.Text = "Gabarit standard réinitialisé";
+            string fallbackDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "colliders");
+            if (!Directory.Exists(fallbackDir))
+            {
+                try { Directory.CreateDirectory(fallbackDir); } catch { }
+            }
+            string fallbackName = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetFileNameWithoutExtension(_currentModelPath) : "default_character";
+            return Path.Combine(fallbackDir, fallbackName + ".collider.json");
+        }
 
-            Log("Colliders réinitialisés au gabarit anatomique de base.");
-            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+        private void SaveCurrentCharacterColliders()
+        {
+            try
+            {
+                string path = GetCharacterColliderFilePath();
+                var cfg = new CharacterColliderConfig
+                {
+                    ModelPath = _currentModelPath ?? string.Empty,
+                    ModelName = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetFileNameWithoutExtension(_currentModelPath) : "Personnage",
+                    Clearance = _clothClearance,
+                    GlobalScale = _colGlobalScale
+                };
+
+                foreach (var kv in _colliders)
+                {
+                    cfg.Colliders[kv.Key] = new ColliderItemConfig
+                    {
+                        Enabled = kv.Value.Enabled,
+                        PosX = kv.Value.Offset.X,
+                        PosY = kv.Value.Offset.Y,
+                        PosZ = kv.Value.Offset.Z,
+                        DimX = kv.Value.Scale.X,
+                        DimY = kv.Value.Scale.Y,
+                        DimZ = kv.Value.Scale.Z,
+                        Radius = kv.Value.Radius,
+                        AutoRA = kv.Value.AutoRA,
+                        AutoRB = kv.Value.AutoRB
+                    };
+                }
+
+                string json = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(path, json, Encoding.UTF8);
+
+                string displayName = Path.GetFileName(path);
+                if (_lblColStatus != null) _lblColStatus.Text = $"💾 Sauvegardé ({displayName})";
+                if (_lblColFile != null) _lblColFile.Text = $"Fichier actif : {displayName}";
+                Log($"Colliders sauvegardés avec succès pour '{cfg.ModelName}' dans {path}");
+                MessageBox.Show(this, $"Les colliders ont été sauvegardés pour ce personnage spécifique :\n\n{path}\n\nCe réglage est lié UNIQUEMENT à ce modèle et ne modifiera pas vos autres personnages.", "Sauvegarde Colliders", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Erreur lors de la sauvegarde des colliders : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LoadCharacterCollidersDialog()
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Charger les colliders du personnage",
+                Filter = "Configuration Colliders (*.collider.json)|*.collider.json|Tous les fichiers (*.*)|*.*",
+                InitialDirectory = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetDirectoryName(_currentModelPath) : null
+            };
+            if (ofd.ShowDialog(this) == DialogResult.OK)
+            {
+                LoadCharacterCollidersFromFile(ofd.FileName);
+            }
+        }
+
+        private bool LoadCharacterCollidersFromFile(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return false;
+            try
+            {
+                string json = File.ReadAllText(filePath, Encoding.UTF8);
+                var cfg = JsonSerializer.Deserialize<CharacterColliderConfig>(json);
+                if (cfg == null) return false;
+
+                _colGlobalScale = cfg.GlobalScale > 0.1f ? cfg.GlobalScale : 1.0f;
+                _clothClearance = cfg.Clearance >= 0f ? cfg.Clearance : 0.008f;
+
+                if (cfg.Colliders != null)
+                {
+                    foreach (var kv in cfg.Colliders)
+                    {
+                        if (_colliders.TryGetValue(kv.Key, out var cDef))
+                        {
+                            cDef.Enabled = kv.Value.Enabled;
+                            cDef.Offset = new Vector3(kv.Value.PosX, kv.Value.PosY, kv.Value.PosZ);
+                            cDef.Scale = new Vector3(
+                                kv.Value.DimX > 0.05f ? kv.Value.DimX : 1f,
+                                kv.Value.DimY > 0.05f ? kv.Value.DimY : 1f,
+                                kv.Value.DimZ > 0.05f ? kv.Value.DimZ : 1f
+                            );
+                            cDef.Radius = kv.Value.Radius > 0.05f ? kv.Value.Radius : 1f;
+                            cDef.AutoRA = kv.Value.AutoRA;
+                            cDef.AutoRB = kv.Value.AutoRB;
+                        }
+                    }
+                }
+
+                if (_nudColMargin != null) _nudColMargin.Value = (decimal)(_clothClearance * 100f);
+                if (nudClothClearance != null) nudClothClearance.Value = (decimal)(_clothClearance * 100f);
+                if (_nudColGlobalScale != null) _nudColGlobalScale.Value = (decimal)_colGlobalScale;
+
+                OnColliderSelectionChanged();
+
+                string displayName = Path.GetFileName(filePath);
+                if (_lblColStatus != null) _lblColStatus.Text = $"📂 Chargé ({displayName})";
+                if (_lblColFile != null) _lblColFile.Text = $"Fichier actif : {displayName}";
+                Log($"Colliders personnalisés chargés depuis {displayName}.");
+
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"Erreur lors du chargement des colliders : {ex.Message}");
+                return false;
+            }
+        }
+
+        private void ResetColliders(bool silent = false)
+        {
+            InitColliderDefs();
+            _colGlobalScale = 1.0f;
+            if (_nudColGlobalScale != null) _nudColGlobalScale.Value = 1.00m;
+
+            OnColliderSelectionChanged();
+
+            string mName = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetFileNameWithoutExtension(_currentModelPath) : "Standard";
+            if (_lblColStatus != null) _lblColStatus.Text = $"Gabarit base ({mName})";
+            if (_lblColFile != null) _lblColFile.Text = $"Fichier actif : standard (aucun)";
+
+            if (!silent)
+            {
+                Log("Colliders réinitialisés au gabarit anatomique de base.");
+                if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+            }
         }
 
         // Analytical tapered capsule collision: projects particle onto cylinder axis AB,
@@ -13619,26 +14107,21 @@ namespace UoFiddler.Plugin.Granny3D
                     Vector3 ab = caps[c].B - caps[c].A;
                     float abLen2 = ab.LengthSquared;
                     if (abLen2 < 1e-8f) continue;
-                    float t = Vector3.Dot(p - caps[c].A, ab) / abLen2;
-                    if (t < 0f) t = 0f; else if (t > 1f) t = 1f;
+                    float t = Math.Clamp(Vector3.Dot(p - caps[c].A, ab) / abLen2, 0f, 1f);
                     Vector3 closest = caps[c].A + ab * t;
                     Vector3 d = p - closest;
-                    float dist = d.Length;
                     float r = caps[c].RA + (caps[c].RB - caps[c].RA) * t;
 
-                    if (dist < r)
-                    {
-                        Vector3 pushDir;
-                        if (dist > 1e-4f)
-                        {
-                            pushDir = d / dist;
-                        }
-                        else
-                        {
-                            Vector3 temp = Math.Abs(ab.Z) < 0.9f * (float)Math.Sqrt(abLen2) ? Vector3.UnitZ : Vector3.UnitY;
-                            pushDir = Vector3.Normalize(Vector3.Cross(ab, temp));
-                        }
+                    float sx = caps[c].ScaleX > 0.1f ? caps[c].ScaleX : 1f;
+                    float sy = caps[c].ScaleY > 0.1f ? caps[c].ScaleY : 1f;
 
+                    float dxNorm = d.X / sx;
+                    float dyNorm = d.Y / sy;
+                    float distNorm = (float)Math.Sqrt(dxNorm * dxNorm + dyNorm * dyNorm + d.Z * d.Z);
+
+                    if (distNorm < r)
+                    {
+                        Vector3 pushDir = distNorm > 1e-4f ? new Vector3((dxNorm / distNorm) * sx, (dyNorm / distNorm) * sy, d.Z / distNorm) : new Vector3(0f, sy, 0f);
                         p = closest + pushDir * r;
                     }
                 }
@@ -14507,11 +14990,20 @@ namespace UoFiddler.Plugin.Granny3D
             var caps = BuildBodyCapsules(clothMesh);
             if (caps == null || caps.Count == 0) return;
 
-            var lines = new List<float>();
+            var normalLines = new List<float>();
+            var pinkLines = new List<float>();
+            var goldLines = new List<float>();
             const int segs = 12;
+
+            string selectedKey = (_cmbColliderSelect != null && _cmbColliderSelect.SelectedIndex >= 0) ? _colliderKeys[_cmbColliderSelect.SelectedIndex] : "";
 
             foreach (var cap in caps)
             {
+                bool isSelected = string.Equals(cap.ColliderId, selectedKey, StringComparison.OrdinalIgnoreCase);
+                bool isPoitrine = string.Equals(cap.ColliderId, "poitrine", StringComparison.OrdinalIgnoreCase);
+
+                List<float> targetLines = isSelected ? goldLines : (isPoitrine ? pinkLines : normalLines);
+
                 Vector3 aGl = (cap.A - _refCenter) * _refScale;
                 Vector3 bGl = (cap.B - _refCenter) * _refScale;
                 float raGl = cap.RA * _refScale;
@@ -14526,46 +15018,54 @@ namespace UoFiddler.Plugin.Granny3D
                 Vector3 u = Vector3.Normalize(Vector3.Cross(axis, temp));
                 Vector3 w = Vector3.Normalize(Vector3.Cross(axis, u));
 
-                // Rings at A and B
-                Vector3 prevA = aGl + u * raGl;
-                Vector3 prevB = bGl + u * rbGl;
+                // Elliptical scales
+                float sx = cap.ScaleX > 0.05f ? cap.ScaleX : 1f;
+                float sy = cap.ScaleY > 0.05f ? cap.ScaleY : 1f;
+
+                Vector3 prevA = aGl + (u * sx) * raGl;
+                Vector3 prevB = bGl + (u * sx) * rbGl;
 
                 for (int k = 1; k <= segs; k++)
                 {
                     float angle = (float)(k * 2 * Math.PI / segs);
-                    Vector3 dir = u * (float)Math.Cos(angle) + w * (float)Math.Sin(angle);
+                    Vector3 dir = u * ((float)Math.Cos(angle) * sx) + w * ((float)Math.Sin(angle) * sy);
                     Vector3 curA = aGl + dir * raGl;
                     Vector3 curB = bGl + dir * rbGl;
 
-                    AddLineSegment(lines, prevA, curA);
-                    AddLineSegment(lines, prevB, curB);
+                    AddLineSegment(targetLines, prevA, curA);
+                    AddLineSegment(targetLines, prevB, curB);
 
                     prevA = curA;
                     prevB = curB;
                 }
 
                 // 4 longitudinal struts
-                AddLineSegment(lines, aGl + u * raGl, bGl + u * rbGl);
-                AddLineSegment(lines, aGl - u * raGl, bGl - u * rbGl);
-                AddLineSegment(lines, aGl + w * raGl, bGl + w * rbGl);
-                AddLineSegment(lines, aGl - w * raGl, bGl - w * rbGl);
+                AddLineSegment(targetLines, aGl + (u * sx) * raGl, bGl + (u * sx) * rbGl);
+                AddLineSegment(targetLines, aGl - (u * sx) * raGl, bGl - (u * sx) * rbGl);
+                AddLineSegment(targetLines, aGl + (w * sy) * raGl, bGl + (w * sy) * rbGl);
+                AddLineSegment(targetLines, aGl - (w * sy) * raGl, bGl - (w * sy) * rbGl);
 
                 // End caps (hemispherical arcs)
                 for (int k = 0; k < segs / 2; k++)
                 {
                     float a0 = (float)(k * Math.PI / (segs / 2));
                     float a1 = (float)((k + 1) * Math.PI / (segs / 2));
-                    Vector3 arc0A = aGl - axis * (float)Math.Sin(a0) * raGl + u * (float)Math.Cos(a0) * raGl;
-                    Vector3 arc1A = aGl - axis * (float)Math.Sin(a1) * raGl + u * (float)Math.Cos(a1) * raGl;
-                    AddLineSegment(lines, arc0A, arc1A);
+                    Vector3 arc0A = aGl - axis * (float)Math.Sin(a0) * raGl + (u * sx) * (float)Math.Cos(a0) * raGl;
+                    Vector3 arc1A = aGl - axis * (float)Math.Sin(a1) * raGl + (u * sx) * (float)Math.Cos(a1) * raGl;
+                    AddLineSegment(targetLines, arc0A, arc1A);
 
-                    Vector3 arc0B = bGl + axis * (float)Math.Sin(a0) * rbGl + u * (float)Math.Cos(a0) * rbGl;
-                    Vector3 arc1B = bGl + axis * (float)Math.Sin(a1) * rbGl + u * (float)Math.Cos(a1) * rbGl;
-                    AddLineSegment(lines, arc0B, arc1B);
+                    Vector3 arc0B = bGl + axis * (float)Math.Sin(a0) * rbGl + (u * sx) * (float)Math.Cos(a0) * rbGl;
+                    Vector3 arc1B = bGl + axis * (float)Math.Sin(a1) * rbGl + (u * sx) * (float)Math.Cos(a1) * rbGl;
+                    AddLineSegment(targetLines, arc0B, arc1B);
                 }
             }
 
-            DrawDebugLines(mvp, lines, new Vector4(0.2f, 1.0f, 0.4f, 0.95f), 2.0f);
+            if (normalLines.Count > 0)
+                DrawDebugLines(mvp, normalLines, new Vector4(0.2f, 1.0f, 0.4f, 0.90f), 1.8f);
+            if (pinkLines.Count > 0)
+                DrawDebugLines(mvp, pinkLines, new Vector4(1.0f, 0.45f, 0.65f, 0.95f), 2.0f);
+            if (goldLines.Count > 0)
+                DrawDebugLines(mvp, goldLines, new Vector4(1.0f, 0.85f, 0.1f, 0.98f), 2.5f);
         }
 
         private void DrawBones(Matrix4 mvp)
