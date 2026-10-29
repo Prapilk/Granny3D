@@ -217,6 +217,7 @@ namespace UoFiddler.Plugin.Granny3D
         public Vector3[] ClothPushBase; // last frame pushed position to dampen jitter
         public object ClothPushCapturedGrid;
         public List<Vector3[]> ClothPushCapturedBodyTris;
+        public Vector3[] SculptOriginalBaseVertices;
     }
 
     // Camera controller for orbit / pan / zoom.
@@ -689,6 +690,32 @@ namespace UoFiddler.Plugin.Granny3D
         private NumericUpDown _nudSewForce;
         private Button _btnPushOutBody;
         private Button _btnShrinkSew;
+
+        // 3D Sculpt / Vertex Brush controls & state
+        private GroupBox _grpSculptBrush;
+        private CheckBox _chkBrushActive;
+        private CheckBox _chkBrushSymX;
+        private ComboBox _cmbBrushMode;
+        private NumericUpDown _nudBrushRadius;
+        private NumericUpDown _nudBrushPower;
+        private Button _btnBrushUndo;
+        private Button _btnBrushReset;
+        private Label _lblBrushHelp;
+
+        private bool _isSculptBrushing;
+        private bool _hasBrushHit;
+        private Vector3 _brush3DPos = Vector3.Zero;
+        private Vector3 _brush3DNormal = Vector3.UnitZ;
+        private int _brushClosestVertex = -1;
+        private LoadedMesh _brushTargetMesh;
+        private Point _sculptLastMouse;
+
+        private sealed class SculptUndoStep
+        {
+            public LoadedMesh Mesh;
+            public Vector3[] Vertices;
+        }
+        private readonly Stack<SculptUndoStep> _sculptUndoStack = new Stack<SculptUndoStep>();
         private float _playbackSpeed = 1f;
         private bool _playing;
         private bool _looping = true;
@@ -1725,15 +1752,137 @@ namespace UoFiddler.Plugin.Granny3D
             btnBakeModifs.Click += (s, e) => BakeAndSaveSelectedMesh();
             grpEquip.Controls.Add(btnBakeModifs);
 
+            // ---- 3D Sculpt / Vertex Brush Panel (placed right of the geometry/push/shrink buttons) ----
+            _grpSculptBrush = new GroupBox
+            {
+                Text = Localization.Tr("grp_sculpt_brush", "🖌️ Pinceau 3D & Retouche Sommets"),
+                Location = new Point(775, 275),
+                Width = 355,
+                Height = 180,
+                ForeColor = Color.Gold,
+                BackColor = Color.FromArgb(38, 38, 42)
+            };
+
+            _chkBrushActive = new CheckBox
+            {
+                Text = Localization.Tr("chk_brush_active", "Activer Pinceau"),
+                Location = new Point(10, 20),
+                Width = 140,
+                ForeColor = Color.Yellow,
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold)
+            };
+            _chkBrushActive.CheckedChanged += (s, e) =>
+            {
+                _isSculptBrushing = false;
+                _hasBrushHit = false;
+                if (_chkBrushActive.Checked)
+                {
+                    glControl.Cursor = Cursors.Cross;
+                    var sel = GetSelectedMeshIndices();
+                    if (sel.Count == 0 && _loadedMeshes.Count > 0)
+                    {
+                        int targetIdx = _loadedMeshes.FindIndex(m => !m.Hidden && m.CutoutRole != MeshCutoutRole.Body);
+                        if (targetIdx < 0) targetIdx = _loadedMeshes.FindIndex(m => !m.Hidden);
+                        if (targetIdx >= 0) SelectLoadedMeshByIndex(targetIdx);
+                    }
+                }
+                else
+                {
+                    glControl.Cursor = Cursors.Default;
+                }
+                glControl.Invalidate();
+            };
+            _grpSculptBrush.Controls.Add(_chkBrushActive);
+
+            _chkBrushSymX = new CheckBox
+            {
+                Text = Localization.Tr("chk_brush_sym_x", "Miroir X"),
+                Location = new Point(155, 21),
+                Width = 85,
+                ForeColor = Color.LightSkyBlue
+            };
+            _grpSculptBrush.Controls.Add(_chkBrushSymX);
+
+            _btnBrushUndo = new Button
+            {
+                Text = Localization.Tr("btn_brush_undo", "↩ Annuler"),
+                Location = new Point(250, 18),
+                Width = 92,
+                Height = 24,
+                BackColor = Color.FromArgb(60, 60, 68),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            _btnBrushUndo.Click += (s, e) => SculptUndo();
+            _grpSculptBrush.Controls.Add(_btnBrushUndo);
+
+            _grpSculptBrush.Controls.Add(new Label { Text = "Outil :", Location = new Point(10, 52), Width = 45, ForeColor = Color.Gainsboro });
+            _cmbBrushMode = new ComboBox
+            {
+                Location = new Point(60, 49),
+                Width = 185,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(28, 28, 32),
+                ForeColor = Color.White
+            };
+            _cmbBrushMode.Items.AddRange(new object[]
+            {
+                "💨 Repousser (hors du corps)",
+                "🧲 Rétrécir / Coudre (vers corps)",
+                "✋ Tirer / Déplacer (Grab/Move)",
+                "🌊 Lisser (Smooth)",
+                "↺ Restaurer (Revert base)"
+            });
+            _cmbBrushMode.SelectedIndex = 0;
+            _grpSculptBrush.Controls.Add(_cmbBrushMode);
+
+            _btnBrushReset = new Button
+            {
+                Text = Localization.Tr("btn_brush_reset", "🗑 Réinit"),
+                Location = new Point(250, 48),
+                Width = 92,
+                Height = 24,
+                BackColor = Color.FromArgb(85, 45, 45),
+                ForeColor = Color.Gainsboro,
+                FlatStyle = FlatStyle.Flat
+            };
+            _btnBrushReset.Click += (s, e) => SculptReset();
+            _grpSculptBrush.Controls.Add(_btnBrushReset);
+
+            _grpSculptBrush.Controls.Add(new Label { Text = "Rayon :", Location = new Point(10, 82), Width = 50, ForeColor = Color.Gray });
+            _nudBrushRadius = MakeNud(60, 79, 0.005m, 0.50m, 0.005m, 3, 65);
+            _nudBrushRadius.Value = 0.040m;
+            _nudBrushRadius.ValueChanged += (s, e) => { if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate(); };
+            _grpSculptBrush.Controls.Add(_nudBrushRadius);
+            _grpSculptBrush.Controls.Add(new Label { Text = "(cm)", Location = new Point(128, 82), Width = 32, ForeColor = Color.DarkGray });
+
+            _grpSculptBrush.Controls.Add(new Label { Text = "Force :", Location = new Point(170, 82), Width = 45, ForeColor = Color.Gray });
+            _nudBrushPower = MakeNud(215, 79, 0.01m, 2.0m, 0.05m, 2, 55);
+            _nudBrushPower.Value = 0.35m;
+            _grpSculptBrush.Controls.Add(_nudBrushPower);
+
+            _lblBrushHelp = new Label
+            {
+                Text = "• Clic Gche : Sculpter / déplacer les sommets\n• Shift+Glisser : Lisser | Alt+Clic : Tourner caméra\n• Molette+Shift : Régler le rayon du pinceau",
+                Location = new Point(10, 114),
+                Width = 335,
+                Height = 55,
+                ForeColor = Color.FromArgb(170, 185, 205),
+                Font = new Font("Segoe UI", 7.5f)
+            };
+            _grpSculptBrush.Controls.Add(_lblBrushHelp);
+
+            grpEquip.Controls.Add(_grpSculptBrush);
+
             grpEquip.Controls.AddRange(new Control[] { lblEquipTarget, cbMirrorX, cbMirrorY, cbMirrorZ, cbMirrorArms, nudRotX, nudRotY, nudRotZ, nudOffX, nudOffY, nudOffZ, nudScale, nudScaleX, nudScaleY,            nudScaleZ, nudThickness, chkCloth, nudClothGrav, btnSkinWrap, btnEquipReset, btnDuplicateMirror, btnSubdiv, 
-           nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole, btnBakeModifs,
+           nudBakeFps, nudLoopBlend, btnClothBake, cmbCutoutRole, btnBakeModifs, _grpSculptBrush,
            cmbWrapSource, cmbWrapAlgo, cmbWrapFalloff, nudWrapK, nudWrapRadius, nudWrapMaxBones,
            chkWrapAnatomical, chkWrapLive, btnWrapPreview, btnWrapApply, btnWrapCancel, lblWrapInfo });
 
             // ---- Split the old "Équipement" panel into two tabs: equipment placement
             // | character pose/displacement (pose studio for non T-pose imports) ----
             tabEquip = new TabControl { Dock = DockStyle.Fill };
-            tabEquipment = new TabPage(Localization.Tr("tab_equipment", "Équipement (attache)")) { BackColor = Color.FromArgb(45, 45, 48) };
+            tabEquipment = new TabPage(Localization.Tr("tab_equipment", "Équipement (attache)")) { BackColor = Color.FromArgb(45, 45, 48), AutoScroll = true };
             tabPose = new TabPage(Localization.Tr("tab_pose", "Personnage (déplacement / pose)")) { BackColor = Color.FromArgb(45, 45, 48), AutoScroll = true };
             tabEquipment.Controls.Add(grpEquip);   // grpEquip already Dock=Fill
 
@@ -13810,6 +13959,19 @@ namespace UoFiddler.Plugin.Granny3D
             if (_showBones) DrawBones(mvp);
             if (_showClothHeatmap) DrawClothHeatmap(mvp);
 
+            // 3D Sculpt / Vertex brush cursor
+            if (_chkBrushActive != null && _chkBrushActive.Checked && _hasBrushHit)
+            {
+                float r = (float)_nudBrushRadius.Value;
+                DrawSculptBrushRing(mvp, _brush3DPos, _brush3DNormal, r, new Vector4(1f, 0.85f, 0.15f, 0.95f));
+                if (_chkBrushSymX != null && _chkBrushSymX.Checked)
+                {
+                    Vector3 symPos = new Vector3(-_brush3DPos.X, _brush3DPos.Y, _brush3DPos.Z);
+                    Vector3 symNorm = new Vector3(-_brush3DNormal.X, _brush3DNormal.Y, _brush3DNormal.Z);
+                    DrawSculptBrushRing(mvp, symPos, symNorm, r, new Vector4(0.2f, 0.85f, 1f, 0.95f));
+                }
+            }
+
             // 3ds Max-style view cube, top-left corner of the editor view.
             DrawViewCube();
         }
@@ -15934,12 +16096,59 @@ void main(){
             }
             // View cube click (standard view presets) takes priority over orbiting.
             if (e.Button == MouseButtons.Left && TryViewCubeClick(e)) return;
+
+            // 3D Sculpt / Vertex Brush handling
+            if (_chkBrushActive != null && _chkBrushActive.Checked && e.Button == MouseButtons.Left && !ModifierKeys.HasFlag(Keys.Alt))
+            {
+                if (RaycastSculptSurface(e.X, e.Y, out Vector3 hitPoint, out Vector3 hitNormal, out LoadedMesh hitMesh, out int closestV))
+                {
+                    _brushTargetMesh = hitMesh;
+                    _brush3DPos = hitPoint;
+                    _brush3DNormal = hitNormal;
+                    _brushClosestVertex = closestV;
+                    _hasBrushHit = true;
+                    _isSculptBrushing = true;
+                    _sculptLastMouse = e.Location;
+
+                    if (_brushTargetMesh != null && _brushTargetMesh.BaseVertices != null)
+                    {
+                        _sculptUndoStack.Push(new SculptUndoStep
+                        {
+                            Mesh = _brushTargetMesh,
+                            Vertices = (Vector3[])_brushTargetMesh.BaseVertices.Clone()
+                        });
+                        if (_sculptUndoStack.Count > 30)
+                        {
+                            var list = new List<SculptUndoStep>(_sculptUndoStack);
+                            list.RemoveAt(list.Count - 1);
+                            _sculptUndoStack.Clear();
+                            for (int i = list.Count - 1; i >= 0; i--) _sculptUndoStack.Push(list[i]);
+                        }
+                    }
+
+                    ApplySculptBrush(e.X, e.Y, hitPoint, hitNormal, _brushTargetMesh);
+                    return;
+                }
+            }
+
             _camera.OnMouseDown(e);
         }
 
         private void GlControl_MouseUp(object sender, MouseEventArgs e)
         {
             _uoDragSplit = false;
+            if (_isSculptBrushing)
+            {
+                _isSculptBrushing = false;
+                if (_brushTargetMesh != null)
+                {
+                    BuildCornerData(_brushTargetMesh);
+                    SetupMeshVBO(_brushTargetMesh);
+                    RefreshVertexBuffers(true);
+                }
+                glControl.Invalidate();
+                return;
+            }
             _camera.OnMouseUp(e);
         }
 
@@ -15960,8 +16169,33 @@ void main(){
             }
             int sx = UoSplitX();
             if (_uoView && Math.Abs(e.X - sx) <= 5) { Cursor = Cursors.SizeWE; return; }
-            Cursor = Cursors.Default;
+            Cursor = (_chkBrushActive != null && _chkBrushActive.Checked) ? Cursors.Cross : Cursors.Default;
             if (_uoView && e.X > sx) return;   // right (UO) half
+
+            // 3D Sculpt brush move / hover handling
+            if (_chkBrushActive != null && _chkBrushActive.Checked)
+            {
+                if (_isSculptBrushing && _brushTargetMesh != null)
+                {
+                    if (RaycastSculptSurface(e.X, e.Y, out Vector3 hitPoint, out Vector3 hitNormal, out _, out int closestV))
+                    {
+                        _brush3DPos = hitPoint;
+                        _brush3DNormal = hitNormal;
+                        _brushClosestVertex = closestV;
+                        _hasBrushHit = true;
+                        ApplySculptBrush(e.X, e.Y, hitPoint, hitNormal, _brushTargetMesh);
+                    }
+                    _sculptLastMouse = e.Location;
+                    glControl.Invalidate();
+                    return;
+                }
+                else if (e.Button == MouseButtons.None)
+                {
+                    _hasBrushHit = RaycastSculptSurface(e.X, e.Y, out _brush3DPos, out _brush3DNormal, out _brushTargetMesh, out _brushClosestVertex);
+                    glControl.Invalidate();
+                }
+            }
+
             _camera.OnMouseMove(e);
             glControl.Invalidate();
         }
@@ -16029,8 +16263,444 @@ void main(){
                 glControl.Invalidate();
                 return;
             }
+            if (_chkBrushActive != null && _chkBrushActive.Checked && (ModifierKeys.HasFlag(Keys.Shift) || ModifierKeys.HasFlag(Keys.Control)))
+            {
+                decimal delta = (e.Delta > 0 ? 0.005m : -0.005m);
+                _nudBrushRadius.Value = Math.Clamp(_nudBrushRadius.Value + delta, _nudBrushRadius.Minimum, _nudBrushRadius.Maximum);
+                glControl.Invalidate();
+                return;
+            }
             _camera.OnMouseWheel(e);
             glControl.Invalidate();
+        }
+
+        // ==================== 3D SCULPT / VERTEX BRUSH IMPLEMENTATION ====================
+
+        private bool RaycastSculptSurface(int mouseX, int mouseY, out Vector3 hitWorld, out Vector3 hitNormal, out LoadedMesh hitMesh, out int closestVertex)
+        {
+            hitWorld = Vector3.Zero;
+            hitNormal = Vector3.UnitZ;
+            hitMesh = null;
+            closestVertex = -1;
+            if (glControl == null || glControl.Width <= 0 || glControl.Height <= 0) return false;
+
+            int w = glControl.Width;
+            int h = glControl.Height;
+            if (_uoView)
+            {
+                int sx = UoSplitX();
+                if (sx > 1 && sx < w - 1) w = sx;
+            }
+
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(
+                MathHelper.DegreesToRadians(45f),
+                (float)w / Math.Max(1, h),
+                0.01f, 5000f);
+            Matrix4 view = _camera.GetViewMatrix();
+            Matrix4 invMvp = Matrix4.Invert(view * proj);
+
+            float xNdc = (2.0f * mouseX / w) - 1.0f;
+            float yNdc = 1.0f - (2.0f * mouseY / h);
+
+            Vector4 nearClip = new Vector4(xNdc, yNdc, -1.0f, 1.0f) * invMvp;
+            Vector4 farClip = new Vector4(xNdc, yNdc, 1.0f, 1.0f) * invMvp;
+            if (nearClip.W == 0f || farClip.W == 0f) return false;
+
+            Vector3 rayStartGl = nearClip.Xyz / nearClip.W;
+            Vector3 rayEndGl = farClip.Xyz / farClip.W;
+
+            Vector3 rayStart = (rayStartGl / _refScale) + _refCenter;
+            Vector3 rayEnd = (rayEndGl / _refScale) + _refCenter;
+            Vector3 rayDir = (rayEnd - rayStart).Normalized();
+
+            var selectedIdxs = GetSelectedMeshIndices();
+            var candidates = new List<LoadedMesh>();
+            if (selectedIdxs.Count > 0)
+            {
+                foreach (int i in selectedIdxs)
+                {
+                    if (i >= 0 && i < _loadedMeshes.Count)
+                    {
+                        var m = _loadedMeshes[i];
+                        if (m != null && !m.Hidden && m.Indices != null && m.Indices.Length >= 3)
+                            candidates.Add(m);
+                    }
+                }
+            }
+            if (candidates.Count == 0)
+            {
+                foreach (var m in _loadedMeshes)
+                {
+                    if (m != null && !m.Hidden && m.Indices != null && m.Indices.Length >= 3 && m.CutoutRole != MeshCutoutRole.Body)
+                        candidates.Add(m);
+                }
+                foreach (var m in _loadedMeshes)
+                {
+                    if (m != null && !m.Hidden && m.Indices != null && m.Indices.Length >= 3 && !candidates.Contains(m))
+                        candidates.Add(m);
+                }
+            }
+
+            float closestT = float.MaxValue;
+            bool found = false;
+
+            foreach (var lm in candidates)
+            {
+                var verts = (lm.DeformedCache != null && lm.DeformedCache.Length == lm.BaseVertices.Length) ? lm.DeformedCache : lm.BaseVertices;
+                var idx = lm.Indices;
+                if (verts == null || idx == null) continue;
+
+                for (int t = 0; t + 2 < idx.Length; t += 3)
+                {
+                    int i0 = idx[t], i1 = idx[t + 1], i2 = idx[t + 2];
+                    if (i0 < 0 || i0 >= verts.Length || i1 < 0 || i1 >= verts.Length || i2 < 0 || i2 >= verts.Length) continue;
+
+                    Vector3 v0 = verts[i0], v1 = verts[i1], v2 = verts[i2];
+                    if (RayIntersectsTriangle(rayStart, rayDir, v0, v1, v2, out float tHit))
+                    {
+                        if (tHit > 0.001f && tHit < closestT)
+                        {
+                            closestT = tHit;
+                            found = true;
+                            hitMesh = lm;
+
+                            Vector3 hitCand = rayStart + rayDir * tHit;
+                            Vector3 faceNormal = Vector3.Normalize(Vector3.Cross(v1 - v0, v2 - v0));
+                            hitNormal = faceNormal;
+
+                            float d0 = (hitCand - v0).LengthSquared;
+                            float d1 = (hitCand - v1).LengthSquared;
+                            float d2 = (hitCand - v2).LengthSquared;
+                            if (d0 <= d1 && d0 <= d2) closestVertex = i0;
+                            else if (d1 <= d0 && d1 <= d2) closestVertex = i1;
+                            else closestVertex = i2;
+                        }
+                    }
+                }
+
+                if (found && selectedIdxs.Count > 0 && selectedIdxs.Contains(_loadedMeshes.IndexOf(lm)))
+                    break;
+            }
+
+            if (found)
+            {
+                hitWorld = rayStart + rayDir * closestT;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool RayIntersectsTriangle(Vector3 rayOrigin, Vector3 rayDir, Vector3 v0, Vector3 v1, Vector3 v2, out float t)
+        {
+            t = 0f;
+            Vector3 edge1 = v1 - v0;
+            Vector3 edge2 = v2 - v0;
+            Vector3 h = Vector3.Cross(rayDir, edge2);
+            float a = Vector3.Dot(edge1, h);
+            if (a > -1e-6f && a < 1e-6f) return false;
+
+            float f = 1.0f / a;
+            Vector3 s = rayOrigin - v0;
+            float u = f * Vector3.Dot(s, h);
+            if (u < 0.0f || u > 1.0f) return false;
+
+            Vector3 q = Vector3.Cross(s, edge1);
+            float v = f * Vector3.Dot(rayDir, q);
+            if (v < 0.0f || u + v > 1.0f) return false;
+
+            t = f * Vector3.Dot(edge2, q);
+            return t > 1e-5f;
+        }
+
+        private void DrawSculptBrushRing(Matrix4 mvp, Vector3 centerWorld, Vector3 normalWorld, float radiusWorld, Vector4 color)
+        {
+            if (radiusWorld <= 0.001f) return;
+            var lines = new List<float>();
+            const int segs = 32;
+
+            Vector3 axis = normalWorld;
+            if (axis.LengthSquared < 1e-6f) axis = Vector3.UnitZ;
+            else axis = Vector3.Normalize(axis);
+
+            Vector3 temp = Math.Abs(axis.Z) < 0.9f ? Vector3.UnitZ : Vector3.UnitY;
+            Vector3 u = Vector3.Normalize(Vector3.Cross(axis, temp));
+            Vector3 w = Vector3.Normalize(Vector3.Cross(axis, u));
+
+            Vector3 centerGl = (centerWorld - _refCenter) * _refScale;
+            float rGl = radiusWorld * _refScale;
+
+            Vector3 prevPt = centerGl + u * rGl;
+            for (int k = 1; k <= segs; k++)
+            {
+                float angle = (float)(k * 2.0 * Math.PI / segs);
+                Vector3 dir = u * (float)Math.Cos(angle) + w * (float)Math.Sin(angle);
+                Vector3 curPt = centerGl + dir * rGl;
+                AddLineSegment(lines, prevPt, curPt);
+                prevPt = curPt;
+            }
+
+            // Small cross at center
+            float crossR = rGl * 0.15f;
+            AddLineSegment(lines, centerGl - u * crossR, centerGl + u * crossR);
+            AddLineSegment(lines, centerGl - w * crossR, centerGl + w * crossR);
+
+            DrawDebugLines(mvp, lines, color, 2.5f);
+        }
+
+        private void ApplySculptBrush(int mouseX, int mouseY, Vector3 hitWorld, Vector3 hitNormal, LoadedMesh target)
+        {
+            if (target == null || target.BaseVertices == null || target.BaseVertices.Length == 0) return;
+            if (target.SculptOriginalBaseVertices == null || target.SculptOriginalBaseVertices.Length != target.BaseVertices.Length)
+            {
+                target.SculptOriginalBaseVertices = (Vector3[])target.BaseVertices.Clone();
+            }
+
+            float radius = (float)_nudBrushRadius.Value;
+            if (radius < 0.002f) radius = 0.002f;
+            float power = (float)_nudBrushPower.Value;
+            int mode = _cmbBrushMode.SelectedIndex;
+            bool symX = _chkBrushSymX != null && _chkBrushSymX.Checked;
+
+            int dx = mouseX - _sculptLastMouse.X;
+            int dy = mouseY - _sculptLastMouse.Y;
+
+            Matrix4 view = _camera.GetViewMatrix();
+            Vector3 camRight = new Vector3(view.M11, view.M21, view.M31);
+            Vector3 camUp = new Vector3(view.M12, view.M22, view.M32);
+            float grabFactor = (_camera.Distance * 0.0012f) / Math.Max(0.01f, _refScale);
+            Vector3 grabMoveWorld = (camRight * dx - camUp * dy) * grabFactor;
+
+            if (ModifierKeys.HasFlag(Keys.Shift)) mode = 3;
+
+            List<LoadedMesh> bodyMeshes = target.CollisionBody;
+            if (bodyMeshes == null || bodyMeshes.Count == 0)
+            {
+                bodyMeshes = new List<LoadedMesh>();
+                foreach (var m in _loadedMeshes)
+                    if (m != null && !ReferenceEquals(m, target) && !m.Hidden && m.CutoutRole == MeshCutoutRole.Body)
+                        bodyMeshes.Add(m);
+            }
+            CollisionGrid bodyGrid = (bodyMeshes.Count > 0) ? BuildBodyCollisionGrid(bodyMeshes) : null;
+
+            Dictionary<int, List<int>> adjacency = null;
+            if (mode == 3 && target.Indices != null)
+            {
+                adjacency = new Dictionary<int, List<int>>();
+                for (int t = 0; t + 2 < target.Indices.Length; t += 3)
+                {
+                    int a = target.Indices[t], b = target.Indices[t + 1], c = target.Indices[t + 2];
+                    AddAdj(adjacency, a, b); AddAdj(adjacency, a, c);
+                    AddAdj(adjacency, b, a); AddAdj(adjacency, b, c);
+                    AddAdj(adjacency, c, a); AddAdj(adjacency, c, b);
+                }
+            }
+
+            int vcount = target.BaseVertices.Length;
+            var curVerts = (target.DeformedCache != null && target.DeformedCache.Length == vcount) ? target.DeformedCache : target.BaseVertices;
+
+            bool modifiedAny = false;
+
+            void ProcessHitCenter(Vector3 center, bool isSymmetric)
+            {
+                for (int v = 0; v < vcount; v++)
+                {
+                    Vector3 p = curVerts[v];
+                    float dist = (p - center).Length;
+                    if (dist > radius) continue;
+
+                    float t = dist / radius;
+                    float falloff = (1.0f - t * t) * (1.0f - t * t);
+                    float effPower = power * falloff;
+                    if (effPower < 1e-5f) continue;
+
+                    Vector3 deltaWorld = Vector3.Zero;
+
+                    if (mode == 0) // Repousser (Push Out)
+                    {
+                        Vector3 pushDir = hitNormal;
+                        if (bodyGrid != null && FindClosestBodyPoint(bodyGrid, p, radius * 2f, out var tri, out var q, out float dBody, pushDir))
+                        {
+                            Vector3 bary = Barycentric(q, tri.A, tri.B, tri.C);
+                            Vector3 n = bary.X * tri.NA + bary.Y * tri.NB + bary.Z * tri.NC;
+                            if (n.LengthSquared > 1e-6f) pushDir = Vector3.Normalize(n);
+                            else pushDir = tri.N;
+                        }
+                        else if (target.BaseVertexNormals != null && v < target.BaseVertexNormals.Length && target.BaseVertexNormals[v].LengthSquared > 1e-4f)
+                        {
+                            pushDir = target.BaseVertexNormals[v];
+                        }
+                        if (isSymmetric) pushDir.X = -pushDir.X;
+                        deltaWorld = pushDir * (effPower * 0.02f);
+                    }
+                    else if (mode == 1) // Rétrécir / Coudre (Pull in)
+                    {
+                        Vector3 pullDir = -hitNormal;
+                        if (bodyGrid != null && FindClosestBodyPoint(bodyGrid, p, radius * 2f, out var tri, out var q, out float dBody, hitNormal))
+                        {
+                            Vector3 bary = Barycentric(q, tri.A, tri.B, tri.C);
+                            Vector3 n = bary.X * tri.NA + bary.Y * tri.NB + bary.Z * tri.NC;
+                            if (n.LengthSquared > 1e-6f) pullDir = -Vector3.Normalize(n);
+                            else pullDir = -tri.N;
+                        }
+                        else if (target.BaseVertexNormals != null && v < target.BaseVertexNormals.Length && target.BaseVertexNormals[v].LengthSquared > 1e-4f)
+                        {
+                            pullDir = -target.BaseVertexNormals[v];
+                        }
+                        if (isSymmetric) pullDir.X = -pullDir.X;
+                        deltaWorld = pullDir * (effPower * 0.02f);
+                    }
+                    else if (mode == 2) // Grab / Move
+                    {
+                        Vector3 gMove = grabMoveWorld;
+                        if (isSymmetric) gMove.X = -gMove.X;
+                        deltaWorld = gMove * effPower;
+                    }
+                    else if (mode == 3) // Smooth
+                    {
+                        if (adjacency != null && adjacency.TryGetValue(v, out var nbrs) && nbrs.Count > 0)
+                        {
+                            Vector3 sum = Vector3.Zero;
+                            foreach (int ni in nbrs) sum += curVerts[ni];
+                            Vector3 avg = sum / nbrs.Count;
+                            deltaWorld = (avg - p) * (effPower * 0.4f);
+                        }
+                    }
+                    else if (mode == 4) // Revert / Restore
+                    {
+                        if (target.SculptOriginalBaseVertices != null && v < target.SculptOriginalBaseVertices.Length)
+                        {
+                            Vector3 origBase = target.SculptOriginalBaseVertices[v];
+                            target.BaseVertices[v] = Vector3.Lerp(target.BaseVertices[v], origBase, effPower * 0.3f);
+                            modifiedAny = true;
+                            continue;
+                        }
+                    }
+
+                    if (deltaWorld.LengthSquared > 1e-12f)
+                    {
+                        Vector3 deltaBase = deltaWorld;
+                        if (target.Skin != null && v < target.Skin.Length && target.Skin[v] != null && target.Skin[v].Length > 0 && target.SkinMatrices != null)
+                        {
+                            Matrix4 bm = Matrix4.Zero;
+                            float tw = 0f;
+                            foreach (var inf in target.Skin[v])
+                            {
+                                if (inf.BoneId >= 0 && inf.BoneId < target.SkinMatrices.Length)
+                                {
+                                    bm += target.SkinMatrices[inf.BoneId] * inf.Weight;
+                                    tw += inf.Weight;
+                                }
+                            }
+                            if (tw > 1e-4f)
+                            {
+                                bm *= (1f / tw);
+                                try { deltaBase = Vector3.TransformVector(deltaWorld, Matrix4.Invert(bm)); } catch { deltaBase = deltaWorld; }
+                            }
+                        }
+                        else if (target.HasAttachMatrix)
+                        {
+                            try { deltaBase = Vector3.TransformVector(deltaWorld, Matrix4.Invert(target.AttachMatrix)); } catch { deltaBase = deltaWorld; }
+                        }
+
+                        target.BaseVertices[v] += deltaBase;
+                        if (target.DeformedCache != null && v < target.DeformedCache.Length)
+                            target.DeformedCache[v] += deltaWorld;
+
+                        modifiedAny = true;
+                    }
+                }
+            }
+
+            ProcessHitCenter(hitWorld, false);
+            if (symX)
+            {
+                Vector3 symCenter = new Vector3(-hitWorld.X, hitWorld.Y, hitWorld.Z);
+                ProcessHitCenter(symCenter, true);
+            }
+
+            if (modifiedAny)
+            {
+                RefreshVertexBuffers(true);
+                glControl.Invalidate();
+            }
+        }
+
+        private static void AddAdj(Dictionary<int, List<int>> adj, int from, int to)
+        {
+            if (!adj.TryGetValue(from, out var list))
+            {
+                list = new List<int>(6);
+                adj[from] = list;
+            }
+            if (!list.Contains(to)) list.Add(to);
+        }
+
+        private void SculptUndo()
+        {
+            if (_sculptUndoStack.Count == 0) return;
+            var step = _sculptUndoStack.Pop();
+            if (step.Mesh != null && step.Vertices != null && _loadedMeshes.Contains(step.Mesh))
+            {
+                step.Mesh.BaseVertices = (Vector3[])step.Vertices.Clone();
+                BuildCornerData(step.Mesh);
+                SetupMeshVBO(step.Mesh);
+                ApplyAnimationPose(_currentTime);
+                RefreshVertexBuffers(true);
+                glControl.Invalidate();
+                Log($"Sculpt Undo : rétabli l'état précédent sur '{step.Mesh.Name}'.");
+            }
+        }
+
+        private void SculptReset()
+        {
+            var idxs = GetSelectedMeshIndices();
+            if (idxs.Count == 0) return;
+            int count = 0;
+            foreach (int i in idxs)
+            {
+                if (i >= 0 && i < _loadedMeshes.Count)
+                {
+                    var m = _loadedMeshes[i];
+                    if (m.SculptOriginalBaseVertices != null)
+                    {
+                        _sculptUndoStack.Push(new SculptUndoStep
+                        {
+                            Mesh = m,
+                            Vertices = (Vector3[])m.BaseVertices.Clone()
+                        });
+                        m.BaseVertices = (Vector3[])m.SculptOriginalBaseVertices.Clone();
+                        BuildCornerData(m);
+                        SetupMeshVBO(m);
+                        count++;
+                    }
+                }
+            }
+            if (count > 0)
+            {
+                ApplyAnimationPose(_currentTime);
+                RefreshVertexBuffers(true);
+                glControl.Invalidate();
+                Log($"Sculpt Reset : {count} mesh(es) réinitialisé(s) à la géométrie d'origine.");
+            }
+        }
+
+        private void SelectLoadedMeshByIndex(int idx)
+        {
+            if (tvLoaded == null) return;
+            TreeNode FindNode(TreeNodeCollection nodes)
+            {
+                foreach (TreeNode n in nodes)
+                {
+                    if (n.Tag is int i && i == idx) return n;
+                    if (n.Tag is List<int> list && list.Contains(idx)) return n;
+                    var c = FindNode(n.Nodes);
+                    if (c != null) return c;
+                }
+                return null;
+            }
+            var node = FindNode(tvLoaded.Nodes);
+            if (node != null) tvLoaded.SelectedNode = node;
         }
 
         private void BtnPlay_Click(object sender, EventArgs e)
