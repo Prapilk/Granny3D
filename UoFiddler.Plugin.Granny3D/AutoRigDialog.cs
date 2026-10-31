@@ -605,10 +605,10 @@ namespace UoFiddler.Plugin.Granny3D
             };
             nudBrushRadius = new NumericUpDown
             {
-                DecimalPlaces = 2,
-                Minimum = 0.02m,
-                Maximum = 1.00m,
-                Increment = 0.02m,
+                DecimalPlaces = 3,
+                Minimum = 0.002m,
+                Maximum = 2.00m,
+                Increment = 0.005m,
                 Value = 0.10m,
                 Width = 55,
                 BackColor = Color.FromArgb(22, 22, 24),
@@ -7741,6 +7741,15 @@ void main() {
 
         private void GlControl_MouseWheel(object? sender, MouseEventArgs e)
         {
+            if ((Control.ModifierKeys & Keys.Control) == Keys.Control && nudBrushRadius != null && chkWeightBrush != null && chkWeightBrush.Checked)
+            {
+                decimal cur = nudBrushRadius.Value;
+                decimal step = cur <= 0.05m ? 0.002m : (cur <= 0.2m ? 0.01m : 0.05m);
+                decimal nv = e.Delta > 0 ? cur + step : cur - step;
+                nudBrushRadius.Value = Math.Max(nudBrushRadius.Minimum, Math.Min(nudBrushRadius.Maximum, nv));
+                glControl.Invalidate();
+                return;
+            }
             float zoomFactor = e.Delta > 0 ? 0.9f : 1.1f;
             _cameraDist = MathHelper.Clamp(_cameraDist * zoomFactor, 0.3f, 30.0f);
             glControl.Invalidate();
