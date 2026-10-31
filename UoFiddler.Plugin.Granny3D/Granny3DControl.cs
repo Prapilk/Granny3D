@@ -3641,6 +3641,11 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         sourceFile = pathOrFolder;
                         outFolder = Path.GetDirectoryName(pathOrFolder);
+
+                        // Un clic droit ne charge pas le mod\u00e8le (s\u00e9lection supprim\u00e9e) : la sc\u00e8ne peut \u00eatre vide
+                        // ou contenir un autre mod\u00e8le, et Rig Studio privil\u00e9gie les meshes de la sc\u00e8ne.
+                        // On charge donc d'abord la cr\u00e9ature cibl\u00e9e pour afficher son mesh ET son rig.
+                        try { EnsureMeshLoaded(pathOrFolder); } catch (Exception ex) { Log($"ApplyMixamoForUo: chargement de {pathOrFolder} impossible: {ex.Message}"); }
                     }
                 }
 

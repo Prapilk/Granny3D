@@ -358,6 +358,25 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             EnsurePreviewModel();
+            FrameCameraOnMesh();
+        }
+
+        private void FrameCameraOnMesh()
+        {
+            if (_baseVertices == null || _baseVertices.Length == 0) return;
+            var mn = new Vector3(float.MaxValue);
+            var mx = new Vector3(float.MinValue);
+            foreach (var v in _baseVertices)
+            {
+                mn = Vector3.ComponentMin(mn, v);
+                mx = Vector3.ComponentMax(mx, v);
+            }
+            var size = mx - mn;
+            float radius = Math.Max(0.1f, Math.Max(size.X, Math.Max(size.Y, size.Z)));
+            _cameraTarget = (mn + mx) * 0.5f;
+            _cameraPan = Vector3.Zero;
+            Math.Clamp(radius * 1.8f, 0.3f, 30f);
+            glControl?.Invalidate();
         }
 
         private void InitializeDefaultMarkers()
@@ -3157,10 +3176,18 @@ namespace UoFiddler.Plugin.Granny3D
                 (!string.IsNullOrEmpty(modelPathHint) && (modelPathHint.IndexOf("horse", StringComparison.OrdinalIgnoreCase) >= 0 || modelPathHint.IndexOf("cheval", StringComparison.OrdinalIgnoreCase) >= 0)))
             {
                 string horseCandidate = Path.Combine(baseDir, "Animals", "Equines_Horse_Dappled_Brown_Lod2.grn");
+                bool horseNameHint = !string.IsNullOrEmpty(modelPathHint) && (modelPathHint.IndexOf("horse", StringComparison.OrdinalIgnoreCase) >= 0 || modelPathHint.IndexOf("cheval", StringComparison.OrdinalIgnoreCase) >= 0);
                 if (File.Exists(horseCandidate))
                 {
-                    displayName = "Equines_Horse";
-                    return horseCandidate;
+                    // Ne retenir le cheval que si le squelette correspond VRAIMENT (même nombre d'os et noms communs).
+                    // Beaucoup de créatures (Raptalon...) ont un os "HorseLink" sans être un cheval.
+                    var hp = new GrannyFormatParser();
+                    if (hp.Load(horseCandidate) && hp.Bones.Count == bones.Count &&
+                        hp.Bones.Count(pb => boneNameSet.Contains(pb.Name)) >= bones.Count * 0.8)
+                    {
+                        displayName = "Equines_Horse";
+                        return horseCandidate;
+                    }
                 }
             }
 
@@ -6991,7 +7018,7 @@ void main() {
             if (lines.Count > 0)
             {
                 GL.Disable(EnableCap.DepthTest);
-                DrawLinesImmediate(mvp, lines.ToArray(), new Vector4(0.2f, 1.0f, 0.4f, 0.95f), 3.0f);
+                DrawLinesImmediate(mvp, lines.ToArray(), new Vector4(0.2f, 1.0f, 0.4f, 0.95f), 1.5f);
                 GL.Enable(EnableCap.DepthTest);
             }
         }
@@ -7071,6 +7098,7 @@ void main() {
 
         private void DrawMarkerSelectionBox(Matrix4 mvp, Vector3 c, float s, Vector4 color)
         {
+            s *= Math.Max(0.02f, _cameraDist / 2.8f);
             float[] boxVerts = new float[]
             {
                 // Bottom quad
@@ -7222,6 +7250,7 @@ void main() {
 
         private void DrawCrossMarker(Matrix4 mvp, Vector3 center, float size, Vector4 color)
         {
+            size *= Math.Max(0.02f, _cameraDist / 2.8f);
             float[] crossVerts = new float[]
             {
                 center.X - size, center.Y, center.Z,
