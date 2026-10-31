@@ -868,7 +868,7 @@ namespace UoFiddler.Plugin.Granny3D
                 Margin = new Padding(0, 4, 0, 0)
             };
             var lblScale = new Label { Text = Localization.Tr("rig_lbl_scale", "Échelle Modèle :"), AutoSize = true, ForeColor = Color.Gainsboro, Padding = new Padding(0, 6, 4, 0) };
-            nudScale = new NumericUpDown { DecimalPlaces = 4, Minimum = 0.0001m, Maximum = 1000m, Value = 1.0m, Increment = 0.01m, Width = 85, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.White, Margin = new Padding(0, 3, 4, 0) };
+            nudScale = new NumericUpDown { DecimalPlaces = 4, Minimum = 0.0001m, Maximum = 1000000m, Value = 1.0m, Increment = 0.01m, Width = 85, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.White, Margin = new Padding(0, 3, 4, 0) };
             nudScale.ValueChanged += (s, e) => OnMeshScaleChanged();
 
             pnlScale.Controls.Add(lblScale);
@@ -2329,13 +2329,19 @@ namespace UoFiddler.Plugin.Granny3D
             PushUndoState("Ajuster modèle au squelette");
 
             float minZ = float.MaxValue, maxZ = float.MinValue;
+            float minXs = float.MaxValue, maxXs = float.MinValue, minYs = float.MaxValue, maxYs = float.MinValue;
             foreach (var v in _baseVertices)
             {
                 minZ = Math.Min(minZ, v.Z);
                 maxZ = Math.Max(maxZ, v.Z);
+                minXs = Math.Min(minXs, v.X); maxXs = Math.Max(maxXs, v.X);
+                minYs = Math.Min(minYs, v.Y); maxYs = Math.Max(maxYs, v.Y);
             }
 
             float currentH = maxZ - minZ;
+            // Modèle probablement couché : utiliser la plus grande dimension.
+            float otherMax = Math.Max(maxXs - minXs, maxYs - minYs);
+            if (currentH < otherMax * 0.05f) currentH = otherMax;
             if (currentH > 1e-4f)
             {
                 float targetH = 1.75f; // Standard UO Biped humanoid height
@@ -2365,7 +2371,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void SetModelScale(float newScale)
         {
-            newScale = MathHelper.Clamp(newScale, 0.0001f, 1000f);
+            newScale = MathHelper.Clamp(newScale, 0.0001f, 1000000f);
             _scale = newScale;
             if (nudScale != null)
             {
@@ -7098,7 +7104,6 @@ void main() {
 
         private void DrawMarkerSelectionBox(Matrix4 mvp, Vector3 c, float s, Vector4 color)
         {
-            s *= Math.Max(0.02f, _cameraDist / 2.8f);
             float[] boxVerts = new float[]
             {
                 // Bottom quad
