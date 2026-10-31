@@ -137,6 +137,9 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             // 2) Index all scene nodes to allow hierarchy traversal
+            var gltfBaseMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            string srcExt = Path.GetExtension(fbxPath).ToLowerInvariant();
+            if (srcExt == ".glb" || srcExt == ".gltf") gltfBaseMap = GetGltfBaseColorImages(fbxPath);
             var nodes = new List<Node>();
             var nodeParent = new List<int>();
             void Collect(Node n, int par)
@@ -507,7 +510,21 @@ namespace UoFiddler.Plugin.Granny3D
 
                     string texName = null;
                     string cleanMesh = !string.IsNullOrEmpty(mesh.Name) ? Granny3DControl.MakeSafeFilename(mesh.Name) : $"mesh_{m}";
-                    if (mat.HasTextureDiffuse && !string.IsNullOrEmpty(mat.TextureDiffuse.FilePath))
+
+                    // glTF/GLB : résolution directe matériau -> baseColorTexture -> image
+                    if (gltfBaseMap.Count > 0)
+                    {
+                        int imgIdx = -1;
+                        if (!string.IsNullOrEmpty(mat?.Name) && gltfBaseMap.TryGetValue(mat!.Name, out var byName)) imgIdx = byName;
+                        else if (gltfBaseMap.TryGetValue($"#{mesh.MaterialIndex}", out var byIdx)) imgIdx = byIdx;
+                        if (imgIdx >= 0)
+                        {
+                            var hit = embedded.FirstOrDefault(e => e.Filename.StartsWith($"img{imgIdx}_", StringComparison.OrdinalIgnoreCase));
+                            if (hit.Filename != null && extractedMap.TryGetValue(hit.Filename, out var gName)) texName = gName;
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(texName) && mat.HasTextureDiffuse && !string.IsNullOrEmpty(mat.TextureDiffuse.FilePath))
                     {
                         string fp = mat.TextureDiffuse.FilePath;
                         string fn = Path.GetFileName(fp);
@@ -905,6 +922,13 @@ namespace UoFiddler.Plugin.Granny3D
             var result = new List<(string, byte[])>();
             if (string.IsNullOrEmpty(fbxPath) || !File.Exists(fbxPath)) return result;
 
+            string modelExt = Path.GetExtension(fbxPath).ToLowerInvariant();
+            if (modelExt == ".glb" || modelExt == ".gltf")
+            {
+                var gl = ExtractGltfTextures(fbxPath);
+                if (gl.Count > 0) return gl;
+            }
+
             try
             {
                 byte[] fbx = File.ReadAllBytes(fbxPath);
@@ -973,6 +997,166 @@ namespace UoFiddler.Plugin.Granny3D
             catch { }
 
             return result;
+        }
+
+        private static List<(string Filename, byte[] Data)> ExtractGltfTextures(string path)
+        {
+            var result = new List<(string, byte[])>();
+            try
+            {
+                byte[] file = File.ReadAllBytes(path);
+                string json;
+                byte[]? bin = null;
+
+                if (file.Length > 20 && file[0] == 0x67 && file[1] == 0x6C && file[2] == 0x54 && file[3] == 0x46) // "glTF"
+                {
+                    int off = 12;
+                    string? j = null;
+                    while (off + 8 <= file.Length)
+                    {
+                        int len = BitConverter.ToInt32(file, off);
+                        uint type = BitConverter.ToUInt32(file, off + 4);
+                        off += 8;
+                        if (len < 0 || off + len > file.Length) break;
+                        if (type == 0x4E4F534A) j = System.Text.Encoding.UTF8.GetString(file, off, len);
+                        else if (type == 0x004E4942 && bin == null) { bin = new byte[len]; Array.Copy(file, off, bin, 0, len); }
+                        off += len;
+                    }
+                    if (j == null) return result;
+                    json = j;
+                }
+                else
+                {
+                    json = System.Text.Encoding.UTF8.GetString(file);
+                }
+
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("images", out var images)) return result;
+
+                string dir = Path.GetDirectoryName(path) ?? string.Empty;
+                int idx = 0;
+                foreach (var img in images.EnumerateArray())
+                {
+                    byte[]? data = null;
+                    string name = img.TryGetProperty("name", out var nEl) ? (nEl.GetString() ?? string.Empty) : string.Empty;
+                    string mime = img.TryGetProperty("mimeType", out var mEl) ? (mEl.GetString() ?? string.Empty) : string.Empty;
+
+                    if (img.TryGetProperty("bufferView", out var bvEl) && bin != null &&
+                        root.TryGetProperty("bufferViews", out var bvs))
+                    {
+                        var bv = bvs[bvEl.GetInt32()];
+                        int bo = bv.TryGetProperty("byteOffset", out var boEl) ? boEl.GetInt32() : 0;
+                        int bl = bv.GetProperty("byteLength").GetInt32();
+                        if (bo >= 0 && bo + bl <= bin.Length)
+                        {
+                            data = new byte[bl];
+                            Array.Copy(bin, bo, data, 0, bl);
+                        }
+                    }
+                    else if (img.TryGetProperty("uri", out var uriEl))
+                    {
+                        string uri = uriEl.GetString() ?? string.Empty;
+                        if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int comma = uri.IndexOf(',');
+                            if (comma > 0)
+                            {
+                                if (string.IsNullOrEmpty(mime)) mime = uri.Substring(5, Math.Max(0, uri.IndexOf(';') - 5));
+                                data = Convert.FromBase64String(uri.Substring(comma + 1));
+                            }
+                        }
+                        else
+                        {
+                            string ext0 = Path.GetExtension(uri);
+                            string full = Path.Combine(dir, Uri.UnescapeDataString(uri));
+                            if (File.Exists(full)) data = File.ReadAllBytes(full);
+                            if (string.IsNullOrEmpty(name)) name = Path.GetFileNameWithoutExtension(uri);
+                            if (string.IsNullOrEmpty(mime) && !string.IsNullOrEmpty(ext0))
+                                mime = ext0.Equals(".jpg", StringComparison.OrdinalIgnoreCase) || ext0.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ? "image/jpeg" : "image/png";
+                        }
+                    }
+
+                    if (data != null && data.Length > 0)
+                    {
+                        bool isJpg = mime.Contains("jpeg") || mime.Contains("jpg") || (data.Length > 3 && data[0] == 0xFF && data[1] == 0xD8);
+                        string ext = isJpg ? ".jpg" : ".png";
+                        if (string.IsNullOrEmpty(name)) name = $"embedded_tex";
+                        result.Add(($"img{idx}_" + Path.GetFileNameWithoutExtension(name) + ext, data));
+                    }
+                    idx++;
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        /// <summary>
+        /// Lit le JSON d'un .glb/.gltf et retourne, par nom de matériau (et "#index"), l'index de l'image BaseColor.
+        /// </summary>
+        private static Dictionary<string, int> GetGltfBaseColorImages(string path)
+        {
+            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                byte[] file = File.ReadAllBytes(path);
+                string json;
+                if (file.Length > 20 && file[0] == 0x67 && file[1] == 0x6C && file[2] == 0x54 && file[3] == 0x46)
+                {
+                    int off = 12;
+                    string? j = null;
+                    while (off + 8 <= file.Length)
+                    {
+                        int len = BitConverter.ToInt32(file, off);
+                        uint type = BitConverter.ToUInt32(file, off + 4);
+                        off += 8;
+                        if (len < 0 || off + len > file.Length) break;
+                        if (type == 0x4E4F534A) { j = System.Text.Encoding.UTF8.GetString(file, off, len); break; }
+                        off += len;
+                    }
+                    if (j == null) return map;
+                    json = j;
+                }
+                else json = System.Text.Encoding.UTF8.GetString(file);
+
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("materials", out var mats) || !root.TryGetProperty("textures", out var texs)) return map;
+
+                int mi = 0;
+                foreach (var mat in mats.EnumerateArray())
+                {
+                    int texIndex = -1;
+                    if (mat.TryGetProperty("pbrMetallicRoughness", out var pbr) &&
+                        pbr.TryGetProperty("baseColorTexture", out var bct) && bct.TryGetProperty("index", out var bi))
+                        texIndex = bi.GetInt32();
+                    else if (mat.TryGetProperty("extensions", out var ext) &&
+                             ext.TryGetProperty("KHR_materials_pbrSpecularGlossiness", out var sg) &&
+                             sg.TryGetProperty("diffuseTexture", out var dt) && dt.TryGetProperty("index", out var di))
+                        texIndex = di.GetInt32();
+
+                    if (texIndex >= 0 && texIndex < texs.GetArrayLength())
+                    {
+                        var tex = texs[texIndex];
+                        int src = -1;
+                        if (tex.TryGetProperty("source", out var sEl)) src = sEl.GetInt32();
+                        else if (tex.TryGetProperty("extensions", out var te))
+                        {
+                            foreach (var p in te.EnumerateObject())
+                                if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Object && p.Value.TryGetProperty("source", out var s2)) { src = s2.GetInt32(); break; }
+                        }
+                        if (src >= 0)
+                        {
+                            map[$"#{mi}"] = src;
+                            if (mat.TryGetProperty("name", out var nEl) && !string.IsNullOrEmpty(nEl.GetString()) && !map.ContainsKey(nEl.GetString()!))
+                                map[nEl.GetString()!] = src;
+                        }
+                    }
+                    mi++;
+                }
+            }
+            catch { }
+            return map;
         }
 
         private static int IndexOfBytes(byte[] src, byte[] pat, int start)

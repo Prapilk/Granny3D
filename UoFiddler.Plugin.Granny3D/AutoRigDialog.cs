@@ -6103,6 +6103,42 @@ namespace UoFiddler.Plugin.Granny3D
                 int totalVertsStatic = 0;
                 int totalFacesStatic = 0;
 
+                // Extraction des textures embarquées (GLB/GLTF/FBX) vers le dossier de sortie
+                var embeddedTexMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    string texBase = Path.GetFileNameWithoutExtension(filePath);
+                    string texDir = !string.IsNullOrEmpty(_outFolder) ? _outFolder : (Path.GetDirectoryName(filePath) ?? string.Empty);
+                    for (int ti = 0; ti < scene.TextureCount; ti++)
+                    {
+                        var emb = scene.Textures[ti];
+                        if (emb == null) continue;
+                        string ext2 = (emb.HasCompressedData && emb.CompressedData != null && emb.CompressedData.Length >= 3 && emb.CompressedData[0] == 0xFF && emb.CompressedData[1] == 0xD8) ? ".jpg" : ".png";
+                        string savedTex = $"{texBase}_tex{ti}{ext2}";
+                        string fullTex = Path.Combine(texDir, savedTex);
+                        if (!Directory.Exists(texDir)) Directory.CreateDirectory(texDir);
+                        if (emb.IsCompressed && emb.CompressedData != null)
+                        {
+                            File.WriteAllBytes(fullTex, emb.CompressedData);
+                        }
+                        else if (emb.NonCompressedData != null && emb.Width > 0 && emb.Height > 0)
+                        {
+                            using var bmp = new System.Drawing.Bitmap(emb.Width, emb.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                            for (int py = 0; py < emb.Height; py++)
+                                for (int px = 0; px < emb.Width; px++)
+                                {
+                                    var t = emb.NonCompressedData[py * emb.Width + px];
+                                    bmp.SetPixel(px, py, System.Drawing.Color.FromArgb(t.A, t.R, t.G, t.B));
+                                }
+                            savedTex = $"{texBase}_tex{ti}.png";
+                            bmp.Save(Path.Combine(texDir, savedTex), System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        else continue;
+                        embeddedTexMap[$"*{ti}"] = savedTex;
+                    }
+                }
+                catch { }
+
                 var bboxMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
                 var bboxMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
                 for (int mi = 0; mi < scene.MeshCount; mi++)
@@ -6164,7 +6200,21 @@ namespace UoFiddler.Plugin.Granny3D
                         if (diff.R > 0.001f || diff.G > 0.001f || diff.B > 0.001f)
                             partCol = new Vector3(diff.R, diff.G, diff.B);
                         if (mat.HasTextureDiffuse && !string.IsNullOrEmpty(mat.TextureDiffuse.FilePath))
-                            texName = Path.GetFileName(mat.TextureDiffuse.FilePath);
+                        {
+                            string tfp = mat.TextureDiffuse.FilePath;
+                            if (embeddedTexMap.TryGetValue(tfp, out var mapped)) texName = mapped;
+                            else texName = Path.GetFileName(tfp);
+                        }
+                        else if (embeddedTexMap.Count > 0)
+                        {
+                            // glTF : repli sur Unknown/Diffuse indice 0, puis sur l'unique texture embarquée
+                            if (mat.GetMaterialTexture(TextureType.Unknown, 0, out var bcSlot) && embeddedTexMap.TryGetValue(bcSlot.FilePath ?? string.Empty, out var bcMapped))
+                                texName = bcMapped;
+                            else if (embeddedTexMap.Count == 1)
+                                texName = embeddedTexMap.Values.First();
+                            else
+                                texName = embeddedTexMap.Values.First();
+                        }
                     }
 
                     var pVerts = new Vector3[mesh.VertexCount];

@@ -244,7 +244,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnExtractFbx = new Button
             {
-                Text = Localization.Tr("btn_extract_fbx_tex", "Extraire textures d'un FBX..."),
+                Text = Localization.Tr("btn_extract_fbx_tex", "Extraire textures d'un FBX / GLB..."),
                 Dock = DockStyle.Left,
                 Width = 200,
                 BackColor = Color.FromArgb(40, 75, 120),
@@ -364,14 +364,17 @@ namespace UoFiddler.Plugin.Granny3D
             using var ofd = new OpenFileDialog
             {
                 Title = $"Choisir une texture BaseColor / Diffuse pour '{part.Name}'",
-                Filter = "Textures & Modèles 3D (*.png;*.jpg;*.tga;*.bmp;*.dds;*.fbx)|*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds;*.fbx|Images (*.png;*.jpg;*.tga;*.bmp)|*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds|Fichiers FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*",
+                Filter = "Textures & Modèles 3D (*.png;*.jpg;*.tga;*.bmp;*.dds;*.fbx;*.glb;*.gltf)|*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds;*.fbx;*.glb;*.gltf|Images (*.png;*.jpg;*.tga;*.bmp)|*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds|Modèles 3D (*.fbx;*.glb;*.gltf)|*.fbx;*.glb;*.gltf|Tous les fichiers (*.*)|*.*",
                 InitialDirectory = initDir
             };
 
             if (ofd.ShowDialog(this) != DialogResult.OK || !File.Exists(ofd.FileName)) return;
 
             string selectedFile = ofd.FileName;
-            if (string.Equals(Path.GetExtension(selectedFile), ".fbx", StringComparison.OrdinalIgnoreCase))
+            string selectedExt = Path.GetExtension(selectedFile);
+            if (string.Equals(selectedExt, ".fbx", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(selectedExt, ".glb", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(selectedExt, ".gltf", StringComparison.OrdinalIgnoreCase))
             {
                 var extracted = MixamoCharacterImport.ExtractFbxEmbeddedTextures(selectedFile);
                 if (extracted.Count == 0)
@@ -416,8 +419,8 @@ namespace UoFiddler.Plugin.Granny3D
         {
             using var ofd = new OpenFileDialog
             {
-                Title = "Sélectionner un fichier FBX pour extraire ses textures",
-                Filter = "Fichiers FBX (*.fbx)|*.fbx|Tous les fichiers (*.*)|*.*",
+                Title = "Sélectionner un fichier FBX / GLB pour extraire ses textures",
+                Filter = "Modèles 3D (*.fbx;*.glb;*.gltf)|*.fbx;*.glb;*.gltf|Fichiers FBX (*.fbx)|*.fbx|Fichiers GLB (*.glb)|*.glb|Tous les fichiers (*.*)|*.*",
                 InitialDirectory = !string.IsNullOrEmpty(_initialFbxDir) && Directory.Exists(_initialFbxDir) ? _initialFbxDir : string.Empty
             };
 
