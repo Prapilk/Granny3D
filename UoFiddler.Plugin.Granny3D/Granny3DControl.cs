@@ -129,6 +129,8 @@ namespace UoFiddler.Plugin.Granny3D
         public Vector3 PartScaleVec = new Vector3(1f, 1f, 1f);
         public Vector3 BindCentroid;
         public bool HasBindCentroid;
+        public Vector3 GroupCenter;
+        public bool HasGroupCenter;
 
         // Per-vertex rest normals (bind space), used to push a skinned piece OUTWARD
         // along its surface normal after skinning (thickness), so small deform
@@ -3401,11 +3403,16 @@ namespace UoFiddler.Plugin.Granny3D
                     // already in the scene layers it on the body instead of
                     // replacing the scene. Full NPC "Character_*" still replace.
                     // Layout: keeps the body's animation untouched.
+                    string meshDir = null;
+                    try { meshDir = Path.GetFileName(Path.GetDirectoryName(info.MeshPath)); } catch { }
+                    if (string.IsNullOrEmpty(meshDir)) try { meshDir = Path.GetFileName(info.Folder); } catch { }
+                    bool isCustomMeshCat = !string.IsNullOrEmpty(meshDir) && string.Equals(meshDir, "Meshs custom", StringComparison.OrdinalIgnoreCase)
+                        || !string.IsNullOrEmpty(info.Folder) && string.Equals(Path.GetFileName(info.Folder), "Meshs custom", StringComparison.OrdinalIgnoreCase)
+                        || info.IsCustomMeshCategory;
                     bool isEquipCategory = !string.IsNullOrEmpty(info.Folder)
                         && (string.Equals(Path.GetFileName(info.Folder), "Others", StringComparison.OrdinalIgnoreCase)
                          || string.Equals(Path.GetFileName(info.Folder), "Equipment", StringComparison.OrdinalIgnoreCase)
-                         || string.Equals(Path.GetFileName(info.Folder), "Meshs custom", StringComparison.OrdinalIgnoreCase)
-                         || info.IsCustomMeshCategory
+                         || isCustomMeshCat
                          || info.IsOthersCategory);
                     bool looksCharacter = Path.GetFileName(info.MeshPath).StartsWith("Character_", StringComparison.OrdinalIgnoreCase)
                         || Path.GetFileName(info.MeshPath).StartsWith("H_Male", StringComparison.OrdinalIgnoreCase)
@@ -3413,9 +3420,20 @@ namespace UoFiddler.Plugin.Granny3D
                     bool isFullCharacter = looksCharacter;
                     if (!isFullCharacter && GrannyModelFile.IsModelFile(info.MeshPath))
                     {
-                        var m = GrannyModelFile.Load(info.MeshPath);
-                        if (m != null && m.Bones != null && m.Bones.Count >= 20)
-                            isFullCharacter = true;
+                        try
+                        {
+                            var m = GrannyModelFile.Load(info.MeshPath);
+                            if (m != null && m.Bones != null && m.Bones.Count >= 20)
+                                isFullCharacter = true;
+                        }
+                        catch { }
+                    }
+
+                    if (isCustomMeshCat && !isFullCharacter)
+                    {
+                        ClearScene();
+                        LoadCustomCharacter(info.MeshPath);
+                        return;
                     }
 
                     if (isEquipCategory && !isFullCharacter && _loadedMeshes.Count > 0)
@@ -4279,19 +4297,126 @@ namespace UoFiddler.Plugin.Granny3D
                     return;
                 }
 
+                // Recenter newly added meshes to the existing body if present
+                try
+                {
+                    int addedStart = _loadedMeshes.Count - addedChar;
+                    if (addedStart > 0 && addedChar > 0)
+                    {
+                        // Host bounds (existing meshes)
+                        float hMinX = float.MaxValue, hMinY = float.MaxValue, hMinZ = float.MaxValue;
+                        float hMaxX = float.MinValue, hMaxY = float.MinValue, hMaxZ = float.MinValue;
+                        bool hasHost = false;
+                        for (int i = 0; i < addedStart; i++)
+                        {
+                            var hm = _loadedMeshes[i];
+                            if (hm == null || hm.BaseVertices == null || hm.Hidden) continue;
+                            for (int v = 0; v < hm.BaseVertices.Length; v++)
+                            {
+                                var pv = hm.BaseVertices[v];
+                                if (pv.X < hMinX) hMinX = pv.X; if (pv.X > hMaxX) hMaxX = pv.X;
+                                if (pv.Y < hMinY) hMinY = pv.Y; if (pv.Y > hMaxY) hMaxY = pv.Y;
+                                if (pv.Z < hMinZ) hMinZ = pv.Z; if (pv.Z > hMaxZ) hMaxZ = pv.Z;
+                                hasHost = true;
+                            }
+                        }
+                        // Added bounds
+                        float aMinX = float.MaxValue, aMinY = float.MaxValue, aMinZ = float.MaxValue;
+                        float aMaxX = float.MinValue, aMaxY = float.MinValue, aMaxZ = float.MinValue;
+                        bool hasAdded = false;
+                        for (int i = addedStart; i < _loadedMeshes.Count; i++)
+                        {
+                            var am = _loadedMeshes[i];
+                            if (am == null || am.BaseVertices == null) continue;
+                            for (int v = 0; v < am.BaseVertices.Length; v++)
+                            {
+                                var pv = am.BaseVertices[v];
+                                if (pv.X < aMinX) aMinX = pv.X; if (pv.X > aMaxX) aMaxX = pv.X;
+                                if (pv.Y < aMinY) aMinY = pv.Y; if (pv.Y > aMaxY) aMaxY = pv.Y;
+                                if (pv.Z < aMinZ) aMinZ = pv.Z; if (pv.Z > aMaxZ) aMaxZ = pv.Z;
+                                hasAdded = true;
+                            }
+                        }
+                        if (hasHost && hasAdded)
+                        {
+                            Vector3 hostCenter = new Vector3((hMinX + hMaxX) * 0.5f, (hMinY + hMaxY) * 0.5f, (hMinZ + hMaxZ) * 0.5f);
+                            Vector3 addCenter = new Vector3((aMinX + aMaxX) * 0.5f, (aMinY + aMaxY) * 0.5f, (aMinZ + aMaxZ) * 0.5f);
+                            Vector3 offset = hostCenter - addCenter;
+                            if (offset.LengthSquared > 1e-8f)
+                            {
+                                for (int i = addedStart; i < _loadedMeshes.Count; i++)
+                                {
+                                    var am = _loadedMeshes[i];
+                                    if (am == null || am.BaseVertices == null) continue;
+                                    for (int v = 0; v < am.BaseVertices.Length; v++)
+                                        am.BaseVertices[v] += offset;
+                                    am.BufferUpToDate = false;
+                                    BuildCornerData(am);
+                                    SetupMeshVBO(am);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+
                 RefreshLoadedList();
                 PopulateBoneCombo();
 
-                string attachToSelect = null;
+                string attachToSelect2 = null;
                 for (int i = _loadedMeshes.Count - addedChar; i < _loadedMeshes.Count; i++)
                 {
                     if (!string.IsNullOrEmpty(_loadedMeshes[i].AttachBoneName))
                     {
-                        attachToSelect = _loadedMeshes[i].AttachBoneName;
+                        attachToSelect2 = _loadedMeshes[i].AttachBoneName;
                         break;
                     }
                 }
-                SelectBoneByName(attachToSelect);
+                SelectBoneByName(attachToSelect2);
+
+                try
+                {
+                    if (addedChar > 0 && tvLoaded != null)
+                    {
+                        _treeMultiSel.Clear();
+                        TreeNode firstSel = null;
+                        Action<TreeNodeCollection> findAdded = null;
+                        findAdded = (nodes) => {
+                            foreach (TreeNode n in nodes)
+                            {
+                                if (n == null) continue;
+                                if (n.Tag is int idx && idx >= _loadedMeshes.Count - addedChar && idx < _loadedMeshes.Count)
+                                {
+                                    _treeMultiSel.Add(n);
+                                    if (firstSel == null) firstSel = n;
+                                }
+                                else if (n.Tag is List<int> lst && lst != null)
+                                {
+                                    bool hasNew = false;
+                                    for (int k = 0; k < lst.Count; k++)
+                                    {
+                                        int x = lst[k];
+                                        if (x >= _loadedMeshes.Count - addedChar && x < _loadedMeshes.Count) { hasNew = true; break; }
+                                    }
+                                    if (hasNew)
+                                    {
+                                        _treeMultiSel.Add(n);
+                                        if (firstSel == null) firstSel = n;
+                                    }
+                                }
+                                if (n.Nodes != null && n.Nodes.Count > 0) findAdded(n.Nodes);
+                            }
+                        };
+                        findAdded(tvLoaded.Nodes);
+                        if (firstSel != null)
+                        {
+                            tvLoaded.SelectedNode = firstSel;
+                            TvLoaded_AfterSelect(null, new TreeViewEventArgs(firstSel));
+                        }
+                    }
+                }
+                catch { }
+                LoadEquipControlsFromMesh();
 
                 if (_currentAnimation != null)
                 {
@@ -4385,12 +4510,117 @@ namespace UoFiddler.Plugin.Granny3D
                 return;
             }
 
+            // Recenter newly added meshes to the existing body if present
+            try
+            {
+                int addedStart2 = _loadedMeshes.Count - added;
+                if (addedStart2 > 0 && added > 0)
+                {
+                    float hMinX = float.MaxValue, hMinY = float.MaxValue, hMinZ = float.MaxValue;
+                    float hMaxX = float.MinValue, hMaxY = float.MinValue, hMaxZ = float.MinValue;
+                    bool hasHost = false;
+                    for (int i = 0; i < addedStart2; i++)
+                    {
+                        var hm = _loadedMeshes[i];
+                        if (hm == null || hm.BaseVertices == null || hm.Hidden) continue;
+                        for (int v = 0; v < hm.BaseVertices.Length; v++)
+                        {
+                            var pv = hm.BaseVertices[v];
+                            if (pv.X < hMinX) hMinX = pv.X; if (pv.X > hMaxX) hMaxX = pv.X;
+                            if (pv.Y < hMinY) hMinY = pv.Y; if (pv.Y > hMaxY) hMaxY = pv.Y;
+                            if (pv.Z < hMinZ) hMinZ = pv.Z; if (pv.Z > hMaxZ) hMaxZ = pv.Z;
+                            hasHost = true;
+                        }
+                    }
+                    float aMinX = float.MaxValue, aMinY = float.MaxValue, aMinZ = float.MaxValue;
+                    float aMaxX = float.MinValue, aMaxY = float.MinValue, aMaxZ = float.MinValue;
+                    bool hasAdded = false;
+                    for (int i = addedStart2; i < _loadedMeshes.Count; i++)
+                    {
+                        var am = _loadedMeshes[i];
+                        if (am == null || am.BaseVertices == null) continue;
+                        for (int v = 0; v < am.BaseVertices.Length; v++)
+                        {
+                            var pv = am.BaseVertices[v];
+                            if (pv.X < aMinX) aMinX = pv.X; if (pv.X > aMaxX) aMaxX = pv.X;
+                            if (pv.Y < aMinY) aMinY = pv.Y; if (pv.Y > aMaxY) aMaxY = pv.Y;
+                            if (pv.Z < aMinZ) aMinZ = pv.Z; if (pv.Z > aMaxZ) aMaxZ = pv.Z;
+                            hasAdded = true;
+                        }
+                    }
+                    if (hasHost && hasAdded)
+                    {
+                        Vector3 hostCenter = new Vector3((hMinX + hMaxX) * 0.5f, (hMinY + hMaxY) * 0.5f, (hMinZ + hMaxZ) * 0.5f);
+                        Vector3 addCenter = new Vector3((aMinX + aMaxX) * 0.5f, (aMinY + aMaxY) * 0.5f, (aMinZ + aMaxZ) * 0.5f);
+                        Vector3 offset = hostCenter - addCenter;
+                        if (offset.LengthSquared > 1e-8f)
+                        {
+                            for (int i = addedStart2; i < _loadedMeshes.Count; i++)
+                            {
+                                var am = _loadedMeshes[i];
+                                if (am == null || am.BaseVertices == null) continue;
+                                for (int v = 0; v < am.BaseVertices.Length; v++)
+                                    am.BaseVertices[v] += offset;
+                                am.BufferUpToDate = false;
+                                BuildCornerData(am);
+                                SetupMeshVBO(am);
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
             RefreshLoadedList();
             PopulateBoneCombo();
             if (added > 0 && !string.IsNullOrEmpty(_loadedMeshes[_loadedMeshes.Count - 1].AttachBoneName))
                 SelectBoneByName(_loadedMeshes[_loadedMeshes.Count - 1].AttachBoneName);
             else
                 SelectBoneByName(null);
+
+            try
+            {
+                if (added > 0 && tvLoaded != null)
+                {
+                    _treeMultiSel.Clear();
+                    TreeNode firstSel = null;
+                    Action<TreeNodeCollection> findAdded = null;
+                    findAdded = (nodes) => {
+                        foreach (TreeNode n in nodes)
+                        {
+                            if (n == null) continue;
+                            if (n.Tag is int idx && idx >= _loadedMeshes.Count - added && idx < _loadedMeshes.Count)
+                            {
+                                _treeMultiSel.Add(n);
+                                if (firstSel == null) firstSel = n;
+                            }
+                            else if (n.Tag is List<int> lst && lst != null)
+                            {
+                                bool hasNew = false;
+                                for (int k = 0; k < lst.Count; k++)
+                                {
+                                    int x = lst[k];
+                                    if (x >= _loadedMeshes.Count - added && x < _loadedMeshes.Count) { hasNew = true; break; }
+                                }
+                                if (hasNew)
+                                {
+                                    _treeMultiSel.Add(n);
+                                    if (firstSel == null) firstSel = n;
+                                }
+                            }
+                            if (n.Nodes != null && n.Nodes.Count > 0) findAdded(n.Nodes);
+                        }
+                    };
+                    findAdded(tvLoaded.Nodes);
+                    if (firstSel != null)
+                    {
+                        tvLoaded.SelectedNode = firstSel;
+                        TvLoaded_AfterSelect(null, new TreeViewEventArgs(firstSel));
+                    }
+                }
+            }
+            catch { }
+            LoadEquipControlsFromMesh();
 
             if (_currentAnimation != null)
             {
@@ -6205,16 +6435,12 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (_loadedMeshes.Count > 0)
                 {
-                    var choice = MessageBox.Show(
-                        $"Mesh '{meshName}' importé avec succès dans 'Meshs custom' !\n\nUne scène est actuellement affichée. Souhaitez-vous l'ajouter à la scène en tant qu'équipement ?",
-                        "Ajouter à la scène",
-                        MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Question);
-
-                    if (choice == DialogResult.Yes)
-                    {
-                        AddToScene(outPath);
-                    }
+                MessageBox.Show(
+                    $"Mesh '{meshName}' importé avec succès dans 'Meshs custom' !",
+                    "Importer un mesh",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                LoadModel(outPath);
                 }
                 else
                 {
@@ -6755,6 +6981,7 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 bool isFullChar = model.Bones != null && model.Bones.Count >= 20;
+                bool hasAttach = !string.IsNullOrEmpty(part.AttachBoneName);
                 var lm = new LoadedMesh
                 {
                     PartIndex = pi,
@@ -6763,13 +6990,13 @@ namespace UoFiddler.Plugin.Granny3D
                     SourcePath = path,
                     SourceMesh = gmesh,
                     Bones = new List<GrannyBone>(model.Bones),
-                    BaseVertices = part.Vertices,
+                    BaseVertices = (Vector3[])part.Vertices.Clone(),
                     Indices = part.Indices,
                     Skin = (part.Skin != null && part.Skin.Length > 0) ? part.Skin : null,
                     MeshColor = part.Color,
                     TextureName = part.TextureName ?? string.Empty,
-                    CutoutRole = !string.IsNullOrEmpty(part.AttachBoneName) ? MeshCutoutRole.Accessory : (isFullChar ? MeshCutoutRole.Body : (part.CutoutRole != 0 ? part.CutoutRole : MeshCutoutRole.Accessory)),
-                    AttachBoneName = !string.IsNullOrEmpty(part.AttachBoneName) ? part.AttachBoneName : null,
+                    CutoutRole = hasAttach ? MeshCutoutRole.Accessory : (isFullChar ? MeshCutoutRole.Body : MeshCutoutRole.Accessory),
+                    AttachBoneName = hasAttach ? part.AttachBoneName : null,
                     AttachInBindSpace = part.AttachInBindSpace
                 };
 
@@ -6793,6 +7020,34 @@ namespace UoFiddler.Plugin.Granny3D
             _camera.Pitch = 0f;
             UpdateModelInfo();
             Log($"  custom character loaded: meshes={_loadedMeshes.Count} refCenter={_refCenter} refScale={_refScale}");
+            // Don't recenter custom meshes - keep original coordinates to avoid breaking display
+
+            if (tvLoaded != null && _loadedMeshes.Count > 0)
+            {
+                try
+                {
+                    TreeNode found = null;
+                    System.Action<TreeNode> find = null;
+                    find = (n) => {
+                        if (found != null) return;
+                        if (n == null) return;
+                        if (n.Tag is int idx && idx == 0) { found = n; return; }
+                        if (n.Tag is System.Collections.Generic.List<int> lst && lst != null && lst.Count > 0 && lst.Contains(0)) { found = n; return; }
+                        foreach (TreeNode c in n.Nodes) find(c);
+                    };
+                    find(tvLoaded.TopNode ?? (tvLoaded.Nodes.Count > 0 ? tvLoaded.Nodes[0] : null));
+                    if (found == null && tvLoaded.Nodes.Count > 0) found = tvLoaded.Nodes[0];
+                    if (found != null)
+                    {
+                        tvLoaded.SelectedNode = found;
+                        _treeMultiSel.Clear();
+                        _treeMultiSel.Add(found);
+                        TvLoaded_AfterSelect(null, new TreeViewEventArgs(found));
+                    }
+                }
+                catch { }
+            }
+            LoadEquipControlsFromMesh();
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
 
@@ -7708,6 +7963,10 @@ namespace UoFiddler.Plugin.Granny3D
                 nudScaleY != null ? (float)nudScaleY.Value : 1f,
                 nudScaleZ != null ? (float)nudScaleZ.Value : 1f);
             lm.Thickness = nudThickness != null ? (float)nudThickness.Value : 0f;
+            // Un mesh statique (non skinné, non attaché) est ignoré par RefreshVertexBuffers
+            // tant que BufferUpToDate == true : il faut l'invalider pour que échelle/XYZ/rotation s'appliquent.
+            lm.BufferUpToDate = false;
+            lm.HasGroupCenter = false;
             if (lm.IsCloth)
             {
                 if (nudClothGrav != null)
@@ -7871,6 +8130,32 @@ namespace UoFiddler.Plugin.Granny3D
                             ? $"Cible : {lm.Name}" + (string.IsNullOrEmpty(lm.AttachBoneName) ? "  (non attaché)" : $"  → {lm.AttachBoneName}")
                             : "Cible : (aucun)";
                 }
+
+                // Enable/disable equip controls based on selection
+                bool enableEquip = ok;
+                if (nudRotX != null) nudRotX.Enabled = enableEquip;
+                if (nudRotY != null) nudRotY.Enabled = enableEquip;
+                if (nudRotZ != null) nudRotZ.Enabled = enableEquip;
+                if (nudOffX != null) nudOffX.Enabled = enableEquip;
+                if (nudOffY != null) nudOffY.Enabled = enableEquip;
+                if (nudOffZ != null) nudOffZ.Enabled = enableEquip;
+                if (nudScale != null) nudScale.Enabled = enableEquip;
+                if (nudScaleX != null) nudScaleX.Enabled = enableEquip;
+                if (nudScaleY != null) nudScaleY.Enabled = enableEquip;
+                if (nudScaleZ != null) nudScaleZ.Enabled = enableEquip;
+                if (nudThickness != null) nudThickness.Enabled = enableEquip;
+                if (cbMirrorX != null) cbMirrorX.Enabled = enableEquip;
+                if (cbMirrorY != null) cbMirrorY.Enabled = enableEquip;
+                if (cbMirrorZ != null) cbMirrorZ.Enabled = enableEquip;
+                if (cbMirrorArms != null) cbMirrorArms.Enabled = enableEquip;
+                if (chkCloth != null) chkCloth.Enabled = enableEquip;
+                if (nudClothGrav != null) nudClothGrav.Enabled = enableEquip;
+                if (cmbCutoutRole != null) cmbCutoutRole.Enabled = enableEquip;
+                if (btnSkinWrap != null) btnSkinWrap.Enabled = enableEquip;
+                if (btnEquipReset != null) btnEquipReset.Enabled = enableEquip;
+                if (btnDuplicateMirror != null) btnDuplicateMirror.Enabled = enableEquip;
+                if (btnSubdiv != null) btnSubdiv.Enabled = enableEquip;
+                if (btnBakeModifs != null) btnBakeModifs.Enabled = enableEquip;
 
                 cbMirrorX.Checked = ok && lm.MirrorX;
                 cbMirrorY.Checked = ok && lm.MirrorY;
@@ -10221,6 +10506,59 @@ namespace UoFiddler.Plugin.Granny3D
             SetupMeshVBO(lm);
         }
 
+        private static T[] RemapPerVertex<T>(T[] src, int[] map)
+        {
+            var r = new T[map.Length];
+            for (int i = 0; i < map.Length; i++) r[i] = src[map[i]];
+            return r;
+        }
+
+        // Convertit la géométrie (UV par coin) en géométrie à UV par sommet : un sommet est dupliqué s'il
+        // est utilisé avec des UV différentes. map[nouveauSommet] = ancien sommet.
+        private static void SplitVerticesByCornerUV(LoadedMesh lm, out Vector3[] verts, out int[] idx,
+            out Vector3[] norms, out Vector2[] uvs, out int[] map)
+        {
+            int vc = lm.BaseVertices.Length;
+            bool hasNorm = lm.BaseVertexNormals != null && lm.BaseVertexNormals.Length == vc;
+            var cuv = lm.CornerUVs;
+            if (cuv == null || cuv.Length != lm.Indices.Length)
+            {
+                verts = (Vector3[])lm.BaseVertices.Clone();
+                idx = (int[])lm.Indices.Clone();
+                norms = hasNorm ? (Vector3[])lm.BaseVertexNormals.Clone() : Array.Empty<Vector3>();
+                uvs = Array.Empty<Vector2>();
+                map = new int[vc];
+                for (int i = 0; i < vc; i++) map[i] = i;
+                return;
+            }
+
+            var vList = new List<Vector3>(vc);
+            var nList = new List<Vector3>(vc);
+            var uList = new List<Vector2>(vc);
+            var mList = new List<int>(vc);
+            var lookup = new Dictionary<(int, float, float), int>();
+            idx = new int[lm.Indices.Length];
+            for (int c = 0; c < lm.Indices.Length; c++)
+            {
+                int vi = lm.Indices[c];
+                var key = (vi, cuv[c].X, cuv[c].Y);
+                if (!lookup.TryGetValue(key, out int ni))
+                {
+                    ni = vList.Count;
+                    lookup[key] = ni;
+                    vList.Add(lm.BaseVertices[vi]);
+                    nList.Add(hasNorm ? lm.BaseVertexNormals[vi] : Vector3.UnitZ);
+                    uList.Add(cuv[c]);
+                    mList.Add(vi);
+                }
+                idx[c] = ni;
+            }
+            verts = vList.ToArray();
+            norms = hasNorm ? nList.ToArray() : Array.Empty<Vector3>();
+            uvs = uList.ToArray();
+            map = mList.ToArray();
+        }
+
         private void BakeAndSaveSelectedMesh()
         {
             var selIndices = GetSelectedMeshIndices();
@@ -10350,6 +10688,11 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         matchedIdx = lm.PartIndex;
                         part = model.Parts[matchedIdx];
+                        if (part != null)
+                        {
+                            if (string.IsNullOrEmpty(lm.MaterialName) && !string.IsNullOrEmpty(part.MaterialName)) lm.MaterialName = part.MaterialName;
+                            if (string.IsNullOrEmpty(lm.TextureName) && !string.IsNullOrEmpty(part.TextureName)) lm.TextureName = part.TextureName;
+                        }
                     }
 
                     // Match 2: matching name among unclaimed parts
@@ -10388,28 +10731,23 @@ namespace UoFiddler.Plugin.Granny3D
                         usedPartIndices.Add(model.Parts.Count - 1);
                     }
 
-                    // Copy vertices, normals, indices
-                    part.Vertices = (Vector3[])lm.BaseVertices.Clone();
-                    part.Indices = (int[])lm.Indices.Clone();
-                    part.Normals = (lm.BaseVertexNormals != null && lm.BaseVertexNormals.Length == lm.BaseVertices.Length)
-                        ? (Vector3[])lm.BaseVertexNormals.Clone()
-                        : Array.Empty<Vector3>();
-
-                    if (lm.CornerUVs != null && lm.CornerUVs.Length > 0)
-                        part.UVs = (Vector2[])lm.CornerUVs.Clone();
-                    else if (lm.SourceMesh?.UVs != null && lm.SourceMesh.UVs.Count > 0)
-                        part.UVs = lm.SourceMesh.UVs.ToArray();
+                    // Le format .char stocke les UV PAR SOMMET. Les UV du viewer sont par coin (un par index) :
+                    // on découpe les sommets aux coutures UV pour ne perdre aucune coordonnée de texture.
+                    SplitVerticesByCornerUV(lm, out var sVerts, out var sIdx, out var sNorms, out var sUVs, out var sMap);
+                    part.Vertices = sVerts;
+                    part.Indices = sIdx;
+                    part.Normals = sNorms;
+                    part.UVs = sUVs;
 
                     if (lm.WrapSkin != null && lm.WrapSkin.Length == lm.BaseVertices.Length)
                     {
-                        part.Skin = lm.WrapSkin;
                         lm.Skin = lm.WrapSkin;
                         lm.WrapSkin = null;
                         lm.WrapSource = null;
                     }
-                    else if (lm.Skin != null)
+                    if (lm.Skin != null && lm.Skin.Length == lm.BaseVertices.Length)
                     {
-                        part.Skin = lm.Skin;
+                        part.Skin = RemapPerVertex(lm.Skin, sMap);
                     }
 
                     // Preserve and intelligently update texture name (never overwrite with empty!)
@@ -10417,25 +10755,27 @@ namespace UoFiddler.Plugin.Granny3D
                                       (!string.IsNullOrEmpty(lm.TextureFilePath) ? Path.GetFileName(lm.TextureFilePath) : string.Empty);
                     if (string.IsNullOrEmpty(texToSet) && !string.IsNullOrEmpty(part.TextureName))
                         texToSet = part.TextureName;
+                    if (string.IsNullOrEmpty(texToSet) && part.UVs != null && part.UVs.Length > 0 && !string.IsNullOrEmpty(part.Name))
+                        texToSet = part.Name;
                     if (!string.IsNullOrEmpty(texToSet))
                     {
-                        part.TextureName = texToSet;
-                        lm.TextureName = texToSet;
+                        string tf = Path.GetFileName(texToSet);
+                        part.TextureName = tf;
+                        lm.TextureName = tf;
                     }
-                    if (string.IsNullOrEmpty(lm.MaterialName) && !string.IsNullOrEmpty(part.MaterialName))
-                        lm.MaterialName = part.MaterialName;
+                    if (string.IsNullOrEmpty(lm.MaterialName))
+                    {
+                        if (!string.IsNullOrEmpty(part.MaterialName))
+                            lm.MaterialName = part.MaterialName;
+                        else if (!string.IsNullOrEmpty(part.TextureName))
+                            lm.MaterialName = Path.GetFileNameWithoutExtension(part.TextureName);
+                        else if (!string.IsNullOrEmpty(lm.Name))
+                            lm.MaterialName = lm.Name;
+                    }
                     if (!string.IsNullOrEmpty(lm.MaterialName))
                         part.MaterialName = lm.MaterialName;
-                    else if (!string.IsNullOrEmpty(part.TextureName))
-                    {
-                        part.MaterialName = Path.GetFileNameWithoutExtension(part.TextureName);
-                        lm.MaterialName = part.MaterialName;
-                    }
-                    else if (!string.IsNullOrEmpty(lm.Name))
-                    {
-                        part.MaterialName = lm.Name;
-                        lm.MaterialName = lm.Name;
-                    }
+                    if (!string.IsNullOrEmpty(lm.TextureName))
+                        part.TextureName = lm.TextureName;
 
                     part.AttachBoneName = lm.AttachBoneName ?? string.Empty;
                     part.AttachInBindSpace = lm.AttachInBindSpace;
@@ -11892,6 +12232,24 @@ namespace UoFiddler.Plugin.Granny3D
                 (maxX - _refCenter.X) * _refScale,
                 (maxY - _refCenter.Y) * _refScale,
                 (maxZ - _refCenter.Z) * _refScale);
+
+            foreach (var m in _loadedMeshes) m.HasGroupCenter = false;
+
+            // Pas des offsets X/Y/Z proportionnel à la taille du modèle (un monstre de 200 unités
+            // ne bougeait quasiment pas avec un pas fixe de 0.01).
+            try
+            {
+                decimal step = (decimal)Math.Max(0.001f, 0.005f * maxDim);
+                decimal range = Math.Max(100m, (decimal)maxDim * 5m);
+                foreach (var n in new[] { nudOffX, nudOffY, nudOffZ })
+                {
+                    if (n == null) continue;
+                    n.Increment = step;
+                    n.Minimum = -range;
+                    n.Maximum = range;
+                }
+            }
+            catch { }
         }
 
         private void UpdateModelInfo()
@@ -12501,6 +12859,32 @@ namespace UoFiddler.Plugin.Granny3D
             public string Name;
         }
 
+        // Centre de la bounding box (en espace de base) du mesh et des autres parties du même fichier.
+        private Vector3 GetStaticGroupCenter(LoadedMesh lm)
+        {
+            if (lm.HasGroupCenter) return lm.GroupCenter;
+            float minX = float.MaxValue, minY = float.MaxValue, minZ = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue, maxZ = float.MinValue;
+            bool any = false;
+            foreach (var m in _loadedMeshes.ToArray())
+            {
+                if (m == null || m.BaseVertices == null) continue;
+                if (!ReferenceEquals(m, lm) && (string.IsNullOrEmpty(lm.SourcePath) ||
+                    !string.Equals(m.SourcePath, lm.SourcePath, StringComparison.OrdinalIgnoreCase) || m.Skin != null)) continue;
+                foreach (var v in m.BaseVertices)
+                {
+                    any = true;
+                    if (v.X < minX) minX = v.X; if (v.X > maxX) maxX = v.X;
+                    if (v.Y < minY) minY = v.Y; if (v.Y > maxY) maxY = v.Y;
+                    if (v.Z < minZ) minZ = v.Z; if (v.Z > maxZ) maxZ = v.Z;
+                }
+            }
+            var c = any ? new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f) : Vector3.Zero;
+            lm.GroupCenter = c;
+            lm.HasGroupCenter = true;
+            return c;
+        }
+
         private Vector3 ApplyMeshTweak(LoadedMesh lm, Vector3 pos, bool hasThickness = false, Vector3 normal = default)
         {
             if (lm == null) return pos;
@@ -12525,8 +12909,17 @@ namespace UoFiddler.Plugin.Granny3D
             Vector3 scalePivot = (isMultiPart || !lm.HasBindCentroid) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : lm.BindCentroid);
             Vector3 rotPivot = (isMultiPart || lm.CutoutRole != MeshCutoutRole.Accessory) ? Vector3.Zero : (isClothingOrBody ? new Vector3(0, 0, lm.BindCentroid.Z) : scalePivot);
 
+            // Mesh statique (non skinné, non attaché à un bone) : pivoter/mettre à l'échelle autour de son
+            // propre centre (ou celui de son groupe multi-parties) pour qu'il ne s'envole pas autour de l'origine monde.
+            if (!lm.MirrorArms && lm.Skin == null && lm.WrapSource == null && string.IsNullOrEmpty(lm.AttachBoneName))
+            {
+                Vector3 gp = GetStaticGroupCenter(lm);
+                scalePivot = gp;
+                rotPivot = gp;
+            }
+
             // =========================================================================
-            // 1. BILATERAL MODE (gloves, bracers, shoulders, sleeves)
+            // 1. BILATERAL MODE
             // Symmetrical sagittal reflection across the character's midline X = 0!
             // =========================================================================
             if (lm.MirrorArms)
