@@ -803,10 +803,299 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
 
+                    Vector3[]? gCols = (mesh.HasVertexColors(0) || mesh.HasTextureCoords(0)) ? null : GetGltfColorsForMesh(fbxPath, mesh);
+
+                    // Couleurs de sommets (COLOR_0) sans UV ni texture : baking en texture PNG
+                    if (!mesh.HasTextureCoords(0) && (mesh.HasVertexColors(0) || gCols != null) &&
+                                            (string.IsNullOrEmpty(part.TextureName) || string.IsNullOrEmpty(outFolder) || !File.Exists(Path.Combine(outFolder, part.TextureName))) &&
+                                            ConfirmBakeVertexColors(fbxPath))
+                    {
+                        var bf = new Vector3(1f, 1f, 1f);
+                        if (mesh.MaterialIndex >= 0 && mesh.MaterialIndex < scene.MaterialCount)
+                        {
+                            var bdif = scene.Materials[mesh.MaterialIndex].ColorDiffuse;
+                            if (bdif.R > 0.001f || bdif.G > 0.001f || bdif.B > 0.001f) bf = new Vector3(bdif.R, bdif.G, bdif.B);
+                        }
+                        string bakeDir = !string.IsNullOrEmpty(outFolder) ? outFolder : (Path.GetDirectoryName(fbxPath) ?? string.Empty);
+                        string bakeName = Path.GetFileNameWithoutExtension(fbxPath) + "_mesh" + m + "_vcolor.png";
+                        var bV = part.Vertices; var bN = part.Normals; var bU = part.UVs; var bI = part.Indices; var bS = part.Skin;
+                        if (BakeVertexColorTexture(mesh, bf, ref bV, ref bN, ref bU, ref bI,
+                                ref bS, Path.Combine(bakeDir, bakeName), gCols))
+                        {
+                            part.Vertices = bV; part.Normals = bN; part.UVs = bU; part.Indices = bI; part.Skin = bS;
+                            part.TextureName = bakeName;
+                            part.Color = new Vector3(1f, 1f, 1f);
+                        }
+                    }
+
                     model.Parts.Add(part);
             }
 
             return model;
+        }
+
+        private static string? _gltfColorPath;
+        private static Dictionary<(int, int, int), Vector3>? _gltfColorMap;
+
+        private static (int, int, int) PosKey(float x, float y, float z) =>
+            (BitConverter.SingleToInt32Bits(x), BitConverter.SingleToInt32Bits(y), BitConverter.SingleToInt32Bits(z));
+
+        private static float[]? ReadGltfAccessor(System.Text.Json.JsonElement root, byte[] bin, int accIdx, out int comps)
+        {
+            comps = 0;
+            var acc = root.GetProperty("accessors")[accIdx];
+            if (!acc.TryGetProperty("bufferView", out var bvEl)) return null;
+            var bv = root.GetProperty("bufferViews")[bvEl.GetInt32()];
+            int count = acc.GetProperty("count").GetInt32();
+            int ctype = acc.GetProperty("componentType").GetInt32();
+            string type = acc.GetProperty("type").GetString() ?? "VEC3";
+            comps = type == "VEC4" ? 4 : type == "VEC3" ? 3 : type == "VEC2" ? 2 : 1;
+            int csize = ctype == 5126 ? 4 : ctype == 5123 ? 2 : ctype == 5121 ? 1 : 0;
+            if (csize == 0) return null;
+            int off = (bv.TryGetProperty("byteOffset", out var bo) ? bo.GetInt32() : 0)
+                    + (acc.TryGetProperty("byteOffset", out var ao) ? ao.GetInt32() : 0);
+            int stride = bv.TryGetProperty("byteStride", out var bs) ? bs.GetInt32() : comps * csize;
+            if (stride == 0) stride = comps * csize;
+            var res = new float[count * comps];
+            for (int i = 0; i < count; i++)
+            {
+                for (int c = 0; c < comps; c++)
+                {
+                    int p = off + i * stride + c * csize;
+                    if (p + csize > bin.Length) return null;
+                    float val = ctype == 5126 ? BitConverter.ToSingle(bin, p)
+                              : ctype == 5123 ? BitConverter.ToUInt16(bin, p) / 65535f
+                              : bin[p] / 255f;
+                    res[i * comps + c] = val;
+                }
+            }
+            return res;
+        }
+
+        // Lit COLOR_0 directement dans un .glb/.gltf (si Assimp ne le fournit pas), associé aux sommets par position.
+        internal static Vector3[]? GetGltfColorsForMesh(string path, Assimp.Mesh mesh)
+        {
+            try
+            {
+                string ext = Path.GetExtension(path).ToLowerInvariant();
+                if (ext != ".glb" && ext != ".gltf") return null;
+                if (!string.Equals(_gltfColorPath, path, StringComparison.OrdinalIgnoreCase) || _gltfColorMap == null)
+                {
+                    _gltfColorMap = null;
+                    _gltfColorPath = path;
+                    byte[] all = File.ReadAllBytes(path);
+                    string json = string.Empty;
+                    byte[] bin = Array.Empty<byte>();
+                    if (ext == ".glb")
+                    {
+                        int pos = 12;
+                        while (pos + 8 <= all.Length)
+                        {
+                            int len = BitConverter.ToInt32(all, pos);
+                            uint ct = BitConverter.ToUInt32(all, pos + 4);
+                            if (ct == 0x4E4F534A) json = System.Text.Encoding.UTF8.GetString(all, pos + 8, len);
+                            else if (ct == 0x004E4942 && bin.Length == 0) { bin = new byte[len]; Array.Copy(all, pos + 8, bin, 0, len); }
+                            pos += 8 + len;
+                        }
+                    }
+                    else
+                    {
+                        json = System.Text.Encoding.UTF8.GetString(all);
+                    }
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+                    if (ext == ".gltf" && root.TryGetProperty("buffers", out var bufs) && bufs.GetArrayLength() > 0)
+                    {
+                        string? uri = bufs[0].TryGetProperty("uri", out var u) ? u.GetString() : null;
+                        if (uri != null)
+                        {
+                            if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                                bin = Convert.FromBase64String(uri.Substring(uri.IndexOf(',') + 1));
+                            else
+                                bin = File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(path) ?? string.Empty, Uri.UnescapeDataString(uri)));
+                        }
+                    }
+                    var map = new Dictionary<(int, int, int), Vector3>();
+                    if (root.TryGetProperty("meshes", out var meshes))
+                    {
+                        foreach (var gm in meshes.EnumerateArray())
+                        {
+                            foreach (var prim in gm.GetProperty("primitives").EnumerateArray())
+                            {
+                                if (!prim.TryGetProperty("attributes", out var at) ||
+                                    !at.TryGetProperty("POSITION", out var pa) || !at.TryGetProperty("COLOR_0", out var ca)) continue;
+                                var pf = ReadGltfAccessor(root, bin, pa.GetInt32(), out int pc);
+                                var cf = ReadGltfAccessor(root, bin, ca.GetInt32(), out int cc);
+                                if (pf == null || cf == null || pc != 3 || cc < 3) continue;
+                                int n = pf.Length / 3;
+                                for (int i = 0; i < n && (i + 1) * cc <= cf.Length; i++)
+                                    map[PosKey(pf[i * 3], pf[i * 3 + 1], pf[i * 3 + 2])] = new Vector3(cf[i * cc], cf[i * cc + 1], cf[i * cc + 2]);
+                            }
+                        }
+                    }
+                    _gltfColorMap = map;
+                }
+                if (_gltfColorMap.Count == 0) return null;
+                var res = new Vector3[mesh.VertexCount];
+                int hit = 0;
+                for (int i = 0; i < mesh.VertexCount; i++)
+                {
+                    var v = mesh.Vertices[i];
+                    if (_gltfColorMap.TryGetValue(PosKey(v.X, v.Y, v.Z), out var col)) { res[i] = col; hit++; }
+                    else res[i] = new Vector3(0.6f, 0.6f, 0.6f);
+                }
+                return hit >= mesh.VertexCount / 2 ? res : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string? _bakeAskedPath;
+        private static bool _bakeAnswer;
+
+        internal static bool ConfirmBakeVertexColors(string path)
+        {
+            if (string.Equals(_bakeAskedPath, path, StringComparison.OrdinalIgnoreCase)) return _bakeAnswer;
+            var r = System.Windows.Forms.MessageBox.Show(
+                "Ce modèle contient des sommets colorés (vertex colors) mais aucune texture ni UV.\n\n" +
+                "Voulez-vous générer une texture (baking) utilisée comme Base Color ?\n" +
+                "Les sommets seront dupliqués par triangle et un PNG sera créé.",
+                "Sommets colorés détectés",
+                System.Windows.Forms.MessageBoxButtons.YesNo,
+                System.Windows.Forms.MessageBoxIcon.Question);
+            _bakeAskedPath = path;
+            _bakeAnswer = r == System.Windows.Forms.DialogResult.Yes;
+            return _bakeAnswer;
+        }
+
+        // Bake COLOR_0 -> texture
+        internal static bool BakeVertexColorTexture(
+            Assimp.Mesh mesh, Vector3 baseFactor,
+            ref Vector3[] verts, ref Vector3[] norms, ref Vector2[] uvs, ref int[] indices,
+            ref VertexInfluence[][]? skin, string pngPath, Vector3[]? colorsOverride = null)
+        {
+            try
+            {
+                if (mesh == null) return false;
+                Vector3[]? cols = colorsOverride;
+                if (cols == null)
+                {
+                    if (!mesh.HasVertexColors(0)) return false;
+                    var mc = mesh.VertexColorChannels[0];
+                    cols = new Vector3[mc.Count];
+                    for (int ci = 0; ci < mc.Count; ci++) cols[ci] = new Vector3(mc[ci].R, mc[ci].G, mc[ci].B);
+                }
+                int vc = verts.Length;
+                if (cols.Length < vc || indices.Length < 3) return false;
+
+                int tris = indices.Length / 3;
+                int cells = (tris + 1) / 2;
+                int gridCols = (int)Math.Ceiling(Math.Sqrt(cells));
+                int N = 256;
+                while (N / gridCols < 8 && N < 8192) N *= 2;
+                int c = N / gridCols;
+                if (c < 2) return false;
+                int d = c - 1;
+
+                var px = new byte[N * N * 4];
+                for (int i = 3; i < px.Length; i += 4) px[i] = 255;
+
+                var nv = new Vector3[tris * 3];
+                var nn = new Vector3[tris * 3];
+                var nuv = new Vector2[tris * 3];
+                var nidx = new int[tris * 3];
+                VertexInfluence[][]? nskin = skin != null ? new VertexInfluence[tris * 3][] : null;
+
+                static float ToSrgb(float x)
+                {
+                    x = Math.Clamp(x, 0f, 1f);
+                    return x <= 0.0031308f ? 12.92f * x : 1.055f * MathF.Pow(x, 1f / 2.4f) - 0.055f;
+                }
+
+                var tc = new Vector3[3];
+                for (int t = 0; t < tris; t++)
+                {
+                    int cell = t / 2;
+                    int half = t % 2;
+                    int x0 = (cell % gridCols) * c;
+                    int y0 = (cell / gridCols) * c;
+
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int src = indices[t * 3 + k];
+                        int dst = t * 3 + k;
+                        nv[dst] = verts[src];
+                        nn[dst] = norms[src];
+                        if (nskin != null && skin != null) nskin[dst] = skin[src];
+                        nidx[dst] = dst;
+                        var col = cols[src];
+                        tc[k] = new Vector3(col.X * baseFactor.X, col.Y * baseFactor.Y, col.Z * baseFactor.Z);
+                    }
+
+                    float fx0 = x0 + 0.5f, fx1 = x0 + c - 0.5f, fy0 = y0 + 0.5f, fy1 = y0 + c - 0.5f;
+                    if (half == 0)
+                    {
+                        nuv[t * 3 + 0] = new Vector2(fx0 / N, fy0 / N);
+                        nuv[t * 3 + 1] = new Vector2(fx1 / N, fy0 / N);
+                        nuv[t * 3 + 2] = new Vector2(fx0 / N, fy1 / N);
+                    }
+                    else
+                    {
+                        nuv[t * 3 + 0] = new Vector2(fx1 / N, fy1 / N);
+                        nuv[t * 3 + 1] = new Vector2(fx0 / N, fy1 / N);
+                        nuv[t * 3 + 2] = new Vector2(fx1 / N, fy0 / N);
+                    }
+
+                    for (int py = 0; py < c; py++)
+                    {
+                        for (int pxl = 0; pxl < c; pxl++)
+                        {
+                            int s = pxl + py;
+                            float w1, w2;
+                            if (half == 0)
+                            {
+                                if (s > d) continue;
+                                w1 = (float)pxl / d; w2 = (float)py / d;
+                            }
+                            else
+                            {
+                                if (s <= d) continue;
+                                w1 = (float)(d - pxl) / d; w2 = (float)(d - py) / d;
+                            }
+                            float w0 = Math.Max(0f, 1f - w1 - w2);
+                            var rgb = tc[0] * w0 + tc[1] * w1 + tc[2] * w2;
+                            int o = ((y0 + py) * N + (x0 + pxl)) * 4;
+                            px[o + 0] = (byte)(ToSrgb(rgb.Z) * 255f + 0.5f);
+                            px[o + 1] = (byte)(ToSrgb(rgb.Y) * 255f + 0.5f);
+                            px[o + 2] = (byte)(ToSrgb(rgb.X) * 255f + 0.5f);
+                            px[o + 3] = 255;
+                        }
+                    }
+                }
+
+                string? dir = Path.GetDirectoryName(pngPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+                using (var bmp = new System.Drawing.Bitmap(N, N, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    var bd = bmp.LockBits(new System.Drawing.Rectangle(0, 0, N, N),
+                        System.Drawing.Imaging.ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    System.Runtime.InteropServices.Marshal.Copy(px, 0, bd.Scan0, px.Length);
+                    bmp.UnlockBits(bd);
+                    bmp.Save(pngPath, System.Drawing.Imaging.ImageFormat.Png);
+                }
+
+                verts = nv; norms = nn; uvs = nuv; indices = nidx; skin = nskin;
+                return true;
+            }
+            catch (Exception bex)
+            {
+                System.Windows.Forms.MessageBox.Show("Echec du baking des couleurs de sommets : " + bex.Message,
+                    "Baking", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning);
+                return false;
+            }
         }
 
         private static List<GrannyBone>? LoadReferenceBones(string? uoRefPath, string outFolder)

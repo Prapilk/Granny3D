@@ -6273,7 +6273,7 @@ namespace UoFiddler.Plugin.Granny3D
                 using var ofd = new OpenFileDialog
                 {
                     Title = "Importer un Mesh (Arme, Armure, Équipement...)",
-                    Filter = "Fichiers 3D (*.fbx;*.obj;*.dae;*.3ds;*.ply)|*.fbx;*.obj;*.dae;*.3ds;*.ply|FBX (*.fbx)|*.fbx|Wavefront OBJ (*.obj)|*.obj|Tous les fichiers (*.*)|*.*"
+                    Filter = "Fichiers 3D (*.fbx;*.glb;*.gltf;*.obj;*.dae;*.3ds;*.ply)|*.fbx;*.glb;*.gltf;*.obj;*.dae;*.3ds;*.ply|GLB/glTF (*.glb;*.gltf)|*.glb;*.gltf|FBX (*.fbx)|*.fbx|Wavefront OBJ (*.obj)|*.obj|Tous les fichiers (*.*)|*.*"
                 };
                 if (ofd.ShowDialog() != DialogResult.OK) return;
 

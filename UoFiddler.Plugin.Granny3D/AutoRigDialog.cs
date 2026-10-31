@@ -5619,7 +5619,7 @@ namespace UoFiddler.Plugin.Granny3D
             using var ofd = new OpenFileDialog
             {
                 Title = "Sélectionner un modèle 3D pour le Rigging UO",
-                Filter = "Modèles 3D (*.fbx;*.obj;*.char;*.grn;*.dae)|*.fbx;*.obj;*.char;*.grn;*.dae|FBX (*.fbx)|*.fbx|OBJ (*.obj)|*.obj|Character UO (*.char)|*.char|Granny (*.grn)|*.grn|Tous (*.*)|*.*",
+                Filter = "Modèles 3D (*.fbx;*.glb;*.gltf;*.obj;*.char;*.grn;*.dae)|*.fbx;*.glb;*.gltf;*.obj;*.char;*.grn;*.dae|GLB/glTF (*.glb;*.gltf)|*.glb;*.gltf|FBX (*.fbx)|*.fbx|OBJ (*.obj)|*.obj|Character UO (*.char)|*.char|Granny (*.grn)|*.grn|Tous (*.*)|*.*",
                 InitialDirectory = !string.IsNullOrEmpty(_currentModelPath) ? Path.GetDirectoryName(_currentModelPath) : _outFolder
             };
 
@@ -6267,6 +6267,22 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
 
+                    var pIdxArr = pIndices.ToArray();
+                    var gCols = (mesh.HasVertexColors(0) || mesh.HasTextureCoords(0)) ? null : MixamoCharacterImport.GetGltfColorsForMesh(filePath, mesh);
+                                        if (!mesh.HasTextureCoords(0) && string.IsNullOrEmpty(texName) && (mesh.HasVertexColors(0) || gCols != null) && MixamoCharacterImport.ConfirmBakeVertexColors(filePath))
+                                        {
+                                            string bakeDir = !string.IsNullOrEmpty(_outFolder) ? _outFolder : (Path.GetDirectoryName(filePath) ?? string.Empty);
+                                            string bakeName = Path.GetFileNameWithoutExtension(filePath) + "_mesh" + mi + "_vcolor.png";
+                                            VertexInfluence[][] bSkin = null;
+                                            var bf = partCol == new Vector3(0.72f, 0.66f, 0.55f) ? Vector3.One : partCol;
+                                            if (MixamoCharacterImport.BakeVertexColorTexture(mesh, bf, ref pVerts, ref pNorms, ref pUVs, ref pIdxArr,
+                                                    ref bSkin, Path.Combine(bakeDir, bakeName), gCols))
+                        {
+                            texName = bakeName;
+                            partCol = Vector3.One;
+                        }
+                    }
+
                     _rawParts.Add(new RawPartData
                     {
                         Name = mName,
@@ -6276,7 +6292,7 @@ namespace UoFiddler.Plugin.Granny3D
                         RawVertices = pVerts,
                         RawNormals = pNorms,
                         UVs = pUVs,
-                        Indices = pIndices.ToArray(),
+                        Indices = pIdxArr,
                         Skin = null
                     });
 
