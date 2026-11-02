@@ -5629,6 +5629,22 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                 }
 
+                // Verrouillage au sol : le point le plus bas du mesh animé reste à la hauteur du point le plus bas
+                // au repos (les pistes de Bip01/Die/Pillage/TakeDamage dérivent en Z et font "monter" les pieds).
+                if (_animBaseVertices.Length > 0 && _baseVertices.Length == _animBaseVertices.Length)
+                {
+                    float restMinZ = float.MaxValue, animMinZ = float.MaxValue;
+                    for (int vi = 0; vi < _baseVertices.Length; vi++)
+                    {
+                        if (_baseVertices[vi].Z < restMinZ) restMinZ = _baseVertices[vi].Z;
+                        if (_animBaseVertices[vi].Z < animMinZ) animMinZ = _animBaseVertices[vi].Z;
+                    }
+                    float dz = restMinZ - animMinZ;
+                    if (Math.Abs(dz) > 1e-5f)
+                        for (int vi = 0; vi < _animBaseVertices.Length; vi++)
+                            _animBaseVertices[vi].Z += dz;
+                }
+
                 void FillInterleaved(int i)
                 {
                     int vi = _indices[i];

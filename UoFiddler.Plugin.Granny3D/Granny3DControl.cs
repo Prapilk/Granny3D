@@ -12708,6 +12708,96 @@ namespace UoFiddler.Plugin.Granny3D
             RefreshVertexBuffers(!_playing);
         }
 
+        // Verrouillage au sol : la translation de Bip01 dans les clips (Die, Pillage, TakeDamage...)
+        // fait dériver tout le corps en Z. On mesure, sur le squelette le plus complet, de combien
+        // son os le plus bas s'écarte de sa hauteur au repos, et on compense sur les os racine
+        // de TOUS les meshes animés (le corps, la robe, etc. restent alignés).
+        private bool _groundLock = true;
+
+        private static bool IsGroundRefBone(string n) =>
+            !string.IsNullOrEmpty(n) && !n.StartsWith("CP_", StringComparison.OrdinalIgnoreCase)
+            && !n.Equals("__Root", StringComparison.OrdinalIgnoreCase)
+            && !n.StartsWith("master_", StringComparison.OrdinalIgnoreCase);
+
+        private void ApplyGroundLock()
+        {
+            if (!_groundLock || _currentAnimation == null) return;
+
+            // Mesure sur les SOMMETS skinnés (les os auxiliaires fixes à Z=0 faussent une mesure par os).
+            float bindMin = float.MaxValue, animMin = float.MaxValue;
+            foreach (var lm in _loadedMeshes)
+            {
+                if (lm.Hidden || lm.Skin == null || lm.SkinMatrices == null || lm.BaseVertices == null) continue;
+                if (lm.CutoutRole == MeshCutoutRole.Mount || lm.HasAttachMatrix) continue;
+                int vc = Math.Min(lm.BaseVertices.Length, lm.Skin.Length);
+                int bc = lm.SkinMatrices.Length;
+                for (int v = 0; v < vc; v++)
+                {
+                    var infs = lm.Skin[v];
+                    if (infs == null || infs.Length == 0) continue;
+                    Vector3 p0 = lm.BaseVertices[v];
+                    Vector3 acc = Vector3.Zero; float w = 0f;
+                    foreach (var inf in infs)
+                    {
+                        if (inf.BoneId < 0 || inf.BoneId >= bc || inf.Weight <= 1e-4f) continue;
+                        acc += Vector3.TransformPosition(p0, lm.SkinMatrices[inf.BoneId]) * inf.Weight;
+                        w += inf.Weight;
+                    }
+                    if (w <= 1e-3f) continue;
+                    acc /= w;
+                    if (p0.Z < bindMin) bindMin = p0.Z;
+                    if (acc.Z < animMin) animMin = acc.Z;
+                }
+            }
+            if (bindMin == float.MaxValue || animMin == float.MaxValue) return;
+
+            float dz = bindMin - animMin;
+            if (Math.Abs(dz) < 1e-5f) return;
+            var shift = Matrix4.CreateTranslation(0, 0, dz);
+
+            foreach (var lm in _loadedMeshes)
+            {
+                if (lm.Bones == null || lm.Bones.Count == 0 || lm.LocalMatrices == null || lm.CutoutRole == MeshCutoutRole.Mount) continue;
+                int bc = lm.Bones.Count;
+                for (int i = 0; i < bc; i++)
+                {
+                    int p = lm.Bones[i].ParentId;
+                    if (!(p < 0 || p >= bc || p == i)) continue;
+                    lm.LocalMatrices[i] = lm.LocalMatrices[i] * shift;
+                }
+                ComputeWorldMatrices(lm);
+                for (int i = 0; i < bc; i++)
+                    lm.SkinMatrices[i] = lm.Bones[i].InverseBindMatrix * lm.WorldMatrices[i];
+            }
+        }
+
+        // Rapport d'unités entre les translations du clip et le squelette du mesh (médiane des
+        // |piste.Pos[0]| / |os.LocalPosition| des os non racine). 1 si les unités concordent.
+        private float ComputeAnimPosScaleFor(LoadedMesh lm, GrannyAnimation anim, int[] trackMap)
+        {
+            if (anim?.Tracks == null || trackMap == null) return 1f;
+            var ratios = new List<float>();
+            for (int i = 0; i < lm.Bones.Count && i < trackMap.Length; i++)
+            {
+                int ti = trackMap[i];
+                if (ti < 0 || ti >= anim.Tracks.Count) continue;
+                var b = lm.Bones[i];
+                int p = b.ParentId;
+                if (p < 0 || p >= lm.Bones.Count || p == i) continue;
+                if (b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase)) continue;
+                var tr = anim.Tracks[ti];
+                if (tr.Pos == null || tr.Pos.Length == 0) continue;
+                float a = tr.Pos[0].Length, m = b.LocalPosition.Length;
+                if (a < 1e-4f || m < 1e-4f) continue;
+                ratios.Add(m / a);
+            }
+            if (ratios.Count < 4) return 1f;
+            ratios.Sort();
+            float s = ratios[ratios.Count / 2];
+            if (s > 0.8f && s < 1.25f) return 1f;
+            return (s > 1e-6f && s < 1e6f) ? s : 1f;
+        }
+
         private static bool TrackPositionVaries(GrannyTrack tr, float eps = 0.002f)
         {
             if (tr?.Pos == null || tr.Pos.Length < 2) return false;
@@ -12762,6 +12852,7 @@ namespace UoFiddler.Plugin.Granny3D
                 // Coordinate orientation compensation for 3ds Max Root Dummy tracks (e.g. Master_Blackthorn):
                 GrannyTrack trMaster = anim?.Tracks?.FirstOrDefault(t => t.Name != null && t.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase));
                 Quaternion rMaster = trMaster != null ? trMaster.EvaluateRot(meshT) : Quaternion.Identity;
+                float animPosScale = ComputeAnimPosScaleFor(lm, anim, trackMap);
 
                 for (int i = 0; i < boneCount; i++)
                 {
@@ -12802,7 +12893,7 @@ namespace UoFiddler.Plugin.Granny3D
                                 Vector3 localDelta = trPos - restPos;
                                 delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
                             }
-                            pos = b.LocalPosition + delta;
+                            pos = b.LocalPosition + delta * animPosScale;
                         }
                         else if (isRoot)
                         {
@@ -12815,14 +12906,14 @@ namespace UoFiddler.Plugin.Granny3D
                                 Vector3 localDelta = trPos - restPos;
                                 delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
                             }
-                            pos = b.LocalPosition + delta;
+                            pos = b.LocalPosition + delta * animPosScale;
                         }
                         else
                         {
                             Vector3 delta = Vector3.Zero;
                             if (b.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase))
                             {
-                                pos = tr.EvaluatePos(meshT);
+                                pos = tr.EvaluatePos(meshT) * animPosScale;
                             }
                             else
                             {
@@ -12832,7 +12923,7 @@ namespace UoFiddler.Plugin.Granny3D
                                     Vector3 restPos = tr.Pos[0];
                                     delta = trPos - restPos;
                                 }
-                                pos = b.LocalPosition + delta;
+                                pos = b.LocalPosition + delta * animPosScale;
                             }
                             rot = tr.EvaluateRot(meshT);
                         }
@@ -12950,6 +13041,8 @@ namespace UoFiddler.Plugin.Granny3D
                 for (int i = 0; i < boneCount; i++)
                     lm.SkinMatrices[i] = lm.Bones[i].InverseBindMatrix * lm.WorldMatrices[i];
             }
+
+            ApplyGroundLock();
 
             // Rigid bone attach: a weapon/shield/armor piece attached to a host bone
             // is driven by that bone's skin matrix (from the body's animated skeleton)
