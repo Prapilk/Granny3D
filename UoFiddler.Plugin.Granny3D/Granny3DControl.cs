@@ -229,8 +229,8 @@ namespace UoFiddler.Plugin.Granny3D
         public float Distance = 5f;
         public float Yaw = 0f;
         public float Pitch = 0f;
-        public float MinDistance = 1f;
-        public float MaxDistance = 200f;
+        public float MinDistance = 1e-5f;
+        public float MaxDistance = 100000f;
 
         private Point _lastMousePos;
         private bool _isRotating;
@@ -1201,6 +1201,9 @@ namespace UoFiddler.Plugin.Granny3D
             glControl.MouseMove += GlControl_MouseMove;
             glControl.MouseWheel += GlControl_MouseWheel;
             glControl.MouseEnter += (s, e) => glControl.Focus();
+            glControl.PreviewKeyDown += (s, e) => { if (e.KeyCode == Keys.Z || e.KeyCode == Keys.G) e.IsInputKey = true; };
+            glControl.KeyDown += (s, e) => { if (e.KeyCode == Keys.G && !e.Control && !e.Alt) { ToggleGrid(); e.Handled = true; } };
+            glControl.KeyDown += (s, e) => { if (e.KeyCode == Keys.Z && !e.Control && !e.Alt) { FrameSelectedMeshes(); e.Handled = true; } };
             glContextMenu = new ContextMenuStrip();
             glContextMenu.Opening += GlContextMenu_Opening;
             glControl.ContextMenuStrip = glContextMenu;
@@ -1619,7 +1622,7 @@ namespace UoFiddler.Plugin.Granny3D
             // Uniform scale + per-axis scale: inflate/deflate a piece so the body no
             // longer pokes through it (skinned armor) or resize a weapon.
             grpEquip.Controls.Add(new Label { Text = "Échelle (globale)", Location = new Point(8, 200), Width = 120, ForeColor = Color.Gainsboro });
-            nudScale = MakeNud(140, 197, 0.001m, 100m, 0.01m, 3);
+            nudScale = MakeNud(140, 197, 0.00001m, 100m, 0.01m, 5);
 
             grpEquip.Controls.Add(new Label { Text = "Échelle :", Location = new Point(8, 229), Width = 55, ForeColor = Color.Gainsboro });
             nudScaleX = MakeNud(80, 226, 0.001m, 100m, 0.01m, 3, 68);
@@ -2758,6 +2761,22 @@ namespace UoFiddler.Plugin.Granny3D
             pnlRight.Controls.Add(pnlRightBottom);
             pnlRight.Controls.Add(glControl);
 
+            chkRescale175 = new CheckBox { Text = Localization.Tr("chk_rescale175", "Rescale 1m75"), AutoSize = true, ForeColor = Color.Gainsboro, BackColor = Color.FromArgb(40, 40, 44) };
+            chkRescale175.CheckedChanged += (s, e) => ApplyRescale175ToSelection(chkRescale175.Checked);
+            chkZeroXYZ = new CheckBox { Text = Localization.Tr("chk_zero_xyz", "Forcer XYZ 0,0,0"), AutoSize = true, ForeColor = Color.Gainsboro, BackColor = Color.FromArgb(40, 40, 44) };
+            chkZeroXYZ.CheckedChanged += (s, e) => ApplyZeroXYZToSelection(chkZeroXYZ.Checked);
+            pnlRight.Controls.Add(chkRescale175);
+            pnlRight.Controls.Add(chkZeroXYZ);
+            chkGrid = new CheckBox { Text = Localization.Tr("chk_grid", "Grille (G)"), AutoSize = true, ForeColor = Color.Gainsboro, BackColor = Color.FromArgb(40, 40, 44) };
+            chkGrid.CheckedChanged += (s, e) => { _showGrid = chkGrid.Checked; glControl?.Invalidate(); };
+            lblViewHint = new Label { Text = Localization.Tr("lbl_view_shortcuts", "Z = cadrer la sélection | G = grille + axes monde (0,0,0)"), AutoSize = true, ForeColor = Color.Silver, BackColor = Color.FromArgb(40, 40, 44) };
+            pnlRight.Controls.Add(chkGrid);
+            pnlRight.Controls.Add(lblViewHint);
+            chkGrid.BringToFront();
+            lblViewHint.BringToFront();
+            chkRescale175.BringToFront();
+            chkZeroXYZ.BringToFront();
+
             // Size the GL viewport explicitly above the bottom strip so it never
             // extends behind the controls (deterministic, independent of z-order).
             pnlRight.Resize += (s, e) => LayoutViewport(pnlRight, pnlRightBottom);
@@ -2938,8 +2957,206 @@ namespace UoFiddler.Plugin.Granny3D
             if (glControl == null || parent == null) return;
             const int pad = 6;
             int w = parent.ClientSize.Width - pad * 2;
-            int h = parent.ClientSize.Height - (bottom != null ? bottom.Height : 0) - pad * 2;
+            const int strip = 28; // bande sous le viewer pour les cases à cocher
+            int h = parent.ClientSize.Height - (bottom != null ? bottom.Height : 0) - pad * 2 - strip;
             glControl.Bounds = new Rectangle(pad, pad, Math.Max(1, w), Math.Max(1, h));
+            if (chkRescale175 != null && chkZeroXYZ != null)
+            {
+                int y = glControl.Bottom + 5;
+                chkRescale175.Location = new Point(pad + 4, y);
+                chkZeroXYZ.Location = new Point(chkRescale175.Right + 20, y);
+                if (chkGrid != null) chkGrid.Location = new Point(chkZeroXYZ.Right + 20, y);
+                if (lblViewHint != null && chkGrid != null) lblViewHint.Location = new Point(chkGrid.Right + 20, y + 2);
+                chkRescale175.BringToFront();
+                chkZeroXYZ.BringToFront();
+            }
+        }
+
+        private CheckBox chkRescale175, chkZeroXYZ, chkGrid;
+        private Label lblViewHint;
+        private bool _showGrid;
+
+        // Grille au sol (plan Z=0 monde) + gizmo monde (X rouge, Y vert, Z bleu) à l'origine 0,0,0.
+        private void DrawWorldGrid(Matrix4 mvp)
+        {
+            if (_refScale <= 0f) return;
+            float maxDim = 2f / _refScale;                              // taille de la scène en unités monde
+            float step = (float)Math.Pow(10.0, Math.Floor(Math.Log10(Math.Max(1e-6f, maxDim / 10f))));
+            const int n = 10;
+            Vector3 O = new Vector3(-_refCenter.X, -_refCenter.Y, -_refCenter.Z) * _refScale; // monde (0,0,0) normalisé
+            float s = step * _refScale;
+
+            var minor = new List<float>();
+            for (int i = -n; i <= n; i++)
+            {
+                if (i == 0) continue;
+                AddLineSegment(minor, O + new Vector3(i * s, -n * s, 0), O + new Vector3(i * s, n * s, 0));
+                AddLineSegment(minor, O + new Vector3(-n * s, i * s, 0), O + new Vector3(n * s, i * s, 0));
+            }
+            DrawDebugLines(mvp, minor, new Vector4(0.45f, 0.45f, 0.5f, 0.55f), 1.0f);
+
+            float L = n * s * 0.5f;
+            var xl = new List<float>(); AddLineSegment(xl, O, O + new Vector3(L, 0, 0));
+            var yl = new List<float>(); AddLineSegment(yl, O, O + new Vector3(0, L, 0));
+            var zl = new List<float>(); AddLineSegment(zl, O, O + new Vector3(0, 0, L));
+            DrawDebugLines(mvp, xl, new Vector4(1f, 0.2f, 0.2f, 1f), 3f);
+            DrawDebugLines(mvp, yl, new Vector4(0.2f, 1f, 0.2f, 1f), 3f);
+            DrawDebugLines(mvp, zl, new Vector4(0.3f, 0.5f, 1f, 1f), 3f);
+        }
+
+        private void ToggleGrid()
+        {
+            _showGrid = !_showGrid;
+            if (chkGrid != null && chkGrid.Checked != _showGrid) chkGrid.Checked = _showGrid;
+            glControl?.Invalidate();
+        }
+        private readonly Dictionary<LoadedMesh, (float scale, Vector3 off)> _savedRescale = new Dictionary<LoadedMesh, (float, Vector3)>();
+
+        private static Vector3 MeshBoundsSize(LoadedMesh lm, out Vector3 center)
+        {
+            center = Vector3.Zero;
+            if (lm?.BaseVertices == null || lm.BaseVertices.Length == 0) return Vector3.Zero;
+            var mn = new Vector3(float.MaxValue); var mx = new Vector3(float.MinValue);
+            foreach (var v in lm.BaseVertices) { mn = Vector3.ComponentMin(mn, v); mx = Vector3.ComponentMax(mx, v); }
+            center = (mn + mx) * 0.5f;
+            return mx - mn;
+        }
+
+        // Ramène les meshes sélectionnés à 1,75 de haut via PartScale (réversible).
+        private void ApplyRescale175ToSelection(bool on)
+        {
+            foreach (int i in GetSelectedMeshIndices())
+            {
+                if (i < 0 || i >= _loadedMeshes.Count) continue;
+                var lm = _loadedMeshes[i];
+                if (on)
+                {
+                    var size = MeshBoundsSize(lm, out _);
+                    float maxDim = Math.Max(size.X, Math.Max(size.Y, size.Z));
+                    if (maxDim <= 1e-6f) continue;
+                    if (!_savedRescale.ContainsKey(lm)) _savedRescale[lm] = (lm.PartScale, lm.AttachOffset);
+                    lm.PartScale = 1.75f / maxDim;
+                }
+                else if (_savedRescale.TryGetValue(lm, out var saved))
+                {
+                    lm.PartScale = saved.scale;
+                    _savedRescale.Remove(lm);
+                }
+                lm.BufferUpToDate = false;
+                lm.HasGroupCenter = false;
+                if (chkZeroXYZ != null && chkZeroXYZ.Checked)
+                {
+                    if (!_savedZeroOff.ContainsKey(lm)) _savedZeroOff[lm] = lm.AttachOffset;
+                    lm.AttachOffset = Vector3.Zero;
+                }
+            }
+            if (chkZeroXYZ != null && chkZeroXYZ.Checked) PlaceSelectionOnOrigin(); else FinishTweakRefresh();
+        }
+
+        // Ordre important : bornes/normalisation d'abord, puis pose (DeformedCache), puis buffers GPU.
+        private void FinishTweakRefresh()
+        {
+            foreach (var m in _loadedMeshes) m.HasGroupCenter = false;
+            ComputeReferenceBounds();
+            LoadEquipControlsFromMesh();
+            ApplyAnimationPose(_currentTime);
+            RefreshVertexBuffers(true);
+            glControl?.Invalidate();
+        }
+
+        // Place TOUS les meshes sélectionnés sur le même point : centre XY de leur ensemble en (0,0),
+        // point le plus bas en Z=0. Calculé sur les positions réellement affichées (DeformedCache,
+        // échelle/pivot/skinning compris), avec le même décalage pour tous : ils restent alignés entre eux.
+        private void PlaceSelectionOnOrigin()
+        {
+            var sel = new List<LoadedMesh>();
+            foreach (int i in GetSelectedMeshIndices())
+            {
+                if (i < 0 || i >= _loadedMeshes.Count) continue;
+                var lm = _loadedMeshes[i];
+                if (lm.Hidden || lm.BaseVertices == null || lm.BaseVertices.Length == 0) continue;
+                if (lm.HasAttachMatrix || !string.IsNullOrEmpty(lm.AttachBoneName)) continue; // équipement rigide : suit son os
+                sel.Add(lm);
+            }
+            if (sel.Count == 0) { FinishTweakRefresh(); return; }
+
+            foreach (var lm in sel) { lm.AttachOffset = Vector3.Zero; lm.HasGroupCenter = false; lm.BufferUpToDate = false; }
+            ComputeReferenceBounds();
+            ApplyAnimationPose(_currentTime);
+
+            var mn = new Vector3(float.MaxValue); var mx = new Vector3(float.MinValue);
+            bool any = false;
+            foreach (var lm in sel)
+            {
+                var pts = lm.DeformedCache != null && lm.DeformedCache.Length == lm.BaseVertices.Length ? lm.DeformedCache : null;
+                if (pts == null)
+                {
+                    pts = new Vector3[lm.BaseVertices.Length];
+                    for (int v = 0; v < pts.Length; v++) pts[v] = ApplyMeshTweak(lm, lm.BaseVertices[v]);
+                }
+                foreach (var p in pts) { mn = Vector3.ComponentMin(mn, p); mx = Vector3.ComponentMax(mx, p); any = true; }
+            }
+            if (any)
+            {
+                var shift = new Vector3(-(mn.X + mx.X) * 0.5f, -(mn.Y + mx.Y) * 0.5f, -mn.Z);
+                foreach (var lm in sel) { lm.AttachOffset = shift; lm.HasGroupCenter = false; lm.BufferUpToDate = false; }
+            }
+            FinishTweakRefresh();
+        }
+
+        private readonly Dictionary<LoadedMesh, Vector3> _savedZeroOff = new Dictionary<LoadedMesh, Vector3>();
+        private void ApplyZeroXYZToSelection(bool on)
+        {
+            foreach (int i in GetSelectedMeshIndices())
+            {
+                if (i < 0 || i >= _loadedMeshes.Count) continue;
+                var lm = _loadedMeshes[i];
+                if (on)
+                {
+                    if (!_savedZeroOff.ContainsKey(lm)) _savedZeroOff[lm] = lm.AttachOffset;
+                    lm.AttachOffset = Vector3.Zero;
+                }
+                else if (_savedZeroOff.TryGetValue(lm, out var o))
+                {
+                    lm.AttachOffset = o;
+                    _savedZeroOff.Remove(lm);
+                }
+                lm.BufferUpToDate = false;
+                lm.HasGroupCenter = false;
+            }
+            if (on) PlaceSelectionOnOrigin(); else FinishTweakRefresh();
+        }
+
+        // Touche Z
+        private void FrameSelectedMeshes()
+        {
+            var mn = new Vector3(float.MaxValue); var mx = new Vector3(float.MinValue);
+            bool any = false;
+            foreach (int i in GetSelectedMeshIndices())
+            {
+                if (i < 0 || i >= _loadedMeshes.Count) continue;
+                var lm = _loadedMeshes[i];
+                if (lm.Hidden) continue;
+                Vector3[] pts = null;
+                if (lm.DeformedCache != null && lm.BaseVertices != null && lm.DeformedCache.Length == lm.BaseVertices.Length)
+                    pts = lm.DeformedCache; // déjà tweaké (échelle/offset/skinning) : ne PAS réappliquer ApplyMeshTweak
+                else if (lm.BaseVertices != null)
+                {
+                    bool rigidAtt = !string.IsNullOrEmpty(lm.AttachBoneName) || lm.HasAttachMatrix;
+                    pts = new Vector3[lm.BaseVertices.Length];
+                    for (int v = 0; v < pts.Length; v++) pts[v] = rigidAtt ? lm.BaseVertices[v] : ApplyMeshTweak(lm, lm.BaseVertices[v]);
+                }
+                if (pts == null) continue;
+                foreach (var v in pts) { mn = Vector3.ComponentMin(mn, v); mx = Vector3.ComponentMax(mx, v); any = true; }
+            }
+            if (!any) return;
+            Vector3 c = (mn + mx) * 0.5f;
+            float radius = Math.Max(1e-5f, (mx - mn).Length * 0.5f);
+            _camera.Target = (c - _refCenter) * _refScale;
+            _camera.MinDistance = 1e-5f;
+            _camera.MaxDistance = Math.Max(_camera.MaxDistance, 100000f);
+            _camera.Distance = Math.Max(_camera.MinDistance, radius * _refScale * 2.5f);
+            glControl?.Invalidate();
         }
 
         private void InitializeOpenGL()
@@ -4196,6 +4413,49 @@ namespace UoFiddler.Plugin.Granny3D
         }
 
 
+        // Les équipements UO sont dessinés à l'échelle humaine (~1.75). Sur un hôte en grandes unités
+        // (Dryad, Changeling... plusieurs milliers d'unités), ils sont minuscules (même x100) : on les met
+        // à l'échelle de l'hôte. Retourne true si l'hôte est en grandes unités (recentrage à ignorer :
+        // l'équipement s'attache à l'os de la main, pas au centre du corps).
+        private bool AdaptAddedMeshesToHostScale(int addedStart)
+        {
+            if (addedStart <= 0 || addedStart >= _loadedMeshes.Count) return false;
+
+            Vector3 mn = new Vector3(float.MaxValue), mx = new Vector3(float.MinValue);
+            bool any = false;
+            for (int i = 0; i < addedStart; i++)
+            {
+                var hm = _loadedMeshes[i];
+                if (hm == null || hm.BaseVertices == null || hm.Hidden) continue;
+                foreach (var v in hm.BaseVertices)
+                {
+                    mn = Vector3.ComponentMin(mn, v);
+                    mx = Vector3.ComponentMax(mx, v);
+                    any = true;
+                }
+            }
+            if (!any) return false;
+
+            var d = mx - mn;
+            float hostSize = Math.Max(d.X, Math.Max(d.Y, d.Z));
+            if (hostSize <= 20f) return false;
+
+            float factor = hostSize / 1.75f;
+            for (int i = addedStart; i < _loadedMeshes.Count; i++)
+            {
+                var am = _loadedMeshes[i];
+                if (am == null || am.BaseVertices == null) continue;
+                if (am.Skin != null && am.Skin.Length > 0) continue; // skinné : suit les os, pas d'échelle directe
+                for (int v = 0; v < am.BaseVertices.Length; v++)
+                    am.BaseVertices[v] *= factor;
+                am.BufferUpToDate = false;
+                BuildCornerData(am);
+                SetupMeshVBO(am);
+            }
+            Log($"AddToScene: hôte en grandes unités ({hostSize:F0}) -> équipement x{factor:F1}");
+            return true;
+        }
+
         // Append every mesh of a .grn file to the current scene (used to layer
         // equipment/extra pieces onto an already-loaded character). The base
         // model, camera and reference bounds are left untouched so the added
@@ -4303,10 +4563,11 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 // Recenter newly added meshes to the existing body if present
+                bool hostLarge1 = AdaptAddedMeshesToHostScale(_loadedMeshes.Count - addedChar);
                 try
                 {
                     int addedStart = _loadedMeshes.Count - addedChar;
-                    if (addedStart > 0 && addedChar > 0)
+                    if (addedStart > 0 && addedChar > 0 && !hostLarge1)
                     {
                         // Host bounds (existing meshes)
                         float hMinX = float.MaxValue, hMinY = float.MaxValue, hMinZ = float.MaxValue;
@@ -4516,10 +4777,11 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             // Recenter newly added meshes to the existing body if present
+            bool hostLarge2 = AdaptAddedMeshesToHostScale(_loadedMeshes.Count - added);
             try
             {
                 int addedStart2 = _loadedMeshes.Count - added;
-                if (addedStart2 > 0 && added > 0)
+                if (addedStart2 > 0 && added > 0 && !hostLarge2)
                 {
                     float hMinX = float.MaxValue, hMinY = float.MaxValue, hMinZ = float.MaxValue;
                     float hMaxX = float.MinValue, hMaxY = float.MinValue, hMaxZ = float.MinValue;
@@ -5590,6 +5852,24 @@ namespace UoFiddler.Plugin.Granny3D
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            if (keyData == Keys.Z)
+            {
+                var f = FindFocusedControl(this);
+                if (!(f is TextBox) && !(f is NumericUpDown) && !(f is ComboBox))
+                {
+                    FrameSelectedMeshes();
+                    return true;
+                }
+            }
+            if (keyData == Keys.G)
+            {
+                var fg = FindFocusedControl(this);
+                if (!(fg is TextBox) && !(fg is NumericUpDown) && !(fg is ComboBox))
+                {
+                    ToggleGrid();
+                    return true;
+                }
+            }
             if (keyData == Keys.Space)
             {
                 var focused = FindFocusedControl(this);
@@ -12202,10 +12482,14 @@ namespace UoFiddler.Plugin.Granny3D
             float maxX = float.MinValue, maxY = float.MinValue, maxZ = float.MinValue;
             bool any = false;
 
+            foreach (var m0 in _loadedMeshes) m0.HasGroupCenter = false;
             foreach (var lm in _loadedMeshes)
             {
-                foreach (var v in lm.BaseVertices)
+                // Même transformation que le rendu (pivot, échelle, offset) pour que les bornes correspondent à l'affichage.
+                bool rigidAtt = !string.IsNullOrEmpty(lm.AttachBoneName) || lm.HasAttachMatrix;
+                foreach (var v0 in lm.BaseVertices)
                 {
+                    var v = rigidAtt ? v0 : ApplyMeshTweak(lm, v0);
                     any = true;
                     if (v.X < minX) minX = v.X;
                     if (v.Y < minY) minY = v.Y;
@@ -15288,12 +15572,12 @@ namespace UoFiddler.Plugin.Granny3D
             Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(
                 MathHelper.DegreesToRadians(45f),
                 (float)w / Math.Max(1, h),
-                0.01f, 5000f);
+                Math.Max(1e-5f, Math.Min(0.01f, _camera.Distance * 0.01f)), 5000f);
             Matrix4 view = _camera.GetViewMatrix();
             Matrix4 mvp = view * proj;
             DrawMeshSet(mvp, unlit: false, alphaCut: 0.15f);
 
-            // 3D Visualizers: Colliders, Skeleton, and Cloth Zones (Heatmap)
+            if (_showGrid) DrawWorldGrid(mvp);
             if (_showColliders) DrawClothColliders(mvp);
             if (_showBones) DrawBones(mvp);
             if (_showClothHeatmap) DrawClothHeatmap(mvp);
@@ -17651,7 +17935,7 @@ void main(){
             Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(
                 MathHelper.DegreesToRadians(45f),
                 (float)w / Math.Max(1, h),
-                0.01f, 5000f);
+                Math.Max(1e-5f, Math.Min(0.01f, _camera.Distance * 0.01f)), 5000f);
             Matrix4 view = _camera.GetViewMatrix();
             Matrix4 invMvp = Matrix4.Invert(view * proj);
 
