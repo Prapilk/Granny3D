@@ -12712,6 +12712,23 @@ namespace UoFiddler.Plugin.Granny3D
         // fait dériver tout le corps en Z. On mesure, sur le squelette le plus complet, de combien
         // son os le plus bas s'écarte de sa hauteur au repos, et on compense sur les os racine
         // de TOUS les meshes animés (le corps, la robe, etc. restent alignés).
+        // Clips de cavalier (h_male_llama, h_male_kirin, h_female_ostard_desert...) : le personnage est
+        // assis sur une monture, il ne doit PAS être replaqué au sol.
+        private static readonly string[] MountClipKeywords = {
+            "llama", "kirin", "ostard", "horse", "equine", "steed", "ridgeback", "mount", "ride", "riding",
+            "dragon", "beetle", "cushidhe", "riyo", "raptalon", "unicorn", "nightmare", "ethereal", "fire_steed",
+            "saddle", "swampdragon", "hiryu", "lesserhiryu", "skeletal"
+        };
+
+        private static bool IsMountedClip(string animPath)
+        {
+            if (string.IsNullOrEmpty(animPath)) return false;
+            string n = Path.GetFileNameWithoutExtension(animPath).ToLowerInvariant();
+            foreach (var k in MountClipKeywords)
+                if (n.Contains(k)) return true;
+            return false;
+        }
+
         private bool _groundLock = true;
 
         private static bool IsGroundRefBone(string n) =>
@@ -12719,9 +12736,14 @@ namespace UoFiddler.Plugin.Granny3D
             && !n.Equals("__Root", StringComparison.OrdinalIgnoreCase)
             && !n.StartsWith("master_", StringComparison.OrdinalIgnoreCase);
 
-        private void ApplyGroundLock()
+        private void ApplyGroundLock(Vector3 riderOffset)
         {
             if (!_groundLock || _currentAnimation == null) return;
+            // Actions montées : le cavalier est volontairement surélevé (riderOffset) / une monture est chargée.
+            if (riderOffset != Vector3.Zero) return;
+            if (IsMountedClip(_currentAnimPath)) return;
+            foreach (var mm in _loadedMeshes)
+                if (mm.CutoutRole == MeshCutoutRole.Mount) return;
 
             // Mesure sur les SOMMETS skinnés (les os auxiliaires fixes à Z=0 faussent une mesure par os).
             float bindMin = float.MaxValue, animMin = float.MaxValue;
@@ -13042,7 +13064,7 @@ namespace UoFiddler.Plugin.Granny3D
                     lm.SkinMatrices[i] = lm.Bones[i].InverseBindMatrix * lm.WorldMatrices[i];
             }
 
-            ApplyGroundLock();
+            ApplyGroundLock(riderOffset);
 
             // Rigid bone attach: a weapon/shield/armor piece attached to a host bone
             // is driven by that bone's skin matrix (from the body's animated skeleton)
