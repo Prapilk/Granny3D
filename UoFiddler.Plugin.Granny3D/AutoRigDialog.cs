@@ -215,6 +215,10 @@ namespace UoFiddler.Plugin.Granny3D
         private float _cameraYaw = 0.0f; // degrees (0 = front)
         private float _cameraPitch = 0.0f; // degrees (0 = front level)
         private float _cameraDist = 2.8f;
+        private float _cameraDefaultDist = 2.8f;
+        private float _cameraMaxDist = 30f;
+        private float CamNear => Math.Max(0.05f, _cameraDist * 0.02f);
+        private float CamFar => Math.Max(100f, _cameraDist * 60f);
         private Vector3 _cameraPan = Vector3.Zero;
 
         // Multi-mesh preservation structures
@@ -358,6 +362,8 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             EnsurePreviewModel();
+            // Le squelette de créature n'est connu qu'après le chargement : relister les actions.
+            PopulateTestAnimations();
             FrameCameraOnMesh();
         }
 
@@ -375,7 +381,10 @@ namespace UoFiddler.Plugin.Granny3D
             float radius = Math.Max(0.1f, Math.Max(size.X, Math.Max(size.Y, size.Z)));
             _cameraTarget = (mn + mx) * 0.5f;
             _cameraPan = Vector3.Zero;
-            Math.Clamp(radius * 1.8f, 0.3f, 30f);
+            // Créatures en grandes unités : la caméra doit s'adapter à l'échelle réelle.
+            _cameraDefaultDist = Math.Max(0.3f, radius * 1.8f);
+            _cameraMaxDist = Math.Max(30f, _cameraDefaultDist * 10f);
+            _cameraDist = _cameraDefaultDist;
             glControl?.Invalidate();
         }
 
@@ -495,7 +504,7 @@ namespace UoFiddler.Plugin.Granny3D
             pnlCamTools.Controls.Add(btnVueProfil);
             pnlCamTools.Controls.Add(btnVueDos);
             pnlCamTools.Controls.Add(btnVue3D);
-            pnlCamTools.Controls.Add(CreateCamBtn(Localization.Tr("cam_center", "🎯 Centrer Caméra"), () => { _cameraDist = 2.8f; _cameraPan = Vector3.Zero; }));
+            { _cameraDist = _cameraDefaultDist; _cameraPan = Vector3.Zero; }
             UpdateViewButtonsUI();
 
             btnUndo = CreateCamBtn(Localization.Tr("btn_undo", "↩ Annuler (Ctrl+Z)"), () => PerformUndo());
@@ -3234,6 +3243,23 @@ namespace UoFiddler.Plugin.Granny3D
             return null;
         }
 
+        private static float GetBonesExtent(IEnumerable<GrannyBone> bones)
+        {
+            Vector3 mn = new Vector3(float.MaxValue), mx = new Vector3(float.MinValue);
+            bool any = false;
+            foreach (var b in bones)
+            {
+                if (Math.Abs(b.InverseBindMatrix.Determinant) <= 1e-12f) continue;
+                var p = Matrix4.Invert(b.InverseBindMatrix).Row3.Xyz;
+                mn = Vector3.ComponentMin(mn, p);
+                mx = Vector3.ComponentMax(mx, p);
+                any = true;
+            }
+            if (!any) return 0f;
+            var d = mx - mn;
+            return Math.Max(d.X, Math.Max(d.Y, d.Z));
+        }
+
         private void ApplyExistingRig(List<GrannyBone> bones, string? modelPathHint = null)
         {
             if (bones == null || bones.Count == 0) return;
@@ -3246,6 +3272,12 @@ namespace UoFiddler.Plugin.Granny3D
             // Est-ce un squelette bipède humain classique (43 os ou doigts humains) ?
             bool isHumanBiped = (bones.Count == 43 || (bones.Count >= 20 && bones.Any(b => b.Name.IndexOf("Finger1", StringComparison.OrdinalIgnoreCase) >= 0))) &&
                                 bones.Any(b => b.Name.IndexOf("Bip01", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            // Une cr\u00e9ature en grandes unit\u00e9s (Dryad, Changeling...) a un Bip01 et des doigts mais n'est PAS
+            // le squelette humain (\u00e9chelle ~1.75) : la traiter comme humaine charge H_Male comme r\u00e9f\u00e9rence
+            // \u00e0 la mauvaise \u00e9chelle, avec les mauvaises actions.
+            if (isHumanBiped && GetBonesExtent(bones) > 20f)
+                isHumanBiped = false;
 
             if (isHumanBiped)
             {
@@ -5323,6 +5355,33 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        private float ComputeAnimPosScale()
+        {
+            static float Extent(IEnumerable<GrannyBone> bones)
+            {
+                Vector3 mn = new Vector3(float.MaxValue), mx = new Vector3(float.MinValue);
+                bool any = false;
+                foreach (var b in bones)
+                {
+                    if (Math.Abs(b.InverseBindMatrix.Determinant) <= 1e-12f) continue;
+                    var p = Matrix4.Invert(b.InverseBindMatrix).Row3.Xyz;
+                    mn = Vector3.ComponentMin(mn, p);
+                    mx = Vector3.ComponentMax(mx, p);
+                    any = true;
+                }
+                if (!any) return 0f;
+                var d = mx - mn;
+                return Math.Max(d.X, Math.Max(d.Y, d.Z));
+            }
+
+            if (_previewModel == null || _refBones == null || _refBones.Count == 0) return 1f;
+            float prev = Extent(_previewModel.Bones);
+            float orig = Extent(_refBones);
+            if (prev < 1e-6f || orig < 1e-6f) return 1f;
+            float s = prev / orig;
+            return (s > 1e-6f && s < 1e6f) ? s : 1f;
+        }
+
         private void ApplyAnimationPose(float time)
         {
             EnsurePreviewModel();
@@ -5332,6 +5391,9 @@ namespace UoFiddler.Plugin.Granny3D
             int nb = _previewModel.Bones.Count;
             if (_boneWorldMatrices == null || _boneWorldMatrices.Length != nb)
                 _boneWorldMatrices = new Matrix4[nb];
+
+            // Les pistes sont dans l'unité d'origine du clip ; le squelette du preview est ajusté aux marqueurs.
+            float animPosScale = ComputeAnimPosScale();
 
             var children = new List<int>[nb];
             for (int i = 0; i < nb; i++) children[i] = new List<int>();
@@ -5416,7 +5478,7 @@ namespace UoFiddler.Plugin.Granny3D
                             Vector3 localDelta = trPos - restPos;
                             delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
                         }
-                        pos = bone.LocalPosition + delta;
+                        pos = bone.LocalPosition + delta * animPosScale;
                     }
                     else if (isRoot)
                     {
@@ -5429,14 +5491,14 @@ namespace UoFiddler.Plugin.Granny3D
                             Vector3 localDelta = trPos - restPos;
                             delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
                         }
-                        pos = bone.LocalPosition + delta;
+                        pos = bone.LocalPosition + delta * animPosScale;
                     }
                     else
                     {
                         Vector3 delta = Vector3.Zero;
                         if (bone.Name.StartsWith("CP_", StringComparison.OrdinalIgnoreCase))
                         {
-                            pos = track.EvaluatePos(time);
+                            pos = track.EvaluatePos(time) * animPosScale;
                         }
                         else
                         {
@@ -5446,7 +5508,7 @@ namespace UoFiddler.Plugin.Granny3D
                                 Vector3 restPos = track.Pos[0];
                                 delta = trPos - restPos;
                             }
-                            pos = bone.LocalPosition + delta;
+                            pos = bone.LocalPosition + delta * animPosScale;
                         }
                         rot = track.EvaluateRot(time);
                     }
@@ -6873,7 +6935,7 @@ void main() {
                 GL.CullFace(TriangleFace.Back);
 
             float aspect = (float)glControl.Width / Math.Max(1, glControl.Height);
-            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, 0.05f, 100.0f);
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, CamNear, CamFar);
 
             float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
             float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
@@ -7009,6 +7071,27 @@ void main() {
             }
         }
 
+        // Seuil max (au carré) d'un segment d'os affiché : 0.8 pour les squelettes à l'échelle UO,
+        // relatif à la taille du squelette pour les créatures en grandes unités (Dryad, Changeling...).
+        private static float ComputeMaxBoneSegmentSq(IEnumerable<Vector3> positions)
+        {
+            Vector3 mn = new Vector3(float.MaxValue), mx = new Vector3(float.MinValue);
+            bool any = false;
+            foreach (var p in positions)
+            {
+                if (float.IsNaN(p.X) || float.IsNaN(p.Y) || float.IsNaN(p.Z)) continue;
+                mn = Vector3.ComponentMin(mn, p);
+                mx = Vector3.ComponentMax(mx, p);
+                any = true;
+            }
+            if (!any) return 0.64f;
+            Vector3 d = mx - mn;
+            float extent = Math.Max(d.X, Math.Max(d.Y, d.Z));
+            if (extent <= 2.5f) return 0.64f;
+            float lim = extent * 0.6f;
+            return lim * lim;
+        }
+
         private void DrawSkeletonLines(Matrix4 mvp)
         {
             var lines = new List<float>();
@@ -7017,6 +7100,7 @@ void main() {
             if (_isAnimTesting && _boneWorldMatrices != null && _previewModel != null)
             {
                 int nb = _previewModel.Bones.Count;
+                float maxSegSq = ComputeMaxBoneSegmentSq(_boneWorldMatrices.Select(m => m.Row3.Xyz));
                 for (int i = 0; i < nb; i++)
                 {
                     int pIdx = GetParentIndex(_previewModel.Bones, i);
@@ -7033,7 +7117,7 @@ void main() {
                         var p0 = _boneWorldMatrices[pIdx].Row3.Xyz;
                         var p1 = _boneWorldMatrices[i].Row3.Xyz;
                         float dSq = (p1 - p0).LengthSquared;
-                        if (dSq > 1e-6f && dSq < 0.64f)
+                        if (dSq > 1e-6f && dSq < maxSegSq)
                         {
                             lines.Add(p0.X); lines.Add(p0.Y); lines.Add(p0.Z);
                             lines.Add(p1.X); lines.Add(p1.Y); lines.Add(p1.Z);
@@ -7047,6 +7131,7 @@ void main() {
                 if (_previewModel != null && _previewModel.Bones.Count > 0)
                 {
                     int nb = _previewModel.Bones.Count;
+                    float maxSegSq = ComputeMaxBoneSegmentSq(_previewModel.Bones.Select(bn => Math.Abs(bn.InverseBindMatrix.Determinant) > 1e-12f ? Matrix4.Invert(bn.InverseBindMatrix).Row3.Xyz : Vector3.Zero));
                     for (int i = 0; i < nb; i++)
                     {
                         int pIdx = GetParentIndex(_previewModel.Bones, i);
@@ -7063,7 +7148,7 @@ void main() {
                             var w0 = Matrix4.Invert(_previewModel.Bones[pIdx].InverseBindMatrix).Row3.Xyz;
                             var w1 = Matrix4.Invert(_previewModel.Bones[i].InverseBindMatrix).Row3.Xyz;
                             float dSq = (w1 - w0).LengthSquared;
-                            if (dSq > 1e-6f && dSq < 0.64f)
+                            if (dSq > 1e-6f && dSq < maxSegSq)
                             {
                                 lines.Add(w0.X); lines.Add(w0.Y); lines.Add(w0.Z);
                                 lines.Add(w1.X); lines.Add(w1.Y); lines.Add(w1.Z);
@@ -7271,7 +7356,7 @@ void main() {
             int maxY = Math.Max(_boxSelectStart.Y, _boxSelectCurrent.Y);
 
             float aspect = (float)glControl.Width / Math.Max(1, glControl.Height);
-            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, 0.05f, 100.0f);
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, CamNear, CamFar);
 
             float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
             float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
@@ -7817,7 +7902,7 @@ void main() {
                 return;
             }
             float zoomFactor = e.Delta > 0 ? 0.9f : 1.1f;
-            _cameraDist = MathHelper.Clamp(_cameraDist * zoomFactor, 0.3f, 30.0f);
+            _cameraDist = MathHelper.Clamp(_cameraDist * zoomFactor, 0.3f, _cameraMaxDist);
             glControl.Invalidate();
         }
 
@@ -7827,7 +7912,7 @@ void main() {
             if (glControl.Width <= 0 || glControl.Height <= 0) return false;
 
             float aspect = (float)glControl.Width / Math.Max(1, glControl.Height);
-            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, 0.05f, 100.0f);
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, CamNear, CamFar);
 
             float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
             float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
@@ -7866,7 +7951,7 @@ void main() {
             if (glControl.Width <= 0 || glControl.Height <= 0) return -1;
 
             float aspect = (float)glControl.Width / Math.Max(1, glControl.Height);
-            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, 0.05f, 100.0f);
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, CamNear, CamFar);
 
             float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
             float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
@@ -8324,7 +8409,7 @@ void main() {
             if (glControl.Width <= 0 || glControl.Height <= 0) return false;
 
             float aspect = (float)glControl.Width / Math.Max(1, glControl.Height);
-            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, 0.05f, 100.0f);
+            Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, CamNear, CamFar);
 
             float radYaw = MathHelper.DegreesToRadians(_cameraYaw);
             float radPitch = MathHelper.DegreesToRadians(_cameraPitch);
