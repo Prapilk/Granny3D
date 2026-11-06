@@ -721,11 +721,22 @@ namespace UoFiddler.Plugin.Granny3D
                     var tc = trackChunks[trackIdx];
                     reader.BaseStream.Seek(tc.DataOffset, SeekOrigin.Begin);
                     int h0 = reader.ReadInt32();
-                    for (int skip = 0; skip < 5; skip++) reader.ReadInt32();
+                    var hdrA = new int[5];
+                    for (int skip = 0; skip < 5; skip++) hdrA[skip] = reader.ReadInt32();
                     int cP = reader.ReadInt32();
                     int cR = reader.ReadInt32();
                     int cS = reader.ReadInt32();
-                    for (int skip = 0; skip < 4; skip++) reader.ReadInt32();
+                    var hdrB = new int[4];
+                    for (int skip = 0; skip < 4; skip++) hdrB[skip] = reader.ReadInt32();
+                    string hdrAText = string.Join(",", hdrA.Select(v => v.ToString("X8")));
+                    string hdrBText = string.Join(",", hdrB.Select(v => v.ToString("X8")));
+                    long consumedBytes = 52L + 4L * (cP + cR + cS) + 12L * cP + 16L * cR;
+                    try
+                    {
+                        System.IO.File.AppendAllText(@"C:\Games\Sphere\IrisGrannyViewer\grn_tracks.log",
+                            "[" + _textureFileName + "] #" + trackIdx + " h0=" + h0 + " A=" + hdrAText + " cP=" + cP + " cR=" + cR + " cS=" + cS + " B=" + hdrBText + " chunkSize=" + tc.DataSize + " consumed=" + consumedBytes + Environment.NewLine);
+                    }
+                    catch { }
 
                     string trackName = $"Track_{trackIdx}";
                     int resolvedBoneIdx = -1;
@@ -803,6 +814,19 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        // La réparation "marche humaine" ne vaut que pour les clips à l'échelle humaine (mètres).
+        // Les créatures (Dryad, Changeling...) ont un Bip01 en milliers d'unités : le test de "pic"
+        // (dz/dt > 1.4, Z > 0.95) y est toujours vrai et écrasait leur vrai mouvement du bassin par
+        // un rebond de marche humaine, et aplatissait les positions de tous les autres os.
+        private static bool IsHumanScaleRoot(GrannyTrack bip)
+        {
+            if (bip.RestPosition.Length > 50f) return false;
+            if (bip.Pos != null)
+                foreach (var p in bip.Pos)
+                    if (p.Length > 50f) return false;
+            return true;
+        }
+
         private void SanitizeAnimationTracks(GrannyAnimation anim)
         {
             if (anim == null || anim.Tracks == null || anim.Tracks.Count == 0) return;
@@ -810,7 +834,8 @@ namespace UoFiddler.Plugin.Granny3D
             // Detect broken Bip01 root keys in walk animations (such as H_Female_Walk_01 and H_Female_Walkstaff_01)
             // Signature: Bip01 has a severe 1-frame spike around mid-cycle (t ≈ 0.592s, Z > 0.96m, vz > 1.4 m/s)
             // followed by a steep plunge (t ≈ 0.888s, Z < 0.87m).
-            if (anim.TracksByName.TryGetValue("Bip01", out var bipTrack) && bipTrack.TimesP != null && bipTrack.TimesP.Length >= 7)
+            if (anim.TracksByName.TryGetValue("Bip01", out var bipTrack) && bipTrack.TimesP != null && bipTrack.TimesP.Length >= 7
+                && IsHumanScaleRoot(bipTrack))
             {
                 int spikeIdx = -1;
                 for (int i = 0; i < bipTrack.TimesP.Length - 1; i++)

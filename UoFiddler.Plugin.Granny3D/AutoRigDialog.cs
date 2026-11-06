@@ -5780,9 +5780,52 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
 
-                    var uvs = (lm.SourceMesh?.UVs != null && lm.SourceMesh.UVs.Count == vCount)
-                        ? lm.SourceMesh.UVs.ToArray()
-                        : Enumerable.Repeat(Vector2.Zero, vCount).ToArray();
+                    // Expand per-corner UVs (lm.CornerUVs) into per-vertex UVs by splitting vertices
+                    // at UV seams, so no texcoord is lost. Otherwise every UV collapses to (0,0)
+                    // and the texture samples a single texel (the mesh looks plain gray).
+                    bool hasCornerUV = lm.CornerUVs != null && lm.CornerUVs.Length == (lm.Indices?.Length ?? 0) && (lm.Indices?.Length ?? 0) > 0;
+
+                    var vList = new List<Vector3>();
+                    var nList = new List<Vector3>();
+                    var uList = new List<Vector2>();
+                    var iList = new List<int>();
+                    var skinList2 = new List<VertexInfluence[]>();
+                    var lookup = new Dictionary<(int, float, float), int>();
+
+                    if (hasCornerUV)
+                    {
+                        for (int c = 0; c < lm.Indices.Length; c++)
+                        {
+                            int vi = lm.Indices[c];
+                            if (vi < 0 || vi >= vCount) continue;
+                            var uv = lm.CornerUVs[c];
+                            var key = (vi, uv.X, uv.Y);
+                            if (!lookup.TryGetValue(key, out int ni))
+                            {
+                                ni = vList.Count;
+                                lookup[key] = ni;
+                                vList.Add(lm.BaseVertices[vi]);
+                                nList.Add(norms[vi]);
+                                uList.Add(uv);
+                                skinList2.Add(skinList[vi]);
+                            }
+                            iList.Add(ni);
+                        }
+                    }
+                    else
+                    {
+                        var uvs = (lm.SourceMesh?.UVs != null && lm.SourceMesh.UVs.Count == vCount)
+                            ? lm.SourceMesh.UVs.ToArray()
+                            : Enumerable.Repeat(Vector2.Zero, vCount).ToArray();
+                        for (int i = 0; i < vCount; i++)
+                        {
+                            vList.Add(lm.BaseVertices[i]);
+                            nList.Add(norms[i]);
+                            uList.Add(uvs[i]);
+                            skinList2.Add(skinList[i]);
+                        }
+                        if (lm.Indices != null) iList.AddRange(lm.Indices);
+                    }
 
                     var raw = new RawPartData
                     {
@@ -5790,16 +5833,16 @@ namespace UoFiddler.Plugin.Granny3D
                         MaterialName = string.Empty,
                         Color = lm.MeshColor,
                         TextureName = lm.TextureName ?? string.Empty,
-                        RawVertices = (Vector3[])lm.BaseVertices.Clone(),
-                        RawNormals = norms,
-                        UVs = uvs,
-                        Indices = lm.Indices != null ? (int[])lm.Indices.Clone() : Array.Empty<int>(),
-                        Skin = skinList.ToArray()
+                        RawVertices = vList.ToArray(),
+                        RawNormals = nList.ToArray(),
+                        UVs = uList.ToArray(),
+                        Indices = iList.ToArray(),
+                        Skin = skinList2.ToArray()
                     };
                     _rawParts.Add(raw);
 
-                    totalVerts += vCount;
-                    totalFaces += (lm.Indices?.Length ?? 0) / 3;
+                    totalVerts += vList.Count;
+                    totalFaces += iList.Count / 3;
                 }
 
                 if (_rawParts.Count == 0) return;
@@ -5971,21 +6014,57 @@ namespace UoFiddler.Plugin.Granny3D
                                 }
                             }
 
+                            // Granny stores UVs per CORNER (via UVIndices), not per vertex. Expand them
+                            // into per-vertex UVs by splitting vertices at UV seams so no texcoord is lost
+                            // (otherwise every UV collapses to (0,0) and the texture reads a single texel).
+                            bool hasCornerUV = m.UVIndices != null && m.UVIndices.Count == m.Indices.Count && m.UVs != null && m.UVs.Count > 0;
+                            bool hasPerVertexUV = m.UVs != null && m.UVs.Count == vCount;
+
+                            var vList = new List<Vector3>();
+                            var uList = new List<Vector2>();
+                            var iList = new List<int>();
+                            var skinList = new List<VertexInfluence[]>();
+                            var lookup = new Dictionary<(int, float, float), int>();
+
+                            for (int c = 0; c < m.Indices.Count; c++)
+                            {
+                                int vi = m.Indices[c];
+                                if (vi < 0 || vi >= vCount) continue;
+                                float u = 0f, v = 0f;
+                                if (hasCornerUV && c < m.UVIndices.Count)
+                                {
+                                    int ui = m.UVIndices[c];
+                                    if (ui >= 0 && ui < m.UVs.Count) { u = m.UVs[ui].X; v = m.UVs[ui].Y; }
+                                }
+                                else if (hasPerVertexUV) { u = m.UVs[vi].X; v = m.UVs[vi].Y; }
+
+                                var key = (vi, u, v);
+                                if (!lookup.TryGetValue(key, out int ni))
+                                {
+                                    ni = vList.Count;
+                                    lookup[key] = ni;
+                                    vList.Add(m.Vertices[vi]);
+                                    uList.Add(new Vector2(u, v));
+                                    skinList.Add(sList[vi]);
+                                }
+                                iList.Add(ni);
+                            }
+
                             _rawParts.Add(new RawPartData
                             {
                                 Name = $"Mesh_{_rawParts.Count + 1}",
                                 MaterialName = string.Empty,
                                 Color = new Vector3(0.72f, 0.66f, 0.55f),
                                 TextureName = parser.TextureName ?? string.Empty,
-                                RawVertices = m.Vertices.ToArray(),
-                                RawNormals = Enumerable.Repeat(Vector3.UnitZ, vCount).ToArray(),
-                                UVs = (m.UVs != null && m.UVs.Count == vCount) ? m.UVs.ToArray() : Enumerable.Repeat(Vector2.Zero, vCount).ToArray(),
-                                Indices = m.Indices.ToArray(),
-                                Skin = sList.ToArray()
+                                RawVertices = vList.ToArray(),
+                                RawNormals = Enumerable.Repeat(Vector3.UnitZ, vList.Count).ToArray(),
+                                UVs = uList.ToArray(),
+                                Indices = iList.ToArray(),
+                                Skin = skinList.ToArray()
                             });
 
-                            totalVerts += vCount;
-                            totalFaces += m.Indices.Count / 3;
+                            totalVerts += vList.Count;
+                            totalFaces += iList.Count / 3;
                         }
 
                         _textureName = parser.TextureName;

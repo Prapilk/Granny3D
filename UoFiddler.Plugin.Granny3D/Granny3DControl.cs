@@ -793,6 +793,10 @@ namespace UoFiddler.Plugin.Granny3D
         private float _refScale = 1f;
         private Vector3 _normMin = Vector3.Zero;   // model bbox in normalized space
         private Vector3 _normMax = Vector3.Zero;
+        // Anchor used to re-root a mis-aligned skeleton (e.g. MondainSteed) onto its mesh,
+        // so clips loaded later can be re-rooted to the same point and play without jumping.
+        private Vector3 _modelMeshCenter = Vector3.Zero;
+        private bool _hasModelMeshCenter = false;
         private string _currentModelPath;
 
         private System.Windows.Forms.Timer _renderTimer;
@@ -7163,6 +7167,8 @@ namespace UoFiddler.Plugin.Granny3D
             _animParser = null;
             _playing = false;
             _currentTime = 0f;
+            _hasModelMeshCenter = false;
+            _modelMeshCenter = Vector3.Zero;
 
             // H_Male_Lod2 / H_Female_Lod2 only contain the 43-bone skeleton and a
             // 19-vertex placeholder box; the real body is assembled from parts.
@@ -7185,6 +7191,23 @@ namespace UoFiddler.Plugin.Granny3D
                     Skin = mesh.Skin.Count > 0 ? mesh.Skin.ToArray() : null,
                     CutoutRole = isFullChar ? MeshCutoutRole.Body : MeshCutoutRole.Accessory
                 };
+
+                // Some assets store the mesh and its own skeleton in different spaces
+                // (e.g. MondainSteed's skeleton sits ~6 units above its mesh and its Bip01
+                // carries an extra rotation offset vs its own clips). Re-root the skeleton so
+                // its Bip01 lands on the mesh bounds center: this closes the gap between the
+                // dummy roots (kept at origin) and the deform bones, and gives clips a stable
+                // anchor to be re-rooted against so they don't jump.
+                if (!_hasModelMeshCenter)
+                {
+                    NormalizeSkeletonToMesh(lm.Bones, lm.BaseVertices, lm.Skin, out Vector3 rootDeltaLocal, out Vector3 meshCenter);
+                    if (rootDeltaLocal != Vector3.Zero)
+                    {
+                        _modelMeshCenter = meshCenter;
+                        _hasModelMeshCenter = true;
+                        Log($"  skeleton re-rooted to mesh center=({meshCenter.X:F3},{meshCenter.Y:F3},{meshCenter.Z:F3})");
+                    }
+                }
 
                 BuildCornerData(lm);
                 SetupMeshVBO(lm);
@@ -12432,6 +12455,7 @@ namespace UoFiddler.Plugin.Granny3D
                 _currentAnimation = _animParser.Animation;
             }
             _currentAnimPath = path;
+            NormalizeClipToMeshCenter(_currentAnimation);
             RefreshMountAnimation();
             foreach (var lm in _loadedMeshes) ClearClothBake(lm);   // stale loop
             try {
@@ -12833,9 +12857,42 @@ namespace UoFiddler.Plugin.Granny3D
             return false;
         }
 
+        // Quaternions q and -q represent the same rotation; compare via |dot|.
+        private static bool SameOrientation(Quaternion a, Quaternion b)
+        {
+            float dot = Math.Abs(a.X * b.X + a.Y * b.Y + a.Z * b.Z + a.W * b.W);
+            return dot > 0.999f;
+        }
+
         // Compute every mesh's local/world/skin matrices for animation time t, plus the
         // rigid attach matrices. Pure CPU: it only fills the matrix arrays (no vertex
         // deformation, no GL upload), so the cloth bake can reuse it frame by frame.
+        // World matrix of a bone inside the CLIP's own hierarchy (names resolved through the
+        // clip skeleton), using the track values at time t (rest pose when a bone has no track).
+        private static Matrix4 ClipWorldMatrix(GrannyAnimation anim, string boneName, float t, int depth)
+        {
+            if (depth > 64 || anim == null || anim.SkeletonByName == null
+                || !anim.SkeletonByName.TryGetValue(boneName, out var cb))
+                return Matrix4.Identity;
+
+            Vector3 pos = cb.LocalPosition;
+            Quaternion rot = cb.LocalRotation;
+            if (anim.TracksByName != null && anim.TracksByName.TryGetValue(boneName, out var tr))
+            {
+                if (tr.Pos != null && tr.Pos.Length > 0) pos = tr.EvaluatePos(t);
+                if (tr.Rot != null && tr.Rot.Length > 0) rot = tr.EvaluateRot(t);
+            }
+
+            Matrix4 local = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
+            if (cb.ParentId >= 0 && cb.ParentId < anim.Skeleton.Count && cb.ParentId != cb.Id)
+            {
+                string pn = anim.Skeleton[cb.ParentId].Name;
+                if (!string.IsNullOrEmpty(pn))
+                    return local * ClipWorldMatrix(anim, pn, t, depth + 1);
+            }
+            return local;
+        }
+
         private void PoseSkeletons(float t, Vector3 riderOffset = default)
         {
             // Direct application: each track's local transforms are played straight on the
@@ -12874,6 +12931,17 @@ namespace UoFiddler.Plugin.Granny3D
                 // Coordinate orientation compensation for 3ds Max Root Dummy tracks (e.g. Master_Blackthorn):
                 GrannyTrack trMaster = anim?.Tracks?.FirstOrDefault(t => t.Name != null && t.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase));
                 Quaternion rMaster = trMaster != null ? trMaster.EvaluateRot(meshT) : Quaternion.Identity;
+                // If the mesh's own hierarchy already carries a master_* bone with the SAME
+                // orientation (it is kept at its rest bind), that orientation is already applied
+                // to Bip01 through the parent chain. Re-applying it here double-rotates the whole
+                // body (e.g. MondainSteed's Master_Equine holds a 120° coordinate rotation).
+                if (trMaster != null)
+                {
+                    var modelMaster = lm.Bones?.FirstOrDefault(b => !string.IsNullOrEmpty(b.Name) &&
+                        b.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase));
+                    if (modelMaster != null && SameOrientation(modelMaster.LocalRotation, rMaster))
+                        rMaster = Quaternion.Identity;
+                }
                 float animPosScale = ComputeAnimPosScaleFor(lm, anim, trackMap);
 
                 for (int i = 0; i < boneCount; i++)
@@ -12916,6 +12984,12 @@ namespace UoFiddler.Plugin.Granny3D
                                 delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
                             }
                             pos = b.LocalPosition + delta * animPosScale;
+
+                            // Same clip->mesh frame as the other bones: Pelvis is now taken from the
+                            // clip's absolute tracks, so Bip01 must use the same absolute values
+                            // (not bind + delta from key 0) or the two disagree and the legs slide.
+                            if (animPosScale == 1f && tr.Pos != null && tr.Pos.Length > 0)
+                                pos = Vector3.TransformVector(tr.EvaluatePos(meshT), Matrix4.CreateFromQuaternion(rMaster));
                         }
                         else if (isRoot)
                         {
@@ -12943,22 +13017,50 @@ namespace UoFiddler.Plugin.Granny3D
                                 {
                                     Vector3 trPos = tr.EvaluatePos(meshT);
                                     Vector3 restPos = tr.Pos[0];
-                                    delta = trPos - restPos;
-                                }
-                                pos = b.LocalPosition + delta * animPosScale;
-                            }
-                            rot = tr.EvaluateRot(meshT);
-                        }
+                                                        delta = trPos - restPos;
+                                                    }
+                                                    pos = b.LocalPosition + delta * animPosScale;
+                                                }
+                                                rot = tr.EvaluateRot(meshT);
+                                                                 }
 
-                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
-                    }
-                    else
-                    {
-                        var b = lm.Bones[i];
-                        lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(b.LocalRotation) * Matrix4.CreateTranslation(b.LocalPosition);
-                    }
+                                            // Re-parenting: in some clips (H_Male/H_Female) Pelvis is a sibling of Bip01 under
+                                            // master_*, while the mesh skeleton makes it Bip01's child. Tracks are authored in
+                                            // the clip hierarchy, so express the bone in the mesh parent's frame:
+                                            // local = world(clip) * inverse(world(clip of the mesh parent)).
+                                            if (!isDummyRoot && !b.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase)
+                                                && p >= 0 && p < boneCount && p != i && animPosScale == 1f
+                                                && anim.Skeleton != null && anim.SkeletonByName != null
+                                                && anim.SkeletonByName.TryGetValue(b.Name, out var clipBone)
+                                                && clipBone.ParentId >= 0 && clipBone.ParentId < anim.Skeleton.Count
+                                                && clipBone.ParentId != clipBone.Id)
+                                            {
+                                                string clipParentName = anim.Skeleton[clipBone.ParentId].Name;
+                                                string meshParentName = lm.Bones[p].Name;
+                                                if (!string.IsNullOrEmpty(clipParentName) && !string.IsNullOrEmpty(meshParentName)
+                                                    && !clipParentName.Equals(meshParentName, StringComparison.OrdinalIgnoreCase)
+                                                    && anim.TracksByName.ContainsKey(meshParentName))
+                                                {
+                                                    Matrix4 wBone = ClipWorldMatrix(anim, b.Name, meshT, 0);
+                                                    Matrix4 wParent = ClipWorldMatrix(anim, meshParentName, meshT, 0);
+                                                    if (Math.Abs(wParent.Determinant) > 1e-6f)
+                                                    {
+                                                        Matrix4 conv = wBone * Matrix4.Invert(wParent);
+                                                        pos = conv.Row3.Xyz;
+                                                        rot = conv.ExtractRotation();
+                                                    }
+                                                                             }
+                                                                         }
 
-                    // Pose studio layer. Two modes, both only affect the meshes chosen
+                                                    lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
+                                                }
+                                                else
+                                                {
+                                                    var b = lm.Bones[i];
+                                                    lm.LocalMatrices[i] = Matrix4.CreateFromQuaternion(b.LocalRotation) * Matrix4.CreateTranslation(b.LocalPosition);
+                                                }
+
+                                                // Pose studio layer. Two modes, both only affect the meshes chosen
                     // as pose targets (so a free imported equipment mesh you align
                     // against stays frozen):
                     //  * absolute (_poseAbsolute, from a loaded .pose): the stored local
@@ -13060,6 +13162,27 @@ namespace UoFiddler.Plugin.Granny3D
                     ComputeWorldMatrices(lm);
                 }
 
+                // Equipment attach transform (offset + mirror) on a full rig (own skeleton,
+                // not host-attached) must move the skeleton too, so the bone overlay / colliders
+                // / export follow the tweaked mesh. The mesh tweak skips both for these meshes.
+                bool rigMirror = lm.MirrorX || lm.MirrorY || lm.MirrorZ;
+                if ((lm.AttachOffset != Vector3.Zero || rigMirror) && IsOwnSkeletonRig(lm))
+                {
+                    Matrix4 rigTweak = Matrix4.CreateScale(
+                        lm.MirrorX ? -1f : 1f,
+                        lm.MirrorY ? -1f : 1f,
+                        lm.MirrorZ ? -1f : 1f)
+                        * Matrix4.CreateTranslation(lm.AttachOffset);
+                    for (int i = 0; i < boneCount; i++)
+                    {
+                        int p = lm.Bones[i].ParentId;
+                        bool isRoot = p < 0 || p >= boneCount || p == i;
+                        if (!isRoot) continue;
+                        lm.LocalMatrices[i] = lm.LocalMatrices[i] * rigTweak;
+                    }
+                    ComputeWorldMatrices(lm);
+                }
+
                 for (int i = 0; i < boneCount; i++)
                     lm.SkinMatrices[i] = lm.Bones[i].InverseBindMatrix * lm.WorldMatrices[i];
             }
@@ -13133,6 +13256,141 @@ namespace UoFiddler.Plugin.Granny3D
                 w[i] = (p >= 0 && p < n && p != i) ? loc[i] * w[p] : loc[i];
             }
             return w;
+        }
+
+        // Re-root a skeleton so its "Bip01" (or root deform bone) lands on the mesh, then
+        // recompute the inverse bind matrices. The target is a least-squares fit between each
+        // deform bone's bind position and the centroid of the vertices it drives, which is
+        // robust to armor/bounds skew (unlike a plain bounds center).
+        //
+        // Only correct a GENUINE mis-alignment: an aligned model still has a small (~0.6 unit)
+        // offset between its Bip01 and the mesh bounds center (the pelvis sits above/forward of
+        // the geometric center), so we gate on a much larger offset (e.g. MondainSteed's ~7
+        // units) and leave every normally-aligned model (Equines, Daemons, Humans...) untouched.
+        private static void NormalizeSkeletonToMesh(List<GrannyBone> bones, Vector3[] verts,
+            VertexInfluence[][] skin, out Vector3 rootDeltaLocal, out Vector3 meshCenter)
+        {
+            rootDeltaLocal = Vector3.Zero;
+            meshCenter = Vector3.Zero;
+            if (bones == null || bones.Count < 2 || verts == null || verts.Length == 0) return;
+
+            int rootIdx = -1;
+            for (int i = 0; i < bones.Count; i++)
+                if (bones[i].Name != null && bones[i].Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
+                { rootIdx = i; break; }
+            if (rootIdx < 0) return;
+
+            Matrix4[] world = ComputeBindWorld(bones);
+            Vector3 rootWorld = new Vector3(world[rootIdx].M41, world[rootIdx].M42, world[rootIdx].M43);
+
+            Vector3 mn = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            Vector3 mx = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            foreach (var v in verts)
+            {
+                if (v.X < mn.X) mn.X = v.X; if (v.Y < mn.Y) mn.Y = v.Y; if (v.Z < mn.Z) mn.Z = v.Z;
+                if (v.X > mx.X) mx.X = v.X; if (v.Y > mx.Y) mx.Y = v.Y; if (v.Z > mx.Z) mx.Z = v.Z;
+            }
+            Vector3 boundsCenter = (mn + mx) * 0.5f;
+
+            // Detection: only a large offset between the skeleton root and the mesh bounds
+            // center means the asset is mis-aligned. Aligned models sit within ~1 unit.
+            if ((boundsCenter - rootWorld).Length < 2.0f)
+                return;
+
+            // Best-fit translation (world space) from bone positions to their vertex centroids.
+            Vector3 translation = ComputeSkeletonTranslation(bones, verts, skin);
+            if (translation.Length < 2.0f)
+                translation = boundsCenter - rootWorld;
+
+            // Anchor for clip re-rooting = the world point the root will land on.
+            meshCenter = rootWorld + translation;
+
+            rootDeltaLocal = WorldToRootLocal(bones, rootIdx, translation);
+            if (rootDeltaLocal.Length < 0.5f) { rootDeltaLocal = Vector3.Zero; return; }
+
+            bones[rootIdx].LocalPosition += rootDeltaLocal;
+
+            world = ComputeBindWorld(bones);
+            for (int i = 0; i < bones.Count; i++)
+                bones[i].InverseBindMatrix = Matrix4.Invert(world[i]);
+        }
+
+        // Weighted least-squares translation: mean over every (vertex,bone) influence of
+        // (vertex position - bone bind world position), so the skeleton best fits the mesh.
+        private static Vector3 ComputeSkeletonTranslation(List<GrannyBone> bones, Vector3[] verts, VertexInfluence[][] skin)
+        {
+            if (skin == null) return Vector3.Zero;
+            Matrix4[] world = ComputeBindWorld(bones);
+            Vector3 sum = Vector3.Zero;
+            float tot = 0f;
+            int vc = Math.Min(verts.Length, skin.Length);
+            for (int v = 0; v < vc; v++)
+            {
+                var infs = skin[v];
+                if (infs == null || infs.Length == 0) continue;
+                for (int k = 0; k < infs.Length; k++)
+                {
+                    int bi = infs[k].BoneId;
+                    if (bi < 0 || bi >= bones.Count || infs[k].Weight <= 0f) continue;
+                    var bp = new Vector3(world[bi].M41, world[bi].M42, world[bi].M43);
+                    sum += (verts[v] - bp) * infs[k].Weight;
+                    tot += infs[k].Weight;
+                }
+            }
+            return tot > 0f ? sum / tot : Vector3.Zero;
+        }
+
+        // Convert a world-space translation into a bone's local frame (inverse parent rotation).
+        private static Vector3 WorldToRootLocal(List<GrannyBone> bones, int rootIdx, Vector3 deltaWorld)
+        {
+            Matrix4[] world = ComputeBindWorld(bones);
+            int parent = bones[rootIdx].ParentId;
+            if (parent >= 0 && parent < bones.Count && parent != rootIdx)
+            {
+                Quaternion parentRot = world[parent].ExtractRotation();
+                if (parentRot.LengthSquared > 0.0001f)
+                    return Vector3.Transform(deltaWorld, parentRot.Inverted());
+            }
+            return deltaWorld;
+        }
+
+        // Local-frame translation to move a bone's bind world position onto a target world point.
+        private static Vector3 ComputeRootLocalDelta(List<GrannyBone> bones, int rootIdx, Vector3 targetWorld)
+        {
+            Matrix4[] world = ComputeBindWorld(bones);
+            Vector3 rootWorld = new Vector3(world[rootIdx].M41, world[rootIdx].M42, world[rootIdx].M43);
+            Vector3 deltaWorld = targetWorld - rootWorld;
+            int parent = bones[rootIdx].ParentId;
+            if (parent >= 0 && parent < bones.Count && parent != rootIdx)
+            {
+                Quaternion parentRot = world[parent].ExtractRotation();
+                if (parentRot.LengthSquared > 0.0001f)
+                    deltaWorld = Vector3.Transform(deltaWorld, parentRot.Inverted());
+            }
+            return deltaWorld;
+        }
+
+        // Re-root a loaded clip to the current model's mesh anchor so its Bip01 track lines up
+        // with the (already re-rooted) model skeleton, preventing a bind-pose jump.
+        private void NormalizeClipToMeshCenter(GrannyAnimation anim)
+        {
+            if (anim == null || anim.Skeleton == null || !_hasModelMeshCenter) return;
+            int rootIdx = -1;
+            for (int i = 0; i < anim.Skeleton.Count; i++)
+                if (anim.Skeleton[i].Name != null && anim.Skeleton[i].Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase))
+                { rootIdx = i; break; }
+            if (rootIdx < 0) return;
+
+            Vector3 deltaLocal = ComputeRootLocalDelta(anim.Skeleton, rootIdx, _modelMeshCenter);
+            if (deltaLocal.Length < 0.5f) return;
+
+            foreach (var tr in anim.Tracks)
+            {
+                if (tr.Name != null && tr.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase) && tr.Pos != null)
+                    for (int k = 0; k < tr.Pos.Length; k++) tr.Pos[k] += deltaLocal;
+            }
+            anim.Skeleton[rootIdx].LocalPosition += deltaLocal;
+            Log($"  clip re-rooted to model anchor delta=({deltaLocal.X:F3},{deltaLocal.Y:F3},{deltaLocal.Z:F3})");
         }
 
         // A character model may contain small unskinned meshes authored in bind space
@@ -13225,6 +13483,15 @@ namespace UoFiddler.Plugin.Granny3D
                 ComputeWorld(root);
         }
 
+        // A full rig mesh (skinned to its OWN skeleton, not attached to a host bone).
+        private static bool IsOwnSkeletonRig(LoadedMesh lm)
+        {
+            return lm != null && lm.Bones != null && lm.Bones.Count >= 2 &&
+                   lm.Skin != null && lm.Skin.Length > 0 &&
+                   string.IsNullOrEmpty(lm.AttachBoneName) &&
+                   lm.WrapSource == null && !lm.HasAttachMatrix;
+        }
+
         // Mirror + rotation + offset applied to an attached item in its own space.
         private static Matrix4 BuildAttachTweak(LoadedMesh lm)
         {
@@ -13300,8 +13567,16 @@ namespace UoFiddler.Plugin.Granny3D
             bool scaleTweaked = pscale.X != 1f || pscale.Y != 1f || pscale.Z != 1f;
 
             bool hasRot = lm.AttachRotation != Vector3.Zero;
-            bool hasMirror = lm.MirrorX || lm.MirrorY || lm.MirrorZ;
-            bool hasOffset = lm.AttachOffset != Vector3.Zero;
+            // For a full rig the offset AND the mirror are applied to the skeleton root
+            // (PoseSkeletons) so the bones follow the mesh; applying them again here would
+            // double-shift / double-mirror the mesh.
+            bool rigSkip = IsOwnSkeletonRig(lm);
+            bool mirrorX = lm.MirrorX && !rigSkip;
+            bool mirrorY = lm.MirrorY && !rigSkip;
+            bool mirrorZ = lm.MirrorZ && !rigSkip;
+            bool hasMirror = mirrorX || mirrorY || mirrorZ;
+            Vector3 attachOffset = rigSkip ? Vector3.Zero : lm.AttachOffset;
+            bool hasOffset = attachOffset != Vector3.Zero;
             bool thick = hasThickness && lm.Thickness != 0f && normal != default;
 
             if (!scaleTweaked && !hasRot && !hasMirror && !hasOffset && !thick && !lm.MirrorArms)
@@ -13355,9 +13630,9 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 // 2. Secondary axis mirrors (Y/Z) if requested
-                if (lm.MirrorY || lm.MirrorZ)
+                if (mirrorY || mirrorZ)
                 {
-                    r = new Vector3(r.X, r.Y * (lm.MirrorY ? -1f : 1f), r.Z * (lm.MirrorZ ? -1f : 1f));
+                    r = new Vector3(r.X, r.Y * (mirrorY ? -1f : 1f), r.Z * (mirrorZ ? -1f : 1f));
                 }
 
                 // 3. Rotation:
@@ -13387,8 +13662,8 @@ namespace UoFiddler.Plugin.Granny3D
                 // Positive AttachOffset.X pushes both arms OUTWARD away from sagittal midline.
                 // Negative AttachOffset.X pulls both arms INWARD towards sagittal midline.
                 Vector3 armOff = isLeft
-                    ? new Vector3(lm.AttachOffset.X, lm.AttachOffset.Y, lm.AttachOffset.Z)
-                    : new Vector3(-lm.AttachOffset.X, lm.AttachOffset.Y, lm.AttachOffset.Z);
+                    ? new Vector3(attachOffset.X, attachOffset.Y, attachOffset.Z)
+                    : new Vector3(-attachOffset.X, attachOffset.Y, attachOffset.Z);
 
                 pos = armPivot + r + armOff;
 
@@ -13449,9 +13724,9 @@ namespace UoFiddler.Plugin.Granny3D
                 if (hasMirror)
                 {
                     rRot = new Vector3(
-                        rRot.X * (lm.MirrorX ? -1f : 1f),
-                        rRot.Y * (lm.MirrorY ? -1f : 1f),
-                        rRot.Z * (lm.MirrorZ ? -1f : 1f));
+                        rRot.X * (mirrorX ? -1f : 1f),
+                        rRot.Y * (mirrorY ? -1f : 1f),
+                        rRot.Z * (mirrorZ ? -1f : 1f));
                 }
 
                 if (hasRot)
@@ -13475,8 +13750,8 @@ namespace UoFiddler.Plugin.Granny3D
                 }
 
                 Vector3 effOffset = lm.MirrorX
-                    ? new Vector3(-lm.AttachOffset.X, lm.AttachOffset.Y, lm.AttachOffset.Z)
-                    : lm.AttachOffset;
+                    ? new Vector3(-attachOffset.X, attachOffset.Y, attachOffset.Z)
+                    : attachOffset;
 
                 pos = effPivot + rRot + effOffset;
             }
