@@ -4985,7 +4985,7 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (var part in parts)
             {
                 string p = Path.Combine(folder, part.file);
-                if (File.Exists(p)) total += LoadPartMeshes(p, part.slot);
+                if (File.Exists(p)) total += LoadPartMeshes(p, part.slot, string.Equals(part.slot, "face", StringComparison.OrdinalIgnoreCase));
                 else Log($"AssembleHumanBody: missing {part.file}");
             }
             Log($"AssembleHumanBody female={female} meshes=+{total} meshes={_loadedMeshes.Count}");
@@ -4994,7 +4994,7 @@ namespace UoFiddler.Plugin.Granny3D
 
         // Append every mesh of a part file, tagging it with its character slot. No
         // refresh here (callers batch it): load many parts then refresh once.
-        private int LoadPartMeshes(string path, string slot)
+        private int LoadPartMeshes(string path, string slot, bool retargetToSkin = false)
         {
             var parser = new GrannyFormatParser();
             if (!parser.Load(path)) { Log($"LoadPart parse failed: {path}"); return 0; }
@@ -5015,9 +5015,21 @@ namespace UoFiddler.Plugin.Granny3D
                 };
                 BuildCornerData(lm);
                 SetupMeshVBO(lm);
-                lm.SkinTexName = IsBodySkinTexture(parser.TextureName) ? parser.TextureName : null;
-                string texName = (lm.SkinTexName != null && !string.IsNullOrEmpty(_skinOverride)) ? _skinOverride : parser.TextureName;
-                lm.TextureId = TryLoadTexture(path, texName, out lm.TextureFilePath);
+                // Face parts are loaded two ways: "global skin" (retargetToSkin) makes the face
+                // follow the selected body skin (whose texture already contains a face), while a
+                // specifically-picked Face_XX keeps its _Faces_V2 texture + UV offsets.
+                if (retargetToSkin && string.Equals(slot, "face", StringComparison.OrdinalIgnoreCase))
+                {
+                    lm.SkinTexName = parser.TextureName;
+                    string texName = !string.IsNullOrEmpty(_skinOverride) ? _skinOverride : parser.TextureName;
+                    lm.TextureId = TryLoadTexture(path, texName, out lm.TextureFilePath);
+                }
+                else
+                {
+                    lm.SkinTexName = IsBodySkinTexture(parser.TextureName) ? parser.TextureName : null;
+                    string texName = (lm.SkinTexName != null && !string.IsNullOrEmpty(_skinOverride)) ? _skinOverride : parser.TextureName;
+                    lm.TextureId = TryLoadTexture(path, texName, out lm.TextureFilePath);
+                }
                 lm.HasTexture = lm.TextureId > 0;
                 lm.BaseTextureId = lm.TextureId;
                 lm.BaseMeshColor = lm.MeshColor;
@@ -5052,6 +5064,33 @@ namespace UoFiddler.Plugin.Granny3D
             AfterCharacterChange();
         }
 
+        // Remove every mesh of a slot (no replacement), e.g. "(default)" face = no face overlay.
+        private void ClearCharacterPart(string slot)
+        {
+            if (string.IsNullOrEmpty(slot)) return;
+            if (!_glReady || glControl == null || !glControl.IsHandleCreated) return;
+            glControl.MakeCurrent();
+
+            bool removed = false;
+            for (int i = _loadedMeshes.Count - 1; i >= 0; i--)
+            {
+                if (string.Equals(_loadedMeshes[i].CharSlot, slot, StringComparison.OrdinalIgnoreCase))
+                {
+                    var dead = _loadedMeshes[i];
+                    DestroyMesh(dead);
+                    _loadedMeshes.RemoveAt(i);
+                    for (int k = 0; k < _loadedMeshes.Count; k++)
+                        if (_loadedMeshes[k].WrapSource == dead) { _loadedMeshes[k].WrapSource = null; _loadedMeshes[k].WrapSkin = null; }
+                    removed = true;
+                }
+            }
+            if (removed)
+            {
+                Log($"ClearCharacterPart {slot}");
+                AfterCharacterChange();
+            }
+        }
+
         // Rebuild derived state (bounds, animation binding, pose) after a part change.
         private void AfterCharacterChange()
         {
@@ -5061,12 +5100,11 @@ namespace UoFiddler.Plugin.Granny3D
             if (_currentAnimation != null)
             {
                 EnsureAnimationBindings(_currentAnimation);
-                ApplyAnimationPose(_currentTime);
             }
-            else
-            {
-                RefreshVertexBuffers(true);
-            }
+            // Always re-pose: in T-pose a newly-selected part (face/beard) has no skin
+            // matrices yet, so PoseSkeletons must run to bind it. Otherwise it is treated as
+            // static and skipped by the BufferUpToDate fast-path, leaving it invisible.
+            ApplyAnimationPose(_currentTime);
             UpdateModelInfo();
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
@@ -5093,6 +5131,9 @@ namespace UoFiddler.Plugin.Granny3D
                 bool male = _charGender == 1;
                 string prefix = male ? "H_Male_" : "H_Female_";
                 string eprefix = male ? "E_Male_" : "E_Female_";
+
+                // "(default)" face = the face mesh bound to the skin texture (which embeds the face).
+                cbCharFace.Items.Add(new PartItem { Display = Localization.Tr("face_default", "Peau globale (visage de la peau)"), Path = null });
 
                 var files = new List<string>();
                 try
@@ -5161,7 +5202,14 @@ namespace UoFiddler.Plugin.Granny3D
             foreach (var lm in _loadedMeshes)
                 if (string.Equals(lm.CharSlot, slot, StringComparison.OrdinalIgnoreCase)) { path = lm.SourcePath; break; }
 
-            if (path == null) { cb.SelectedIndex = -1; return; }
+            if (path == null)
+            {
+                // No part loaded: select the "(default)" entry (Path == null) if present.
+                for (int i = 0; i < cb.Items.Count; i++)
+                    if (cb.Items[i] is PartItem pi && string.IsNullOrEmpty(pi.Path)) { cb.SelectedIndex = i; return; }
+                cb.SelectedIndex = -1;
+                return;
+            }
             for (int i = 0; i < cb.Items.Count; i++)
                 if (cb.Items[i] is PartItem pi && string.Equals(pi.Path, path, StringComparison.OrdinalIgnoreCase))
                 { cb.SelectedIndex = i; return; }
@@ -5181,6 +5229,12 @@ namespace UoFiddler.Plugin.Granny3D
                         : cb == cbCharBeard ? "beard"
                         : cb == cbCharTorso ? "torso" : null;
             if (slot == null) return;
+
+            if (string.IsNullOrEmpty(item.Path))
+            {
+                ClearCharacterPart(slot);
+                return;
+            }
             SetCharacterPart(slot, item.Path);
         }
 
@@ -11709,6 +11763,11 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (bmp == null) return -1;
 
+                // If the diffuse carries no cutout alpha (fully opaque), borrow it from the
+                // normal map (_M) when present — e.g. "Savage Male" has an opaque diffuse but
+                // its _M holds the carve mask. Otherwise overlapping body parts show through.
+                BakeCutoutAlpha(bmp, file);
+
                 using (bmp)
                 {
                     var bmpData = bmp.LockBits(
@@ -11747,6 +11806,82 @@ namespace UoFiddler.Plugin.Granny3D
                     sb.Append(c);
             }
             return sb.ToString();
+        }
+
+        // If the diffuse has no cutout alpha (fully opaque), borrow the carve mask from the
+        // base "V2" skin of the same gender. The cutout is a property of the BODY shape, not
+        // the skin, so every skin of a gender shares the same mask. Skins like "Savage Male"
+        // ship an opaque diffuse (the mask only lives in their _M specular map, which is not
+        // the cutout), so without this the overlapping body parts show through as a gray wash.
+        private static void BakeCutoutAlpha(Bitmap diffuse, string diffuseFile)
+        {
+            if (diffuse == null || string.IsNullOrEmpty(diffuseFile)) return;
+
+            string name = Path.GetFileNameWithoutExtension(diffuseFile);
+            bool female = name.IndexOf("Female", StringComparison.OrdinalIgnoreCase) >= 0;
+            string baseName = female ? "UT256_H_Female_V2" : "UT256_H_Male_V2";
+            string dir = Path.GetDirectoryName(diffuseFile);
+            string cutoutFile = null;
+            foreach (var ext in new[] { ".tga", ".png", ".dds" })
+            {
+                string p = Path.Combine(dir, baseName + ext);
+                if (File.Exists(p)) { cutoutFile = p; break; }
+            }
+            if (cutoutFile == null || string.Equals(cutoutFile, diffuseFile, StringComparison.OrdinalIgnoreCase)) return;
+
+            Bitmap cutout = null;
+            try
+            {
+                cutout = Path.GetExtension(cutoutFile).Equals(".tga", StringComparison.OrdinalIgnoreCase)
+                    ? LoadTga(cutoutFile)
+                    : new Bitmap(cutoutFile);
+            }
+            catch { }
+            if (cutout == null) return;
+
+            try
+            {
+                var dRect = new Rectangle(0, 0, diffuse.Width, diffuse.Height);
+                var dBits = diffuse.LockBits(dRect, ImageLockMode.ReadWrite, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                try
+                {
+                    bool fullyOpaque = true;
+                    unsafe
+                    {
+                        byte* d = (byte*)dBits.Scan0;
+                        for (int y = 0; y < diffuse.Height && fullyOpaque; y++)
+                        {
+                            byte* row = d + (long)y * dBits.Stride;
+                            for (int x = 0; x < diffuse.Width; x++)
+                                if (row[x * 4 + 3] != 255) { fullyOpaque = false; break; }
+                        }
+                    }
+                    if (!fullyOpaque) return;
+
+                    var cRect = new Rectangle(0, 0, cutout.Width, cutout.Height);
+                    var cBits = cutout.LockBits(cRect, ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    try
+                    {
+                        int w = Math.Min(diffuse.Width, cutout.Width);
+                        int h = Math.Min(diffuse.Height, cutout.Height);
+                        unsafe
+                        {
+                            byte* d = (byte*)dBits.Scan0;
+                            byte* c = (byte*)cBits.Scan0;
+                            for (int y = 0; y < h; y++)
+                            {
+                                byte* drow = d + (long)y * dBits.Stride;
+                                byte* crow = c + (long)y * cBits.Stride;
+                                for (int x = 0; x < w; x++)
+                                    drow[x * 4 + 3] = crow[x * 4 + 3];
+                            }
+                        }
+                    }
+                    finally { cutout.UnlockBits(cBits); }
+                }
+                finally { diffuse.UnlockBits(dBits); }
+            }
+            finally { cutout.Dispose(); }
         }
 
         public static Bitmap? LoadImageBitmap(string file)
