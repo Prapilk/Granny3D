@@ -1,1 +1,0 @@
-GrannyViewer.exe xml/SMD_Lord_British.xml

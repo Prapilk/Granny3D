@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Ultima/Ultima.csproj" />
+  <Project Path="UoFiddler.Controls/UoFiddler.Controls.csproj" />
+  <Project Path="UoFiddler.Plugin.Granny3D/UoFiddler.Plugin.Granny3D.csproj" />
+</Solution>

@@ -1,3 +1,0 @@
-namespace TestGrannyParser {
-    class RunTest {}
-}

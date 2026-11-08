@@ -1,1 +1,0 @@
-GrannyViewer.exe xml/SMD_Skeleton.xml

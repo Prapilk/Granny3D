@@ -12,24 +12,42 @@
 
 	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
 		<DebugType>portable</DebugType>
-		<OutputPath>..\UoFiddler\bin\$(Configuration)\plugins\</OutputPath>
+		<OutputPath Condition="Exists('..\UoFiddler\bin\')">..\UoFiddler\bin\$(Configuration)\plugins\</OutputPath>
+		<OutputPath Condition="!Exists('..\UoFiddler\bin\')">bin\$(Configuration)\</OutputPath>
 	</PropertyGroup>
 	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
 		<DebugType>none</DebugType>
-		<OutputPath>..\UoFiddler\bin\$(Configuration)\plugins\</OutputPath>
+		<OutputPath Condition="Exists('..\UoFiddler\bin\')">..\UoFiddler\bin\$(Configuration)\plugins\</OutputPath>
+		<OutputPath Condition="!Exists('..\UoFiddler\bin\')">bin\$(Configuration)\</OutputPath>
 		<GenerateSerializationAssemblies>Off</GenerateSerializationAssemblies>
 	</PropertyGroup>
 
-	<ItemGroup>
-		<ProjectReference Include="..\Ultima\Ultima.csproj">
-			<Private>false</Private>
-			<ExcludeAssets>runtime</ExcludeAssets>
-		</ProjectReference>
-		<ProjectReference Include="..\UoFiddler.Controls\UoFiddler.Controls.csproj">
-			<Private>false</Private>
-			<ExcludeAssets>runtime</ExcludeAssets>
-		</ProjectReference>
-	</ItemGroup>
+	<Choose>
+		<When Condition="Exists('..\Ultima\Ultima.csproj') and Exists('..\UoFiddler.Controls\UoFiddler.Controls.csproj')">
+			<ItemGroup>
+				<ProjectReference Include="..\Ultima\Ultima.csproj">
+					<Private>false</Private>
+					<ExcludeAssets>runtime</ExcludeAssets>
+				</ProjectReference>
+				<ProjectReference Include="..\UoFiddler.Controls\UoFiddler.Controls.csproj">
+					<Private>false</Private>
+					<ExcludeAssets>runtime</ExcludeAssets>
+				</ProjectReference>
+			</ItemGroup>
+		</When>
+		<Otherwise>
+			<ItemGroup>
+				<Reference Include="Ultima">
+					<HintPath>$(MSBuildThisFileDirectory)..\libs\Ultima.dll</HintPath>
+					<Private>false</Private>
+				</Reference>
+				<Reference Include="Controls">
+					<HintPath>$(MSBuildThisFileDirectory)..\libs\Controls.dll</HintPath>
+					<Private>false</Private>
+				</Reference>
+			</ItemGroup>
+		</Otherwise>
+	</Choose>
 
 	<ItemGroup>
 		<PackageReference Include="OpenTK" Version="4.8.2" />

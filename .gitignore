@@ -1,21 +1,62 @@
-# Visual Studio / build output
+# Visual Studio / Build output
 .vs/
 [Bb]in/
 [Oo]bj/
 *.user
 *.suo
+*.userosscache
+*.sln.docstates
 
-# Python cache
+# Python cache & test scripts
 __pycache__/
+*.py
+*.pyc
 
-# Logs & dumps (very large)
+# Local scratch & test files
+scratch/
+test.cs
+check_types.ps1
+smd_*.bat
+*.TMP
+*.tmp
+*.bak
 *.log
 debug.txt
 Granny3D_plugin.log
 
-# Vendored / data directories
+# Test & legacy project folders
+BoundsTest/
+TestGrannyParser/
+maxscript/
+xml/
+Models/
 VD/
+*.char
+*.glb
+*.grn
+*.smd
+SKINMAP-FIX.md
+Readme.txt
+
+# Standalone legacy binaries
+GrannyViewer.exe
+MFC71.DLL
+MSVCP71.DLL
+SDL.dll
+SDL_image.dll
+glut32.dll
+jpeg.dll
+libpng1.dll
+msvcr71.dll
+zlib.dll
+TestPlugin.dll
+
+# External UOFiddler directories
 UOFiddler-master/
-/UoFiddler.Controls/UserControls
 /Ultima
 /UoFiddler.Controls
+/UoFiddler
+
+# Allow libs/ reference assemblies
+!/libs/
+!/libs/*.dll

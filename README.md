@@ -77,25 +77,47 @@ Designed for Ultima Online shard creators, artists, and modders to inspect, asse
 
 ---
 
-## 🚀 Installation
+## 🚀 Installation & Utilisation
 
-1. Compile the project in **Release** mode (`net10.0-windows`):
-   ```bash
-   dotnet build UoFiddler.Plugin.Granny3D\UoFiddler.Plugin.Granny3D.csproj -c Release
-   ```
-2. Copy the contents of:
-   ```
-   UoFiddler\bin\Release\plugins\
-   ```
-   into the `plugins\` folder of your **UOFiddler** directory.
-   
-   *(The plugin is completely autonomous: managed assemblies, native libraries `assimp.dll`, `glfw3.dll`, and `runtimes/` are self-contained inside `plugins/`).*
+### Option A : Installation Rapide pour les Joueurs (Recommandé) 🛡️
 
-3. Launch **UOFiddler**, open the menu:
+Les versions officielles sont **compilées automatiquement par GitHub Actions** directement depuis le code source public : vous avez ainsi la certitude d'obtenir des fichiers 100% sains, vérifiables et sans risque de virus.
+
+1. Rendez-vous sur la page des **[Releases GitHub](https://github.com/Prapilk/Granny3D/releases)**.
+2. Téléchargez la dernière archive : `UoFiddler.Plugin.Granny3D-vX.X.X.zip`.
+3. Décompressez le contenu de l'archive directement dans le dossier `plugins/` de votre installation d'**UOFiddler**.
+   > *Note : Tous les fichiers nécessaires (`UoFiddler.Plugin.Granny3D.dll`, `Languages/`, `runtimes/`, `assimp.dll`, `glfw3.dll`, OpenTK) sont inclus dans le zip.*
+4. Lancez **UOFiddler**, allez dans le menu :
    ```
    Plugins ➔ Gérer les plugins (Manage Plugins)
    ```
-   Check **Granny 3D Viewer**. The **"3D Viewer (.grn)"** tab will appear!
+5. Cochez **Granny 3D Viewer**. L'onglet **"3D Viewer (.grn)"** apparaîtra instantanément !
+
+---
+
+### Option B : Compilation depuis les sources (Pour les Développeurs) 🛠️
+
+Le dépôt est entièrement autonome et peut être compilé en une seule commande ou directement dans Visual Studio :
+
+1. **Cloner le dépôt** :
+   ```bash
+   git clone https://github.com/Prapilk/Granny3D.git
+   cd Granny3D
+   ```
+2. **Compiler le projet** :
+   * **En ligne de commande** :
+     ```bash
+     dotnet build UoFiddler.Plugin.Granny3D.sln -c Release
+     ```
+   * **Dans Visual Studio** :
+     Ouvrez `UoFiddler.Plugin.Granny3D.sln` et lancez **Générer la solution** en configuration `Release`.
+3. Récupérez les fichiers compilés dans `UoFiddler.Plugin.Granny3D/bin/Release/` (ou directement dans votre dossier UoFiddler si le projet est placé à côté) et copiez-les dans le dossier `plugins/` d'UOFiddler.
+
+---
+
+## 🔒 Sécurité et Transparence
+- **Zéro binaire tiers opaque dans le code source** : Seul le code source C# et les traductions sont versionnés.
+- **Compilation automatisée et publique (CI/CD)** : Les releases sont générées sur les serveurs sécurisés de GitHub à chaque nouvelle version. L'historique et les logs de compilation de chaque release sont publics et consultables dans l'onglet **Actions**.
 
 ---
 
