@@ -144,6 +144,7 @@ namespace UoFiddler.Plugin.Granny3D
         // distance constraints, and is pushed out of body bone capsules. This makes
         // the legs push the cloth instead of passing through it, looping with any anim.
         public bool IsCloth;
+        public bool RigidArmor;   // rigid armor: skinned, then projected out of body bone capsules (no verlet)
         public Vector3[] ClothPos;
         public Vector3[] ClothPrev;
         public bool[] ClothPin;
@@ -546,7 +547,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Button btnForceBase;
         private Label lblWrapInfo;
         private bool _wrapPreviewBusy;
-        private CheckBox chkCloth, chkShowColliders, chkShowBones, chkClothHeatmap;
+        private CheckBox chkCloth, chkRigidArmor, chkShowColliders, chkShowBones, chkClothHeatmap;
         private NumericUpDown nudClothClearance;
         private bool _showColliders, _showBones, _showClothHeatmap;
         private float _clothClearance = 0.008f; // 0.8 cm collision margin by default
@@ -1645,6 +1646,10 @@ namespace UoFiddler.Plugin.Granny3D
             chkCloth = new CheckBox { Text = "Tissu (simulation)", Location = new Point(8, 284), Width = 135, ForeColor = Color.Gainsboro };
             chkCloth.CheckedChanged += (s, e) => { if (!_suppressEquip) SetClothSelected(chkCloth.Checked); };
             grpEquip.Controls.Add(chkCloth);
+
+            chkRigidArmor = new CheckBox { Text = "Armure rigide (collision)", Location = new Point(148, 284), Width = 165, ForeColor = Color.LightCoral };
+            chkRigidArmor.CheckedChanged += (s, e) => { if (!_suppressEquip) SetRigidArmorSelected(chkRigidArmor.Checked); };
+            grpEquip.Controls.Add(chkRigidArmor);
 
             grpEquip.Controls.Add(new Label { Text = "Grav.", Location = new Point(148, 286), Width = 34, ForeColor = Color.Gray });
             nudClothGrav = MakeNud(182, 281, 0m, 30m, 0.5m, 2);
@@ -2851,6 +2856,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (grpChar != null) grpChar.Text = Localization.Tr("grp_char", "Personnage (multipartie)");
             if (grpEquip != null) grpEquip.Text = Localization.Tr("grp_equip_adjust", "Ajustements & Retouches");
             if (chkCloth != null) chkCloth.Text = Localization.Tr("chk_cloth_sim", "Tissu (simulation)");
+            if (chkRigidArmor != null) chkRigidArmor.Text = Localization.Tr("chk_rigid_armor", "Armure rigide (collision)");
             if (chkShowColliders != null) chkShowColliders.Text = Localization.Tr("chk_colliders", "Colliders");
             if (chkShowBones != null) chkShowBones.Text = Localization.Tr("chk_skeleton", "Squelette");
             if (chkClothHeatmap != null) chkClothHeatmap.Text = Localization.Tr("chk_cloth_zones", "Zones Tissu");
@@ -4597,7 +4603,7 @@ namespace UoFiddler.Plugin.Granny3D
                         for (int i = addedStart; i < _loadedMeshes.Count; i++)
                         {
                             var am = _loadedMeshes[i];
-                            if (am == null || am.BaseVertices == null) continue;
+                            if (am == null || am.BaseVertices == null || (am.Skin != null && am.Skin.Length > 0)) continue;
                             for (int v = 0; v < am.BaseVertices.Length; v++)
                             {
                                 var pv = am.BaseVertices[v];
@@ -4617,7 +4623,7 @@ namespace UoFiddler.Plugin.Granny3D
                                 for (int i = addedStart; i < _loadedMeshes.Count; i++)
                                 {
                                     var am = _loadedMeshes[i];
-                                    if (am == null || am.BaseVertices == null) continue;
+                                    if (am == null || am.BaseVertices == null || (am.Skin != null && am.Skin.Length > 0)) continue;
                                     for (int v = 0; v < am.BaseVertices.Length; v++)
                                         am.BaseVertices[v] += offset;
                                     am.BufferUpToDate = false;
@@ -4809,7 +4815,7 @@ namespace UoFiddler.Plugin.Granny3D
                     for (int i = addedStart2; i < _loadedMeshes.Count; i++)
                     {
                         var am = _loadedMeshes[i];
-                        if (am == null || am.BaseVertices == null) continue;
+                        if (am == null || am.BaseVertices == null || (am.Skin != null && am.Skin.Length > 0)) continue;
                         for (int v = 0; v < am.BaseVertices.Length; v++)
                         {
                             var pv = am.BaseVertices[v];
@@ -4829,7 +4835,7 @@ namespace UoFiddler.Plugin.Granny3D
                             for (int i = addedStart2; i < _loadedMeshes.Count; i++)
                             {
                                 var am = _loadedMeshes[i];
-                                if (am == null || am.BaseVertices == null) continue;
+                                if (am == null || am.BaseVertices == null || (am.Skin != null && am.Skin.Length > 0)) continue;
                                 for (int v = 0; v < am.BaseVertices.Length; v++)
                                     am.BaseVertices[v] += offset;
                                 am.BufferUpToDate = false;
@@ -5198,6 +5204,19 @@ namespace UoFiddler.Plugin.Granny3D
         private void PreselectSlot(ComboBox cb, string slot)
         {
             if (cb == null) return;
+
+            // Face slot: a "global skin" face is bound to the body skin (SkinTexName set), so
+            // select the "(default)" entry rather than a specific Face_XX.
+            if (string.Equals(slot, "face", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var lm in _loadedMeshes)
+                    if (string.Equals(lm.CharSlot, "face", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(lm.SkinTexName))
+                    {
+                        for (int i = 0; i < cb.Items.Count; i++)
+                            if (cb.Items[i] is PartItem pi && string.IsNullOrEmpty(pi.Path)) { cb.SelectedIndex = i; return; }
+                    }
+            }
+
             string path = null;
             foreach (var lm in _loadedMeshes)
                 if (string.Equals(lm.CharSlot, slot, StringComparison.OrdinalIgnoreCase)) { path = lm.SourcePath; break; }
@@ -5232,10 +5251,43 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (string.IsNullOrEmpty(item.Path))
             {
+                if (slot == "face")
+                {
+                    SetDefaultFace();
+                    return;
+                }
                 ClearCharacterPart(slot);
                 return;
             }
             SetCharacterPart(slot, item.Path);
+        }
+
+        // "(default)" face: keep the face mesh but bind it to the body skin texture (whose
+        // texture already embeds a face), instead of the _Faces_V2 grid with UV offsets.
+        private void SetDefaultFace()
+        {
+            if (!_glReady || glControl == null || !glControl.IsHandleCreated) return;
+            glControl.MakeCurrent();
+
+            for (int i = _loadedMeshes.Count - 1; i >= 0; i--)
+            {
+                if (string.Equals(_loadedMeshes[i].CharSlot, "face", StringComparison.OrdinalIgnoreCase))
+                {
+                    var dead = _loadedMeshes[i];
+                    DestroyMesh(dead);
+                    _loadedMeshes.RemoveAt(i);
+                    for (int k = 0; k < _loadedMeshes.Count; k++)
+                        if (_loadedMeshes[k].WrapSource == dead) { _loadedMeshes[k].WrapSource = null; _loadedMeshes[k].WrapSkin = null; }
+                }
+            }
+
+            string folder = Path.Combine(BasePath, "Others");
+            string faceFile = (_charGender == 2 ? "H_Female_" : "H_Male_") + "Face_01_V2_LOD2.grn";
+            string p = Path.Combine(folder, faceFile);
+            if (File.Exists(p)) LoadPartMeshes(p, "face", true);
+
+            Log("SetDefaultFace (skin face)");
+            AfterCharacterChange();
         }
 
         private void UpdateCharInfo()
@@ -8535,6 +8587,7 @@ namespace UoFiddler.Plugin.Granny3D
                 if (nudScaleZ != null) SetNud(nudScaleZ, ok ? lm.PartScaleVec.Z : 1f);
                 if (nudThickness != null) SetNud(nudThickness, ok ? lm.Thickness : 0f);
                 if (chkCloth != null) chkCloth.Checked = ok && lm.IsCloth;
+                if (chkRigidArmor != null) chkRigidArmor.Checked = ok && lm.RigidArmor;
                 if (nudClothGrav != null) SetNud(nudClothGrav, ok ? lm.ClothGravity : 9.8f);
                 if (cmbCutoutRole != null)
                 {
@@ -14402,6 +14455,37 @@ namespace UoFiddler.Plugin.Granny3D
             return ApplyMeshTweak(lm, skinnedPos, thick, dnorm);
         }
 
+        private void SetRigidArmorSelected(bool on)
+        {
+            var idxs = GetSelectedMeshIndices();
+            int i = idxs.Count > 0 ? idxs[0] : -1;
+            if (i < 0 || i >= _loadedMeshes.Count)
+            {
+                if (on) Log("Armure rigide : aucun mesh sélectionné.");
+                return;
+            }
+            var lm = _loadedMeshes[i];
+            lm.RigidArmor = on;
+            if (on)
+            {
+                // Mutually exclusive with cloth: a rigid piece must not be verlet-simulated.
+                if (lm.IsCloth)
+                {
+                    lm.IsCloth = false;
+                    ClearClothBake(lm);
+                }
+                if (chkCloth != null) { _suppressEquip = true; chkCloth.Checked = false; _suppressEquip = false; }
+                // If there is no own/attached skeleton, rigid collision needs a host body to project against.
+                Log($"Armure rigide : '{lm.Name}' activé (projection hors capsules du corps).");
+            }
+            else
+            {
+                Log($"Armure rigide : '{lm.Name}' désactivé.");
+            }
+            ApplyAnimationPose(_currentTime);
+            if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+        }
+
         private void SetClothSelected(bool on)
         {
             var idxs = GetSelectedMeshIndices();
@@ -14415,6 +14499,12 @@ namespace UoFiddler.Plugin.Granny3D
             lm.IsCloth = on;
             if (on)
             {
+                // Mutually exclusive with rigid armor.
+                if (lm.RigidArmor)
+                {
+                    lm.RigidArmor = false;
+                    if (chkRigidArmor != null) { _suppressEquip = true; chkRigidArmor.Checked = false; _suppressEquip = false; }
+                }
                 ClearClothBake(lm); // rebuild -> (re)bake needed
 
                 // Absorb Repousser / Rétrécir clearance directly into BaseVertices so the relaxed
@@ -15379,6 +15469,52 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        // Rigid armor: the mesh keeps its skinned deformation, but every vertex inside a
+        // body bone capsule is projected radially out to the capsule surface. No verlet,
+        // no gravity -> the piece stays hard and the arm simply pushes it outward instead
+        // of poking through or stretching it.
+        private void ProjectRigidArmorOutOfCapsules(LoadedMesh lm)
+        {
+            if (lm == null || lm.DeformedCache == null) return;
+            var caps = BuildBodyCapsules(lm);
+            if (caps == null || caps.Count == 0) return;
+
+            var pos = lm.DeformedCache;
+            Parallel.For(0, pos.Length, v =>
+            {
+                Vector3 p = pos[v];
+                if (float.IsNaN(p.X) || float.IsInfinity(p.X)) return;
+
+                for (int c = 0; c < caps.Count; c++)
+                {
+                    Vector3 ab = caps[c].B - caps[c].A;
+                    float abLen2 = ab.LengthSquared;
+                    if (abLen2 < 1e-8f) continue;
+                    float t = Math.Clamp(Vector3.Dot(p - caps[c].A, ab) / abLen2, 0f, 1f);
+                    Vector3 closest = caps[c].A + ab * t;
+                    Vector3 d = p - closest;
+                    float r = caps[c].RA + (caps[c].RB - caps[c].RA) * t;
+
+                    float sx = caps[c].ScaleX > 0.1f ? caps[c].ScaleX : 1f;
+                    float sy = caps[c].ScaleY > 0.1f ? caps[c].ScaleY : 1f;
+                    float dxNorm = d.X / sx;
+                    float dyNorm = d.Y / sy;
+                    float distNorm = (float)Math.Sqrt(dxNorm * dxNorm + dyNorm * dyNorm + d.Z * d.Z);
+
+                    if (distNorm < r)
+                    {
+                        Vector3 pushDir = distNorm > 1e-4f
+                            ? new Vector3((dxNorm / distNorm) * sx, (dyNorm / distNorm) * sy, d.Z / distNorm)
+                            : new Vector3(0f, sy, 0f);
+                        p = closest + pushDir * r;
+                    }
+                }
+
+                if (float.IsNaN(p.X) || float.IsInfinity(p.X)) return;
+                pos[v] = p;
+            });
+        }
+
         // Bake the cloth solver ONCE over the whole animation: pose + collision at
         // every frame, two full cycles (the driven system settles into a periodic
         // state), keep the second cycle. Playback then just interpolates the cache,
@@ -15708,9 +15844,10 @@ namespace UoFiddler.Plugin.Granny3D
                 bool skinned = (lm.Skin != null && lm.Skin.Length > 0 && lm.SkinMatrices != null) || hasWrap;
                 bool rigid = lm.HasAttachMatrix;
                 bool cloth = lm.IsCloth && lm.ClothPos != null && lm.Weld != null;
-                if (lm.ForceBaseDisplay) { skinned = false; rigid = false; cloth = false; }
+                bool rigidArmor = lm.RigidArmor;
+                if (lm.ForceBaseDisplay) { skinned = false; rigid = false; cloth = false; rigidArmor = false; }
 
-                bool isAnimated = skinned || rigid || cloth || (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero);
+                bool isAnimated = skinned || rigid || cloth || rigidArmor || (lm.CutoutRole != MeshCutoutRole.Mount && riderOffset != Vector3.Zero);
                 if (!isAnimated && lm.BufferUpToDate)
                 {
                     continue;
@@ -15819,6 +15956,12 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                         lm.DeformedCache[v] = skinnedPos;
                     });
+                }
+
+                // Rigid armor: project the skinned positions out of the body bone capsules.
+                if (lm.RigidArmor && !lm.ForceBaseDisplay)
+                {
+                    ProjectRigidArmorOutOfCapsules(lm);
                 }
 
                 int cornerCount = lm.Indices.Length;

@@ -2808,7 +2808,9 @@ namespace UoFiddler.Plugin.Granny3D
 
             _refPath = isFemale && File.Exists(femaleRef) ? femaleRef : maleRef;
             InitializeDefaultMarkers();
+            var oldBones = (_previewModel != null && _previewModel.Bones.Count > 0) ? _previewModel.Bones : _liveOriginalBones;
             LoadReferenceBones();
+            RemapSkinToRefBones(oldBones);
             _previewModel = null;
             EnsurePreviewModel();
             PopulateTestAnimations();
@@ -2835,11 +2837,52 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             LoadReferenceBones();
+            RemapSkinToRefBones(_liveOriginalBones ?? (_previewModel != null ? _previewModel.Bones : null));
             InitializeMarkersFromCreatureBones(_refBones);
             _previewModel = null;
             EnsurePreviewModel();
             PopulateTestAnimations();
             glControl.Invalidate();
+        }
+
+        // Remap the mesh skin weights from an old skeleton (by name) to the current
+        // _refBones. Needed when switching the target skeleton (e.g. tunic's partial
+        // 21-bone rig -> full H_Male 43-bone rig): otherwise the old bone indices point
+        // at unrelated bones and deforming/snapping moves the wrong parts of the mesh.
+        private void RemapSkinToRefBones(List<GrannyBone>? oldBones)
+        {
+            if (oldBones == null || oldBones.Count == 0 || _refBones == null || _refBones.Count == 0) return;
+
+            var nameToNew = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < _refBones.Count; i++)
+                if (!string.IsNullOrEmpty(_refBones[i].Name))
+                    nameToNew[_refBones[i].Name] = i;
+
+            void Remap(VertexInfluence[]? infs)
+            {
+                if (infs == null) return;
+                for (int k = 0; k < infs.Length; k++)
+                {
+                    int oldIdx = infs[k].BoneId;
+                    if (oldIdx < 0 || oldIdx >= oldBones.Count) continue;
+                    string bName = oldBones[oldIdx].Name;
+                    if (!string.IsNullOrEmpty(bName) && nameToNew.TryGetValue(bName, out int newIdx))
+                        infs[k] = new VertexInfluence { BoneId = newIdx, Weight = infs[k].Weight };
+                }
+            }
+
+            if (_modelParts != null)
+                foreach (var part in _modelParts)
+                    if (part.Skin != null)
+                        foreach (var infs in part.Skin) Remap(infs);
+
+            if (_rawParts != null)
+                foreach (var raw in _rawParts)
+                    if (raw.Skin != null)
+                        foreach (var infs in raw.Skin) Remap(infs);
+
+            if (_rawSkin != null)
+                foreach (var infs in _rawSkin) Remap(infs);
         }
 
         private void InitializeMarkersFromCreatureBones(List<GrannyBone> bones)
@@ -3309,7 +3352,18 @@ namespace UoFiddler.Plugin.Granny3D
             else
             {
                 // Squelette de créature (Cheval, Animal, Monstre, Créature marine, Custom...)
-                string? matchedRef = FindMatchingCreatureReference(bones, modelPathHint, out string creatureName);
+                // Une armure / partie humaine (H_Male_*/H_Female_*, master_h_male/master_h_female)
+                // partage les noms d'os Bip01 avec certaines créatures (Golem...) mais n'en est
+                // PAS une : ne pas l'apparier, sinon la mauvaise référence + échelle cassent l'animation.
+                bool isHumanPart = (!string.IsNullOrEmpty(modelPathHint) &&
+                                    (modelPathHint.IndexOf("H_Male", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     modelPathHint.IndexOf("H_Female", StringComparison.OrdinalIgnoreCase) >= 0)) ||
+                                   bones.Any(b => b.Name != null &&
+                                    (b.Name.StartsWith("master_h_male", StringComparison.OrdinalIgnoreCase) ||
+                                     b.Name.StartsWith("master_h_female", StringComparison.OrdinalIgnoreCase)));
+
+                string creatureName = "Créature";
+                string? matchedRef = isHumanPart ? null : FindMatchingCreatureReference(bones, modelPathHint, out creatureName);
                 if (!string.IsNullOrEmpty(matchedRef) && File.Exists(matchedRef))
                 {
                     _refPath = matchedRef;
@@ -5375,11 +5429,49 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             if (_previewModel == null || _refBones == null || _refBones.Count == 0) return 1f;
+
+            // Existing UO rig (manual skin weights): the clip and the model share the
+            // same units, so no scale conversion. Only Mixamo/FBX re-fits (auto-skin)
+            // need the preview-vs-reference scale ratio.
+            if (_hasManualSkinWeights) return 1f;
+
             float prev = Extent(_previewModel.Bones);
             float orig = Extent(_refBones);
             if (prev < 1e-6f || orig < 1e-6f) return 1f;
             float s = prev / orig;
             return (s > 1e-6f && s < 1e6f) ? s : 1f;
+        }
+
+        private static bool SameOrientation(OpenTK.Mathematics.Quaternion a, OpenTK.Mathematics.Quaternion b)
+        {
+            float dot = Math.Abs(a.X * b.X + a.Y * b.Y + a.Z * b.Z + a.W * b.W);
+            return dot > 0.999f;
+        }
+
+        // World matrix of a bone inside the CLIP's own hierarchy (names resolved through
+        // the clip skeleton), using track values at time t (rest pose when no track).
+        private static Matrix4 ClipWorldMatrix(GrannyAnimation anim, string boneName, float t, int depth)
+        {
+            if (depth > 64 || anim == null || anim.SkeletonByName == null
+                || !anim.SkeletonByName.TryGetValue(boneName, out var cb))
+                return Matrix4.Identity;
+
+            Vector3 pos = cb.LocalPosition;
+            OpenTK.Mathematics.Quaternion rot = cb.LocalRotation;
+            if (anim.TracksByName != null && anim.TracksByName.TryGetValue(boneName, out var tr))
+            {
+                if (tr.Pos != null && tr.Pos.Length > 0) pos = tr.EvaluatePos(t);
+                if (tr.Rot != null && tr.Rot.Length > 0) rot = tr.EvaluateRot(t);
+            }
+
+            Matrix4 local = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
+            if (cb.ParentId >= 0 && cb.ParentId < anim.Skeleton.Count && cb.ParentId != cb.Id)
+            {
+                string pn = anim.Skeleton[cb.ParentId].Name;
+                if (!string.IsNullOrEmpty(pn))
+                    return local * ClipWorldMatrix(anim, pn, t, depth + 1);
+            }
+            return local;
         }
 
         private void ApplyAnimationPose(float time)
@@ -5411,6 +5503,16 @@ namespace UoFiddler.Plugin.Granny3D
             // Coordinate orientation compensation for 3ds Max Root Dummy tracks (e.g. Master_Blackthorn):
             GrannyTrack? trMaster = _testAnim?.Tracks?.FirstOrDefault(t => t.Name != null && t.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase));
             OpenTK.Mathematics.Quaternion rMaster = trMaster != null ? trMaster.EvaluateRot(time) : OpenTK.Mathematics.Quaternion.Identity;
+            // If the preview skeleton already carries a master_* bone with the SAME
+            // orientation, that orientation is already applied through the parent chain;
+            // re-applying it here would double-rotate the whole body.
+            if (trMaster != null)
+            {
+                var modelMaster = _previewModel?.Bones?.FirstOrDefault(b => !string.IsNullOrEmpty(b.Name) &&
+                    b.Name.StartsWith("master_", StringComparison.OrdinalIgnoreCase));
+                if (modelMaster != null && SameOrientation(modelMaster.LocalRotation, rMaster))
+                    rMaster = OpenTK.Mathematics.Quaternion.Identity;
+            }
 
             void EvalBone(int idx)
             {
@@ -5479,6 +5581,11 @@ namespace UoFiddler.Plugin.Granny3D
                             delta = Vector3.TransformVector(localDelta, Matrix4.CreateFromQuaternion(rMaster));
                         }
                         pos = bone.LocalPosition + delta * animPosScale;
+                        // Same clip->mesh frame as the other bones: Bip01 must use the
+                        // clip's absolute values (not bind + delta from key 0) so it lines
+                        // up with the absolute Pelvis/Spine tracks.
+                        if (animPosScale == 1f && track.Pos != null && track.Pos.Length > 0)
+                            pos = Vector3.TransformVector(track.EvaluatePos(time), Matrix4.CreateFromQuaternion(rMaster));
                     }
                     else if (isRoot)
                     {
@@ -5513,6 +5620,32 @@ namespace UoFiddler.Plugin.Granny3D
                         rot = track.EvaluateRot(time);
                     }
                     localTransform = Matrix4.CreateFromQuaternion(rot) * Matrix4.CreateTranslation(pos);
+
+                    // Re-parenting: some clips make a bone a sibling of the mesh's parent
+                    // (e.g. Pelvis under master_* in the clip vs under Bip01 in the mesh).
+                    // Re-express the bone in the mesh parent's frame so it doesn't tear.
+                    if (!isDummyRoot && !bone.Name.Equals("Bip01", StringComparison.OrdinalIgnoreCase)
+                        && p >= 0 && p < nb && p != idx && animPosScale == 1f
+                        && _testAnim?.Skeleton != null && _testAnim.SkeletonByName != null
+                        && _testAnim.SkeletonByName.TryGetValue(bone.Name, out var clipBone)
+                        && clipBone.ParentId >= 0 && clipBone.ParentId < _testAnim.Skeleton.Count
+                        && clipBone.ParentId != clipBone.Id)
+                    {
+                        string clipParentName = _testAnim.Skeleton[clipBone.ParentId].Name;
+                        string meshParentName = _previewModel.Bones[p].Name;
+                        if (!string.IsNullOrEmpty(clipParentName) && !string.IsNullOrEmpty(meshParentName)
+                            && !clipParentName.Equals(meshParentName, StringComparison.OrdinalIgnoreCase)
+                            && _testAnim.TracksByName.ContainsKey(meshParentName))
+                        {
+                            Matrix4 wBone = ClipWorldMatrix(_testAnim, bone.Name, time, 0);
+                            Matrix4 wParent = ClipWorldMatrix(_testAnim, meshParentName, time, 0);
+                            if (Math.Abs(wParent.Determinant) > 1e-6f)
+                            {
+                                Matrix4 conv = wBone * Matrix4.Invert(wParent);
+                                localTransform = conv;
+                            }
+                        }
+                    }
                 }
                 else
                 {
@@ -5641,8 +5774,20 @@ namespace UoFiddler.Plugin.Granny3D
                     }
                     float dz = restMinZ - animMinZ;
                     if (Math.Abs(dz) > 1e-5f)
+                    {
                         for (int vi = 0; vi < _animBaseVertices.Length; vi++)
                             _animBaseVertices[vi].Z += dz;
+
+                        // Shift the skeleton by the same amount so the bone overlay stays
+                        // aligned with the ground-locked mesh (the skinning already used the
+                        // pre-lock matrices, so only the drawn bones need the offset).
+                        if (_boneWorldMatrices != null)
+                        {
+                            var shift = Matrix4.CreateTranslation(0f, 0f, dz);
+                            for (int b = 0; b < _boneWorldMatrices.Length; b++)
+                                _boneWorldMatrices[b] = _boneWorldMatrices[b] * shift;
+                        }
+                    }
                 }
 
                 void FillInterleaved(int i)
