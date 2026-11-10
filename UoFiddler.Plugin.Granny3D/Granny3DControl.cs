@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -734,10 +734,14 @@ namespace UoFiddler.Plugin.Granny3D
             public List<float> AutoRadii { get; set; } = new List<float>();
         }
 
+        private readonly Dictionary<string, List<float>> _segmentAutoRadii = new Dictionary<string, List<float>>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, (float lenA, float lenB)> _segmentAutoLengths = new Dictionary<string, (float, float)>(StringComparer.OrdinalIgnoreCase);
+
         private readonly Dictionary<string, ColliderDef> _colliders = new Dictionary<string, ColliderDef>(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> _colliderKeys = new List<string>
         {
-            "poitrine", "torse", "abdomen", "bassin", "cou", "tete",
+            "poitrine", "torse", "taille", "bassin", "cou", "tete",
+            "epaule_g", "epaule_d",
             "bras_g", "bras_d", "avantbras_g", "avantbras_d",
             "mains_g", "mains_d",
             "cuisse_g", "cuisse_d", "mollet_g", "mollet_d", "pieds"
@@ -2071,7 +2075,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             var lblColHelp = new Label
             {
-                Text = Localization.Tr("lbl_col_help", "🎯 Auto-Fit affûte précisément chaque collider autour de son mesh. Poitrine, Torse et Abdomen sont complètement séparés avec leurs propres X,Y,Z."),
+                Text = Localization.Tr("lbl_col_help", "🎯 Auto-Fit affûte précisément chaque collider autour de son mesh. Épaules, Poitrine, Torse, Taille et Bassin sont complètement séparés avec leurs propres X,Y,Z."),
                 Location = new Point(8, 252),
                 Width = 338,
                 Height = 65,
@@ -4998,10 +5002,7 @@ namespace UoFiddler.Plugin.Granny3D
                 if (File.Exists(p)) total += LoadPartMeshes(p, part.slot, string.Equals(part.slot, "face", StringComparison.OrdinalIgnoreCase));
                 else Log($"AssembleHumanBody: missing {part.file}");
             }
-            if (!female && _colliders.TryGetValue("poitrine", out var colP))
-            {
-                colP.Enabled = false;
-            }
+            // Poitrine (pectoraux/seins) active pour tous les genres
             HarmonizeCharacterPartSkinWeights();
             Log($"AssembleHumanBody female={female} meshes=+{total} meshes={_loadedMeshes.Count}");
             UpdateCharInfo();
@@ -14770,6 +14771,17 @@ namespace UoFiddler.Plugin.Granny3D
                     var wb = m.WorldMatrices[i];
                     Vector3 A = new Vector3(wa.M41, wa.M42, wa.M43);
                     Vector3 B = new Vector3(wb.M41, wb.M42, wb.M43);
+
+                    // Extension vers le bas pour Bip01 Pelvis -> Bip01 Spine (englobe fessier, hanches et entrejambe)
+                    if (pName.ToLowerInvariant().Contains("pelvis") && bName.ToLowerInvariant().Contains("spine"))
+                    {
+                        Vector3 dirDown = Vector3.Normalize(A - B);
+                        if (dirDown.LengthSquared > 0.5f)
+                        {
+                            A += dirDown * 0.14f;
+                        }
+                    }
+
                     float len = Vector3.Distance(A, B);
                     if (len < 0.03f) continue;
                     float rA = CapsuleRadiusFor(pName, clearance);
@@ -14810,15 +14822,27 @@ namespace UoFiddler.Plugin.Granny3D
                     A += segOff;
                     B += segOff;
 
-                    if (cDef != null && (cDef.AutoLenA != 0f || cDef.AutoLenB != 0f))
+                    float autoLenA = 0f, autoLenB = 0f;
+                    if (_segmentAutoLengths.TryGetValue(segKey, out var sLen))
+                    {
+                        autoLenA = sLen.lenA;
+                        autoLenB = sLen.lenB;
+                    }
+                    else if (cDef != null)
+                    {
+                        autoLenA = cDef.AutoLenA;
+                        autoLenB = cDef.AutoLenB;
+                    }
+
+                    if (autoLenA != 0f || autoLenB != 0f)
                     {
                         Vector3 dir = B - A;
                         float segL = dir.Length;
                         if (segL > 1e-4f)
                         {
                             Vector3 uDir = dir / segL;
-                            A += uDir * cDef.AutoLenA;
-                            B += uDir * cDef.AutoLenB;
+                            A += uDir * autoLenA;
+                            B += uDir * autoLenB;
                         }
                     }
 
@@ -14836,17 +14860,27 @@ namespace UoFiddler.Plugin.Granny3D
                         hasHeadSegment = true;
                     }
 
-                    if (cDef != null && cDef.AutoRadii != null && cDef.AutoRadii.Count >= 2)
+                    List<float> radii = null;
+                    if (_segmentAutoRadii.TryGetValue(segKey, out var sRadii) && sRadii != null && sRadii.Count >= 2)
                     {
-                        int subCount = cDef.AutoRadii.Count - 1;
+                        radii = sRadii;
+                    }
+                    else if (cDef != null && cDef.AutoRadii != null && cDef.AutoRadii.Count >= 2)
+                    {
+                        radii = cDef.AutoRadii;
+                    }
+
+                    if (radii != null && radii.Count >= 2)
+                    {
+                        int subCount = radii.Count - 1;
                         for (int s = 0; s < subCount; s++)
                         {
                             float t0 = (float)s / subCount;
                             float t1 = (float)(s + 1) / subCount;
                             Vector3 subA = Vector3.Lerp(A, B, t0);
                             Vector3 subB = Vector3.Lerp(A, B, t1);
-                            float subRA = (cDef.AutoRadii[s] + clearance + _clothClearance) * cRad * _colGlobalScale;
-                            float subRB = (cDef.AutoRadii[s + 1] + clearance + _clothClearance) * cRad * _colGlobalScale;
+                            float subRA = (radii[s] + clearance + _clothClearance) * cRad * _colGlobalScale;
+                            float subRB = (radii[s + 1] + clearance + _clothClearance) * cRad * _colGlobalScale;
 
                             caps.Add(new ClothCapsule
                             {
@@ -14854,9 +14888,9 @@ namespace UoFiddler.Plugin.Granny3D
                                 B = subB,
                                 RA = subRA,
                                 RB = subRB,
-                                ScaleX = cDef.Scale.X,
-                                ScaleY = cDef.Scale.Y,
-                                ColliderId = cDef.Id,
+                                ScaleX = cDef != null ? cDef.Scale.X : 1f,
+                                ScaleY = cDef != null ? cDef.Scale.Y : 1f,
+                                ColliderId = cDef != null ? cDef.Id : "",
                                 Name = bName,
                                 IsStart = (s == 0),
                                 IsEnd = (s == subCount - 1)
@@ -14936,12 +14970,12 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                     }
                 }
-                // 3. Poitrine (Chest / Breasts) Frontal Collider - completely separate from Torse and Abdomen!
+                // 3. Poitrine (Chest / Pectoraux / Seins) Frontal Collider
                 if (_colliders.TryGetValue("poitrine", out var breastDef) && breastDef.Enabled)
                 {
-                    int chestIdx = m.Bones.FindIndex(b => b.Name.IndexOf("chest", StringComparison.OrdinalIgnoreCase) >= 0);
+                    int chestIdx = m.Bones.FindIndex(b => b.Name.IndexOf("spine2", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("spine_2", StringComparison.OrdinalIgnoreCase) >= 0);
                     if (chestIdx < 0)
-                        chestIdx = m.Bones.FindIndex(b => b.Name.IndexOf("spine2", StringComparison.OrdinalIgnoreCase) >= 0 || b.Name.IndexOf("spine_2", StringComparison.OrdinalIgnoreCase) >= 0);
+                        chestIdx = m.Bones.FindIndex(b => b.Name.IndexOf("chest", StringComparison.OrdinalIgnoreCase) >= 0);
                     if (chestIdx < 0)
                         chestIdx = m.Bones.FindIndex(b => b.Name.IndexOf("spine1", StringComparison.OrdinalIgnoreCase) >= 0);
                     if (chestIdx < 0)
@@ -14952,15 +14986,16 @@ namespace UoFiddler.Plugin.Granny3D
                         var wm = m.WorldMatrices[chestIdx];
                         Vector3 chestPos = new Vector3(wm.M41, wm.M42, wm.M43);
 
-                        float baseFwdY = 0.065f + (breastDef.Offset.Y / 100f);
+                        bool isFemale = (_charGender == 2);
+                        float baseFwdY = (isFemale ? 0.065f : 0.045f) + (breastDef.Offset.Y / 100f);
                         float offX = breastDef.Offset.X / 100f;
-                        float offZ = breastDef.Offset.Z / 100f;
-                        float spreadX = 0.065f * breastDef.Scale.X;
+                        float offZ = (isFemale ? 0.0f : -0.020f) + (breastDef.Offset.Z / 100f);
+                        float spreadX = (isFemale ? 0.065f : 0.080f) * breastDef.Scale.X;
 
                         Vector3 bA = chestPos + new Vector3(-spreadX + offX, baseFwdY, offZ);
                         Vector3 bB = chestPos + new Vector3(+spreadX + offX, baseFwdY, offZ);
 
-                        float rBreast = (breastDef.AutoRA > 0f ? breastDef.AutoRA : 0.065f) * breastDef.Radius * _colGlobalScale + clearance + _clothClearance;
+                        float rBreast = (breastDef.AutoRA > 0f ? breastDef.AutoRA : (isFemale ? 0.065f : 0.055f)) * breastDef.Radius * _colGlobalScale + clearance + _clothClearance;
 
                         string brKey = $"{m.Bones[chestIdx].Name}->BreastFront";
                         if (seenSegments.Add(brKey))
@@ -14992,21 +15027,22 @@ namespace UoFiddler.Plugin.Granny3D
             string p = pName.ToLowerInvariant();
             string b = bName.ToLowerInvariant();
 
-            // Legs: Pelvis/Spine -> Thigh, Thigh -> Calf, Calf -> Foot, Foot -> Toe
-            if ((IsPelvisBone(pName) || IsTorsoBone(pName) || p.Contains("bip01")) && IsThighBone(bName)) return true;
+            // Jambes anatomiques précises : Cuisse -> Mollet, Mollet -> Pied, Pied -> Orteils
             if (IsThighBone(pName) && (IsCalfBone(bName) || b.Contains("knee") || b.Contains("shin"))) return true;
             if ((IsCalfBone(pName) || p.Contains("knee") || p.Contains("shin")) && (IsFootBone(bName) || b.Contains("ankle"))) return true;
-            if ((IsFootBone(pName) || p.Contains("ankle")) && (IsFootBone(bName) || b.Contains("toe") || b.Contains("nub"))) return true;
+            if ((IsFootBone(pName) || p.Contains("ankle")) && (IsFootBone(bName) || b.Contains("toe") || b.Contains("foot") || b.Contains("nub"))) return true;
 
-            // Torso & Pelvis (Root -> Pelvis, Pelvis -> Spine, Spine -> Spine1, Spine1 -> Spine2)
-            if (p.Contains("bip01") && IsPelvisBone(bName)) return true;
-            if (IsPelvisBone(pName) && IsTorsoBone(bName)) return true;
-            if (IsTorsoBone(pName) && (IsTorsoBone(bName) || IsNeckBone(bName) || IsShoulderBone(bName))) return true;
-            if (IsNeckBone(pName) && (IsNeckBone(bName) || b.Contains("head") || IsShoulderBone(bName))) return true;
+            // Bassin, Taille, Torse, Cou & Tête (chacun sur son segment strictement anatomique)
+            if (p.Contains("pelvis") && b.Contains("spine")) return true;
+            if (p.Contains("spine") && b.Contains("spine1")) return true;
+            if (p.Contains("spine1") && b.Contains("spine2")) return true;
+            if (p.Contains("spine2") && b.Contains("neck")) return true;
+            if (p.Contains("neck") && b.Contains("head")) return true;
             if (p.Contains("head") && b.Contains("headnub")) return true;
 
-            // Arms: Shoulder -> UpperArm, UpperArm -> Forearm, Forearm -> Hand, Hand -> Fingers
-            if ((IsShoulderBone(pName) || IsTorsoBone(pName) || IsNeckBone(pName)) && IsUpperArmBone(bName)) return true;
+            // Épaules, Bras, Avant-bras, Mains & Doigts
+            if (p.Contains("neck") && b.Contains("clavicle")) return true;
+            if (p.Contains("clavicle") && b.Contains("upperarm")) return true;
             if (IsUpperArmBone(pName) && (IsForearmBone(bName) || b.Contains("elbow") || b.Contains("lowerarm"))) return true;
             if ((IsForearmBone(pName) || p.Contains("elbow") || p.Contains("lowerarm")) && (IsHandBone(bName) || b.Contains("wrist"))) return true;
             if ((IsHandBone(pName) || p.Contains("wrist")) && (IsHandBone(bName) || b.Contains("finger") || b.Contains("thumb"))) return true;
@@ -15071,12 +15107,14 @@ namespace UoFiddler.Plugin.Granny3D
                 };
             }
 
-            AddCol("poitrine", "Poitrine (Seins / Buste)", 1.0f, 1.0f, 1.15f, 1.0f);
-            AddCol("torse", "Torse (Haut / Cage thoracique)", 1.0f, 1.0f, 1.0f, 1.0f);
-            AddCol("abdomen", "Abdomen (Ventre / Taille)", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("poitrine", "Poitrine (Pectoraux / Seins)", 1.0f, 1.0f, 1.15f, 1.0f);
+            AddCol("torse", "Torse (Cage thoracique / Sternum)", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("taille", "Taille (Abdomen / Ventre)", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("bassin", "Bassin (Hanches / Fessier)", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("cou", "Cou", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("tete", "Tête", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("epaule_g", "Épaule Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("epaule_d", "Épaule Droite", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("bras_g", "Bras Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("bras_d", "Bras Droit", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("avantbras_g", "Avant-bras Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
@@ -15089,10 +15127,8 @@ namespace UoFiddler.Plugin.Granny3D
             AddCol("mollet_d", "Mollet Droit", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("pieds", "Pieds", 1.0f, 1.0f, 1.0f, 1.0f);
 
-            if (_charGender == 1 && _colliders.TryGetValue("poitrine", out var pDef))
-            {
-                pDef.Enabled = false;
-            }
+            // Rétrocompatibilité avec les anciens fichiers .collider.json
+            _colliders["abdomen"] = _colliders["taille"];
         }
 
         private void OnColliderSelectionChanged()
@@ -15162,50 +15198,53 @@ namespace UoFiddler.Plugin.Granny3D
             if (b.Contains("poitrine") || b.Contains("breast"))
                 return _colliders["poitrine"];
 
-            // 1. Hands & Fingers
+            // 1. Mains & Doigts
             if (b.Contains("finger") || b.Contains("thumb") || (p.Contains("hand") && (b.Contains("hand") || b.Contains("finger") || b.Contains("thumb") || b.Contains("nub"))))
                 return isLeft ? _colliders["mains_g"] : _colliders["mains_d"];
 
-            // 2. Forearm (Elbow to Wrist)
+            // 2. Avant-bras (Coude au Poignet)
             if ((p.Contains("forearm") || p.Contains("lowerarm") || p.Contains("elbow")) && (b.Contains("hand") || b.Contains("wrist")))
                 return isLeft ? _colliders["avantbras_g"] : _colliders["avantbras_d"];
 
-            // 3. Upper Arm (Shoulder to Elbow)
+            // 3. Bras (Épaule au Coude)
             if ((p.Contains("upperarm") || p.Contains("arm")) && (b.Contains("forearm") || b.Contains("lowerarm") || b.Contains("elbow")))
                 return isLeft ? _colliders["bras_g"] : _colliders["bras_d"];
 
-            // 4. Feet & Toes
+            // 4. Épaules (Clavicules & Déconnexion totale du torse)
+            if (p.Contains("clavicle") || b.Contains("clavicle") || ((p.Contains("neck") || p.Contains("spine2")) && (b.Contains("clavicle") || b.Contains("upperarm"))))
+                return isLeft ? _colliders["epaule_g"] : _colliders["epaule_d"];
+
+            // 5. Pieds & Orteils
             if (p.Contains("foot") || p.Contains("ankle") || b.Contains("toe"))
                 return _colliders["pieds"];
 
-            // 5. Calf / Shin (Knee to Ankle)
+            // 6. Mollets (Genou à Cheville)
             if ((p.Contains("calf") || p.Contains("shin") || p.Contains("knee")) && (b.Contains("foot") || b.Contains("ankle")))
                 return isLeft ? _colliders["mollet_g"] : _colliders["mollet_d"];
 
-            // 6. Thigh (Hip to Knee)
+            // 7. Cuisses (Hanche au Genou)
             if (p.Contains("thigh") && (b.Contains("calf") || b.Contains("shin") || b.Contains("knee")))
                 return isLeft ? _colliders["cuisse_g"] : _colliders["cuisse_d"];
 
-            // 7. Pelvis / Hips / Buttocks (Hip joint base or Pelvis)
-            if (b.Contains("pelvis") || (p.Contains("pelvis") && b.Contains("spine")) || ((p.Contains("pelvis") || p.Contains("spine")) && b.Contains("thigh")))
+            // 8. Bassin (Pelvis / Hanches / Fessier)
+            if (b.Contains("pelvis") || (p.Contains("pelvis") && b.Contains("spine")))
                 return _colliders["bassin"];
 
-            // 8. Head
+            // 9. Tête
             if (p.Contains("head") || (b.Contains("head") && b.Contains("nub")))
                 return _colliders["tete"];
 
-            // 9. Neck (Throat)
+            // 10. Cou (Gorge)
             if (p.Contains("neck") && b.Contains("head"))
                 return _colliders["cou"];
 
-            // 10. Abdomen (Lower spine)
+            // 11. Taille (Abdomen / Ventre)
             if (p.Contains("spine") && (b.Contains("spine1") || b.Contains("belly") || b.Contains("abdomen")))
-                return _colliders["abdomen"];
+                return _colliders["taille"];
 
-            // 11. Torso / Upper chest / Shoulders / Clavicle
-            if (b.Contains("clavicle") || b.Contains("shoulder") || p.Contains("clavicle") || p.Contains("shoulder")
-                || b.Contains("spine2") || p.Contains("spine1") || p.Contains("spine2") || b.Contains("neck")
-                || b.Contains("chest") || b.Contains("torso") || b.Contains("rib"))
+            // 12. Torse (Cage thoracique / Sternum)
+            if ((p.Contains("spine1") && b.Contains("spine2")) || (p.Contains("spine2") && b.Contains("neck"))
+                || b.Contains("spine2") || b.Contains("chest") || b.Contains("torso") || b.Contains("rib"))
                 return _colliders["torse"];
 
             return _colliders["torse"];
@@ -15263,6 +15302,8 @@ namespace UoFiddler.Plugin.Granny3D
                 return;
             }
 
+            _segmentAutoRadii.Clear();
+            _segmentAutoLengths.Clear();
             foreach (var c in _colliders.Values)
             {
                 c.AutoRA = 0f;
@@ -15436,14 +15477,19 @@ namespace UoFiddler.Plugin.Granny3D
                     nodeRadii[n] = Math.Clamp(nodeRadii[n], 0.02f, 0.25f);
                 }
 
-                cDef.AutoRadii = new List<float>(nodeRadii);
-                cDef.AutoRA = nodeRadii[0];
-                cDef.AutoRB = nodeRadii[nodes - 1];
+                string segKey = $"{seg.pName}->{seg.bName}";
+                _segmentAutoRadii[segKey] = new List<float>(nodeRadii);
+
+                if (cDef.AutoRadii == null || cDef.AutoRadii.Count == 0)
+                {
+                    cDef.AutoRadii = new List<float>(nodeRadii);
+                    cDef.AutoRA = nodeRadii[0];
+                    cDef.AutoRB = nodeRadii[nodes - 1];
+                }
                 adaptedCount++;
             }
 
-            // Endpoint extension: extend each capsule along its axis so it covers the full
-            // mesh extent (the bones only span joint-to-joint, while the skin bulges past them).
+            // Endpoint extension par segment
             for (int s = 0; s < segCount; s++)
             {
                 if (segMinProj[s] >= float.MaxValue || segMaxProj[s] <= float.MinValue) continue;
@@ -15452,8 +15498,17 @@ namespace UoFiddler.Plugin.Granny3D
                 if (cDef == null || string.Equals(cDef.Id, "poitrine", StringComparison.OrdinalIgnoreCase)) continue;
                 float segLen = Vector3.Distance(seg.A, seg.B);
                 if (segLen < 1e-4f) continue;
-                cDef.AutoLenA = Math.Min(0f, segMinProj[s]);
-                cDef.AutoLenB = Math.Max(0f, segMaxProj[s] - segLen);
+                float lenA = Math.Min(0f, segMinProj[s]);
+                float lenB = Math.Max(0f, segMaxProj[s] - segLen);
+
+                string segKey = $"{seg.pName}->{seg.bName}";
+                _segmentAutoLengths[segKey] = (lenA, lenB);
+
+                if (cDef.AutoLenA == 0f && cDef.AutoLenB == 0f)
+                {
+                    cDef.AutoLenA = lenA;
+                    cDef.AutoLenB = lenB;
+                }
             }
 
             // Poitrine (Breasts / Pectoraux) Frontal Auto-Fit
@@ -15615,7 +15670,8 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     foreach (var kv in cfg.Colliders)
                     {
-                        if (_colliders.TryGetValue(kv.Key, out var cDef))
+                        string cKey = string.Equals(kv.Key, "abdomen", StringComparison.OrdinalIgnoreCase) ? "taille" : kv.Key;
+                        if (_colliders.TryGetValue(cKey, out var cDef))
                         {
                             cDef.Enabled = kv.Value.Enabled;
                             cDef.Offset = new Vector3(kv.Value.PosX, kv.Value.PosY, kv.Value.PosZ);
@@ -15658,6 +15714,10 @@ namespace UoFiddler.Plugin.Granny3D
         private void ResetColliders(bool silent = false)
         {
             InitColliderDefs();
+            _segmentAutoRadii.Clear();
+            _segmentAutoLengths.Clear();
+            _segmentAutoRadii.Clear();
+            _segmentAutoLengths.Clear();
             foreach (var c in _colliders.Values)
             {
                 c.AutoRA = 0f;
