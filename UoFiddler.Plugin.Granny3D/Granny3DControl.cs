@@ -739,6 +739,7 @@ namespace UoFiddler.Plugin.Granny3D
         {
             "poitrine", "torse", "abdomen", "bassin", "cou", "tete",
             "bras_g", "bras_d", "avantbras_g", "avantbras_d",
+            "mains_g", "mains_d",
             "cuisse_g", "cuisse_d", "mollet_g", "mollet_d", "pieds"
         };
 
@@ -4977,7 +4978,6 @@ namespace UoFiddler.Plugin.Granny3D
             var parts = new (string slot, string file)[]
             {
                 ("torso", prefix + "Torso_V2_LOD2.grn"),
-                ("torsoupper", prefix + "Torso_Upper_V2_LOD2.grn"),
                 ("neck", prefix + "Neck_V2_LOD2.grn"),
                 ("head", prefix + "Head_V2_LOD2.grn"),
                 ("ears", prefix + "Ears_V2_LOD2.grn"),
@@ -4998,8 +4998,139 @@ namespace UoFiddler.Plugin.Granny3D
                 if (File.Exists(p)) total += LoadPartMeshes(p, part.slot, string.Equals(part.slot, "face", StringComparison.OrdinalIgnoreCase));
                 else Log($"AssembleHumanBody: missing {part.file}");
             }
+            if (!female && _colliders.TryGetValue("poitrine", out var colP))
+            {
+                colP.Enabled = false;
+            }
+            HarmonizeCharacterPartSkinWeights();
             Log($"AssembleHumanBody female={female} meshes=+{total} meshes={_loadedMeshes.Count}");
             UpdateCharInfo();
+        }
+
+        // Harmonize skin weights of coincident boundary vertices across character parts (e.g. Torso <-> UArms, UArms <-> FArms)
+        // Eliminates seam gaps, tearing, and unnatural torsion during animations.
+        private void HarmonizeCharacterPartSkinWeights()
+        {
+            var charMeshes = _loadedMeshes.Where(m => !string.IsNullOrEmpty(m.CharSlot) && m.Skin != null && m.BaseVertices != null).ToList();
+            if (charMeshes.Count < 2) return;
+
+            const float eps2 = 0.001f * 0.001f;
+            bool modified = false;
+
+            for (int i = 0; i < charMeshes.Count; i++)
+            {
+                var mA = charMeshes[i];
+                var vA = mA.BaseVertices;
+                for (int j = i + 1; j < charMeshes.Count; j++)
+                {
+                    var mB = charMeshes[j];
+                    var vB = mB.BaseVertices;
+
+                    for (int a = 0; a < vA.Length; a++)
+                    {
+                        Vector3 pa = vA[a];
+                        for (int b = 0; b < vB.Length; b++)
+                        {
+                            if ((pa - vB[b]).LengthSquared < eps2)
+                            {
+                                var infsA = mA.Skin[a];
+                                var infsB = mB.Skin[b];
+                                if (infsA == null || infsB == null) continue;
+
+                                var weightsByName = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var inf in infsA)
+                                {
+                                    if (inf.BoneId >= 0 && inf.BoneId < mA.Bones.Count)
+                                    {
+                                        string bn = mA.Bones[inf.BoneId].Name;
+                                        weightsByName[bn] = weightsByName.GetValueOrDefault(bn) + inf.Weight * 0.5f;
+                                    }
+                                }
+                                foreach (var inf in infsB)
+                                {
+                                    if (inf.BoneId >= 0 && inf.BoneId < mB.Bones.Count)
+                                    {
+                                        string bn = mB.Bones[inf.BoneId].Name;
+                                        weightsByName[bn] = weightsByName.GetValueOrDefault(bn) + inf.Weight * 0.5f;
+                                    }
+                                }
+
+                                float sum = weightsByName.Values.Sum();
+                                if (sum > 1e-5f)
+                                {
+                                    foreach (var k in weightsByName.Keys.ToList())
+                                        weightsByName[k] /= sum;
+                                }
+
+                                // Apply back to mA
+                                var newInfsA = new List<VertexInfluence>();
+                                foreach (var kvp in weightsByName)
+                                {
+                                    int bId = mA.Bones.FindIndex(bone => bone.Name.Equals(kvp.Key, StringComparison.OrdinalIgnoreCase));
+                                    if (bId < 0)
+                                    {
+                                        var srcBone = mB.Bones.FirstOrDefault(bone => bone.Name.Equals(kvp.Key, StringComparison.OrdinalIgnoreCase));
+                                        if (srcBone != null)
+                                        {
+                                            bId = mA.Bones.Count;
+                                            mA.Bones.Add(new GrannyBone
+                                            {
+                                                Id = bId,
+                                                Name = srcBone.Name,
+                                                ParentId = -1,
+                                                LocalPosition = srcBone.LocalPosition,
+                                                LocalRotation = srcBone.LocalRotation,
+                                                InverseBindMatrix = srcBone.InverseBindMatrix
+                                            });
+                                            modified = true;
+                                        }
+                                    }
+                                    if (bId >= 0)
+                                        newInfsA.Add(new VertexInfluence { BoneId = bId, Weight = kvp.Value });
+                                }
+                                mA.Skin[a] = newInfsA.ToArray();
+
+                                // Apply back to mB
+                                var newInfsB = new List<VertexInfluence>();
+                                foreach (var kvp in weightsByName)
+                                {
+                                    int bId = mB.Bones.FindIndex(bone => bone.Name.Equals(kvp.Key, StringComparison.OrdinalIgnoreCase));
+                                    if (bId < 0)
+                                    {
+                                        var srcBone = mA.Bones.FirstOrDefault(bone => bone.Name.Equals(kvp.Key, StringComparison.OrdinalIgnoreCase));
+                                        if (srcBone != null)
+                                        {
+                                            bId = mB.Bones.Count;
+                                            mB.Bones.Add(new GrannyBone
+                                            {
+                                                Id = bId,
+                                                Name = srcBone.Name,
+                                                ParentId = -1,
+                                                LocalPosition = srcBone.LocalPosition,
+                                                LocalRotation = srcBone.LocalRotation,
+                                                InverseBindMatrix = srcBone.InverseBindMatrix
+                                            });
+                                            modified = true;
+                                        }
+                                    }
+                                    if (bId >= 0)
+                                        newInfsB.Add(new VertexInfluence { BoneId = bId, Weight = kvp.Value });
+                                }
+                                mB.Skin[b] = newInfsB.ToArray();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (modified)
+            {
+                foreach (var lm in charMeshes)
+                {
+                    lm.BoneToAnimTrack = null;
+                }
+            }
         }
 
         // Append every mesh of a part file, tagging it with its character slot. No
@@ -5107,6 +5238,7 @@ namespace UoFiddler.Plugin.Granny3D
             RefreshLoadedList();
             PopulateBoneCombo();
             ComputeReferenceBounds();
+            HarmonizeCharacterPartSkinWeights();
             if (_currentAnimation != null)
             {
                 EnsureAnimationBindings(_currentAnimation);
@@ -14857,22 +14989,28 @@ namespace UoFiddler.Plugin.Granny3D
         {
             if (string.IsNullOrEmpty(pName) || string.IsNullOrEmpty(bName)) return false;
 
-            // Legs: Pelvis -> Thigh, Thigh -> Calf, Calf -> Foot, Foot -> Toe
-            if (IsPelvisBone(pName) && IsThighBone(bName)) return true;
-            if (IsThighBone(pName) && IsCalfBone(bName)) return true;
-            if (IsCalfBone(pName) && IsFootBone(bName)) return true;
-            if (IsFootBone(pName) && (IsFootBone(bName) || bName.ToLowerInvariant().Contains("toe"))) return true;
+            string p = pName.ToLowerInvariant();
+            string b = bName.ToLowerInvariant();
 
-            // Torso & Spine (Spine chain protects abdomen, chest, ribs)
+            // Legs: Pelvis/Spine -> Thigh, Thigh -> Calf, Calf -> Foot, Foot -> Toe
+            if ((IsPelvisBone(pName) || IsTorsoBone(pName) || p.Contains("bip01")) && IsThighBone(bName)) return true;
+            if (IsThighBone(pName) && (IsCalfBone(bName) || b.Contains("knee") || b.Contains("shin"))) return true;
+            if ((IsCalfBone(pName) || p.Contains("knee") || p.Contains("shin")) && (IsFootBone(bName) || b.Contains("ankle"))) return true;
+            if ((IsFootBone(pName) || p.Contains("ankle")) && (IsFootBone(bName) || b.Contains("toe") || b.Contains("nub"))) return true;
+
+            // Torso & Pelvis (Root -> Pelvis, Pelvis -> Spine, Spine -> Spine1, Spine1 -> Spine2)
+            if (p.Contains("bip01") && IsPelvisBone(bName)) return true;
             if (IsPelvisBone(pName) && IsTorsoBone(bName)) return true;
             if (IsTorsoBone(pName) && (IsTorsoBone(bName) || IsNeckBone(bName) || IsShoulderBone(bName))) return true;
-            if (IsNeckBone(pName) && (IsNeckBone(bName) || bName.ToLowerInvariant().Contains("head"))) return true;
+            if (IsNeckBone(pName) && (IsNeckBone(bName) || b.Contains("head") || IsShoulderBone(bName))) return true;
+            if (p.Contains("head") && b.Contains("headnub")) return true;
 
             // Arms: Shoulder -> UpperArm, UpperArm -> Forearm, Forearm -> Hand, Hand -> Fingers
-            if ((IsShoulderBone(pName) || IsTorsoBone(pName)) && IsUpperArmBone(bName)) return true;
-            if (IsUpperArmBone(pName) && IsForearmBone(bName)) return true;
-            if (IsForearmBone(pName) && IsHandBone(bName)) return true;
-            if (IsHandBone(pName) && (IsHandBone(bName) || bName.ToLowerInvariant().Contains("finger") || bName.ToLowerInvariant().Contains("thumb"))) return true;
+            if ((IsShoulderBone(pName) || IsTorsoBone(pName) || IsNeckBone(pName)) && IsUpperArmBone(bName)) return true;
+            if (IsUpperArmBone(pName) && (IsForearmBone(bName) || b.Contains("elbow") || b.Contains("lowerarm"))) return true;
+            if ((IsForearmBone(pName) || p.Contains("elbow") || p.Contains("lowerarm")) && (IsHandBone(bName) || b.Contains("wrist"))) return true;
+            if ((IsHandBone(pName) || p.Contains("wrist")) && (IsHandBone(bName) || b.Contains("finger") || b.Contains("thumb"))) return true;
+            if (p.Contains("finger") && b.Contains("finger")) return true;
 
             return false;
         }
@@ -14912,6 +15050,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (IsUpperArmBone(boneName)) return 0.065f + totalClearance;
             if (IsForearmBone(boneName)) return 0.055f + totalClearance;
             if (IsHandBone(boneName)) return 0.040f + totalClearance;
+            if (boneName.ToLowerInvariant().Contains("finger") || boneName.ToLowerInvariant().Contains("thumb")) return 0.022f + totalClearance;
 
             return 0.070f + totalClearance;
         }
@@ -14942,11 +15081,18 @@ namespace UoFiddler.Plugin.Granny3D
             AddCol("bras_d", "Bras Droit", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("avantbras_g", "Avant-bras Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("avantbras_d", "Avant-bras Droit", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("mains_g", "Main Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
+            AddCol("mains_d", "Main Droite", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("cuisse_g", "Cuisse Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("cuisse_d", "Cuisse Droite", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("mollet_g", "Mollet Gauche", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("mollet_d", "Mollet Droit", 1.0f, 1.0f, 1.0f, 1.0f);
             AddCol("pieds", "Pieds", 1.0f, 1.0f, 1.0f, 1.0f);
+
+            if (_charGender == 1 && _colliders.TryGetValue("poitrine", out var pDef))
+            {
+                pDef.Enabled = false;
+            }
         }
 
         private void OnColliderSelectionChanged()
@@ -15010,36 +15156,56 @@ namespace UoFiddler.Plugin.Granny3D
             string p = (pName ?? "").ToLowerInvariant();
             string b = (bName ?? "").ToLowerInvariant();
 
+            bool isLeft = b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")
+                       || p.Contains(" l ") || p.StartsWith("l ") || p.Contains(".l") || p.Contains("left");
+
             if (b.Contains("poitrine") || b.Contains("breast"))
                 return _colliders["poitrine"];
 
-            if (b.Contains("head"))
-                return _colliders["tete"];
-            if (b.Contains("neck") || p.Contains("neck"))
-                return _colliders["cou"];
+            // 1. Hands & Fingers
+            if (b.Contains("finger") || b.Contains("thumb") || (p.Contains("hand") && (b.Contains("hand") || b.Contains("finger") || b.Contains("thumb") || b.Contains("nub"))))
+                return isLeft ? _colliders["mains_g"] : _colliders["mains_d"];
 
-            if (b.Contains("forearm") || b.Contains("fore_arm") || b.Contains("wrist") || b.Contains("hand"))
-                return (b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")) ? _colliders["avantbras_g"] : _colliders["avantbras_d"];
+            // 2. Forearm (Elbow to Wrist)
+            if ((p.Contains("forearm") || p.Contains("lowerarm") || p.Contains("elbow")) && (b.Contains("hand") || b.Contains("wrist")))
+                return isLeft ? _colliders["avantbras_g"] : _colliders["avantbras_d"];
 
-            if (b.Contains("arm") || b.Contains("shoulder") || b.Contains("clavicle"))
-                return (b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")) ? _colliders["bras_g"] : _colliders["bras_d"];
+            // 3. Upper Arm (Shoulder to Elbow)
+            if ((p.Contains("upperarm") || p.Contains("arm")) && (b.Contains("forearm") || b.Contains("lowerarm") || b.Contains("elbow")))
+                return isLeft ? _colliders["bras_g"] : _colliders["bras_d"];
 
-            if (b.Contains("foot") || b.Contains("toe") || b.Contains("ankle"))
+            // 4. Feet & Toes
+            if (p.Contains("foot") || p.Contains("ankle") || b.Contains("toe"))
                 return _colliders["pieds"];
 
-            if (b.Contains("calf") || b.Contains("shin") || b.Contains("knee"))
-                return (b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")) ? _colliders["mollet_g"] : _colliders["mollet_d"];
+            // 5. Calf / Shin (Knee to Ankle)
+            if ((p.Contains("calf") || p.Contains("shin") || p.Contains("knee")) && (b.Contains("foot") || b.Contains("ankle")))
+                return isLeft ? _colliders["mollet_g"] : _colliders["mollet_d"];
 
-            if (b.Contains("thigh") || b.Contains("leg"))
-                return (b.Contains(" l ") || b.StartsWith("l ") || b.Contains(".l") || b.Contains("left")) ? _colliders["cuisse_g"] : _colliders["cuisse_d"];
+            // 6. Thigh (Hip to Knee)
+            if (p.Contains("thigh") && (b.Contains("calf") || b.Contains("shin") || b.Contains("knee")))
+                return isLeft ? _colliders["cuisse_g"] : _colliders["cuisse_d"];
 
-            if (b.Contains("pelvis") || (p.Contains("pelvis") && !b.Contains("spine")))
+            // 7. Pelvis / Hips / Buttocks (Hip joint base or Pelvis)
+            if (b.Contains("pelvis") || (p.Contains("pelvis") && b.Contains("spine")) || ((p.Contains("pelvis") || p.Contains("spine")) && b.Contains("thigh")))
                 return _colliders["bassin"];
 
-            if (b.Contains("spine1") || b.Contains("spine_1") || b.Contains("belly") || b.Contains("abdomen") || (p.Contains("pelvis") && b.Contains("spine")))
+            // 8. Head
+            if (p.Contains("head") || (b.Contains("head") && b.Contains("nub")))
+                return _colliders["tete"];
+
+            // 9. Neck (Throat)
+            if (p.Contains("neck") && b.Contains("head"))
+                return _colliders["cou"];
+
+            // 10. Abdomen (Lower spine)
+            if (p.Contains("spine") && (b.Contains("spine1") || b.Contains("belly") || b.Contains("abdomen")))
                 return _colliders["abdomen"];
 
-            if (b.Contains("chest") || b.Contains("spine2") || b.Contains("spine_2") || b.Contains("rib") || b.Contains("torso"))
+            // 11. Torso / Upper chest / Shoulders / Clavicle
+            if (b.Contains("clavicle") || b.Contains("shoulder") || p.Contains("clavicle") || p.Contains("shoulder")
+                || b.Contains("spine2") || p.Contains("spine1") || p.Contains("spine2") || b.Contains("neck")
+                || b.Contains("chest") || b.Contains("torso") || b.Contains("rib"))
                 return _colliders["torse"];
 
             return _colliders["torse"];
