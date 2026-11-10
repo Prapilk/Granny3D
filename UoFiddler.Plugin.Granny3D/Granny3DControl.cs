@@ -597,7 +597,6 @@ namespace UoFiddler.Plugin.Granny3D
         private NumericUpDown nudPoseRotX, nudPoseRotY, nudPoseRotZ;
         private NumericUpDown nudPoseOffX, nudPoseOffY, nudPoseOffZ;
         private NumericUpDown nudPoseGlobX, nudPoseGlobY, nudPoseGlobZ, nudPoseGlobYaw;
-        private Label lblPoseInfo;
         private Label lblPoseTargetInfo;
         private Button btnPoseResetBone, btnPoseResetAll, btnPoseSave;
         // ---- 3ds Max-style view cube (drawn in the top-left corner of the editor view) ----
@@ -686,7 +685,6 @@ namespace UoFiddler.Plugin.Granny3D
         private string _currentAnimPath;
         private float _currentTime;
         private float _clothDt = 1f / 60f;
-        private int _clothDbg;
         private float _pushOutMargin = 0.005f;                                                              
         private float _sewShrinkForce = 0.6f;                                                               
         private NumericUpDown _nudPushMargin;
@@ -705,6 +703,9 @@ namespace UoFiddler.Plugin.Granny3D
             public float Radius = 1.0f;           // Dimension factor
             public float AutoRA = 0f;             // Calibrated tight radius at A
             public float AutoRB = 0f;             // Calibrated tight radius at B
+            public float AutoLenA = 0f;           // Auto-fit endpoint extension at A (meters)
+            public float AutoLenB = 0f;           // Auto-fit endpoint extension at B (meters)
+            public List<float> AutoRadii = new List<float>(); // Per-sub-capsule radii (from A to B)
         }
 
         public class CharacterColliderConfig
@@ -728,6 +729,9 @@ namespace UoFiddler.Plugin.Granny3D
             public float Radius { get; set; } = 1f;
             public float AutoRA { get; set; } = 0f;
             public float AutoRB { get; set; } = 0f;
+            public float AutoLenA { get; set; } = 0f;
+            public float AutoLenB { get; set; } = 0f;
+            public List<float> AutoRadii { get; set; } = new List<float>();
         }
 
         private readonly Dictionary<string, ColliderDef> _colliders = new Dictionary<string, ColliderDef>(StringComparer.OrdinalIgnoreCase);
@@ -10175,8 +10179,6 @@ namespace UoFiddler.Plugin.Granny3D
             public float Cell = 0.08f;
             public readonly List<CollisionTri> Tris = new List<CollisionTri>();
             public readonly Dictionary<long, List<int>> Cells = new Dictionary<long, List<int>>();
-            public int[] Stamp = Array.Empty<int>();
-            public int QueryId;
             public Vector3 BoundsMin = new Vector3(float.MaxValue);
             public Vector3 BoundsMax = new Vector3(float.MinValue);
 
@@ -14898,7 +14900,9 @@ namespace UoFiddler.Plugin.Granny3D
 
                 if (_lblSelectedColInfo != null)
                 {
-                    string fitInfo = cDef.AutoRA > 0f ? $"Auto-Fit : r={Math.Round(cDef.AutoRA * 100f, 1)}cm" : "Rayon standard";
+                    string fitInfo = (cDef.AutoRadii != null && cDef.AutoRadii.Count > 1)
+                        ? $"Auto-Fit : {cDef.AutoRadii.Count - 1} segs ({Math.Round(cDef.AutoRadii.Min() * 100f, 1)}-{Math.Round(cDef.AutoRadii.Max() * 100f, 1)}cm)"
+                        : (cDef.AutoRA > 0f ? $"Auto-Fit : r={Math.Round(cDef.AutoRA * 100f, 1)}cm" : "Rayon standard");
                     _lblSelectedColInfo.Text = $"{cDef.DisplayName} ({fitInfo})";
                 }
             }
@@ -15027,6 +15031,9 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 c.AutoRA = 0f;
                 c.AutoRB = 0f;
+                c.AutoLenA = 0f;
+                c.AutoLenB = 0f;
+                c.AutoRadii.Clear();
             }
 
             int bn = hostMesh.Bones.Count;
@@ -15052,14 +15059,31 @@ namespace UoFiddler.Plugin.Granny3D
                 segments.Add((p, i, pName, bName, A, B, cDef));
             }
 
-            var colRadiiA = new Dictionary<string, List<float>>(StringComparer.OrdinalIgnoreCase);
-            var colRadiiB = new Dictionary<string, List<float>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var key in _colliders.Keys)
+            // Sub-capsule subdivision (~4 cm per slice)
+            const float TARGET_SLICE_LEN = 0.04f;
+            int segCount = segments.Count;
+            var segSlices = new int[segCount];
+            var segNodes = new int[segCount];
+            var segNodeDists = new List<float>[segCount][];
+            var segMinProj = new float[segCount];
+            var segMaxProj = new float[segCount];
+
+            for (int s = 0; s < segCount; s++)
             {
-                colRadiiA[key] = new List<float>();
-                colRadiiB[key] = new List<float>();
+                float len = Vector3.Distance(segments[s].A, segments[s].B);
+                int slices = Math.Clamp((int)Math.Round(len / TARGET_SLICE_LEN), 1, 8);
+                int nodes = slices + 1;
+                segSlices[s] = slices;
+                segNodes[s] = nodes;
+                segNodeDists[s] = new List<float>[nodes];
+                for (int n = 0; n < nodes; n++)
+                    segNodeDists[s][n] = new List<float>();
+
+                segMinProj[s] = float.MaxValue;
+                segMaxProj[s] = float.MinValue;
             }
 
+            // Spatial partitioning by strictly nearest segment (eliminates skin-weight blend distortions)
             foreach (var bm in bodyMeshes)
             {
                 Vector3[] verts = bm.DeformedCache ?? bm.BaseVertices;
@@ -15070,103 +15094,130 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     Vector3 V = verts[v];
                     int bestSegIdx = -1;
-                    float bestWeight = 0f;
+                    float bestDistSq = float.MaxValue;
+                    float bestT = 0f;
 
-                    if (bm.Skin != null && v < bm.Skin.Length && bm.Skin[v] != null)
+                    for (int s = 0; s < segCount; s++)
                     {
-                        var sinf = bm.Skin[v];
-                        for (int k = 0; k < sinf.Length; k++)
+                        Vector3 sVec = segments[s].B - segments[s].A;
+                        float sLen2 = sVec.LengthSquared;
+                        if (sLen2 < 1e-6f) continue;
+
+                        float t = Math.Clamp(Vector3.Dot(V - segments[s].A, sVec) / sLen2, 0f, 1f);
+                        Vector3 pt = segments[s].A + sVec * t;
+                        float dsq = (V - pt).LengthSquared;
+
+                        if (dsq < bestDistSq)
                         {
-                            int bid = sinf[k].BoneId;
-                            float w = sinf[k].Weight;
-                            if (w > bestWeight)
-                            {
-                                int sIdx = segments.FindIndex(s => s.i == bid || s.p == bid);
-                                if (sIdx >= 0)
-                                {
-                                    bestWeight = w;
-                                    bestSegIdx = sIdx;
-                                }
-                            }
+                            bestDistSq = dsq;
+                            bestSegIdx = s;
+                            bestT = t;
                         }
                     }
 
-                    if (bestSegIdx < 0)
-                    {
-                        float minDistSq = float.MaxValue;
-                        for (int s = 0; s < segments.Count; s++)
-                        {
-                            Vector3 segA = segments[s].A;
-                            Vector3 segB = segments[s].B;
-                            Vector3 sVec = segB - segA;
-                            float sLen2 = sVec.LengthSquared;
-                            if (sLen2 < 1e-6f) continue;
-                            float st = Math.Clamp(Vector3.Dot(V - segA, sVec) / sLen2, 0f, 1f);
-                            Vector3 pt = segA + sVec * st;
-                            float dsq = (V - pt).LengthSquared;
-                            if (dsq < minDistSq)
-                            {
-                                minDistSq = dsq;
-                                bestSegIdx = s;
-                            }
-                        }
-                    }
-
-                    if (bestSegIdx < 0) continue;
+                    if (bestSegIdx < 0 || bestDistSq > (0.28f * 0.28f)) continue;
 
                     var seg = segments[bestSegIdx];
                     Vector3 S = seg.B - seg.A;
                     float len2 = S.LengthSquared;
-                    if (len2 < 1e-6f) continue;
+                    float len = MathF.Sqrt(len2);
+                    if (len > 1e-4f)
+                    {
+                        Vector3 axis = S / len;
+                        float projDist = Vector3.Dot(V - seg.A, axis);
+                        if (projDist < segMinProj[bestSegIdx]) segMinProj[bestSegIdx] = projDist;
+                        if (projDist > segMaxProj[bestSegIdx]) segMaxProj[bestSegIdx] = projDist;
+                    }
 
-                    float t = Math.Clamp(Vector3.Dot(V - seg.A, S) / len2, 0f, 1f);
-                    Vector3 proj = seg.A + S * t;
-                    float dist = (V - proj).Length;
+                    float dist = MathF.Sqrt(bestDistSq);
+                    int slices = segSlices[bestSegIdx];
+                    int nodes = segNodes[bestSegIdx];
+                    float nodeFloat = bestT * slices;
 
-                    if (dist > 0.28f) continue;
+                    int n0 = (int)Math.Floor(nodeFloat);
+                    int n1 = Math.Min(n0 + 1, nodes - 1);
 
-                    string colId = seg.cDef.Id;
-                    if (t <= 0.5f)
-                        colRadiiA[colId].Add(dist);
-                    else
-                        colRadiiB[colId].Add(dist);
+                    if (Math.Abs(nodeFloat - n0) <= 0.65f)
+                        segNodeDists[bestSegIdx][n0].Add(dist);
+                    if (n1 != n0 && Math.Abs(nodeFloat - n1) <= 0.65f)
+                        segNodeDists[bestSegIdx][n1].Add(dist);
                 }
             }
 
             int adaptedCount = 0;
-            foreach (var kv in _colliders)
+            for (int s = 0; s < segCount; s++)
             {
-                string id = kv.Key;
-                var cDef = kv.Value;
-                if (id == "poitrine") continue;
+                var seg = segments[s];
+                var cDef = seg.cDef;
+                if (cDef == null || string.Equals(cDef.Id, "poitrine", StringComparison.OrdinalIgnoreCase)) continue;
 
-                var rA = colRadiiA[id];
-                var rB = colRadiiB[id];
+                int nodes = segNodes[s];
+                float[] nodeRadii = new float[nodes];
 
-                if (rA.Count >= 5 || rB.Count >= 5)
+                for (int n = 0; n < nodes; n++)
                 {
-                    float fitA = rA.Count >= 5 ? GetPercentile(rA, 0.94f) + 0.003f : 0f;
-                    float fitB = rB.Count >= 5 ? GetPercentile(rB, 0.94f) + 0.003f : 0f;
-
-                    if (fitA > 0.02f && fitB > 0.02f)
+                    var dists = segNodeDists[s][n];
+                    if (dists.Count >= 4)
                     {
-                        cDef.AutoRA = fitA;
-                        cDef.AutoRB = fitB;
-                        adaptedCount++;
+                        nodeRadii[n] = GetPercentile(dists, 0.94f) + 0.003f;
                     }
-                    else if (fitA > 0.02f)
+                    else
                     {
-                        cDef.AutoRA = fitA;
-                        cDef.AutoRB = fitA;
-                        adaptedCount++;
-                    }
-                    else if (fitB > 0.02f)
-                    {
-                        cDef.AutoRA = fitB;
-                        cDef.AutoRB = fitB;
-                        adaptedCount++;
+                        nodeRadii[n] = 0f;
                     }
                 }
+
+                // Fill any missing/sparse nodes via neighbor interpolation
+                for (int n = 0; n < nodes; n++)
+                {
+                    if (nodeRadii[n] <= 0.015f)
+                    {
+                        float left = 0f, right = 0f;
+                        int leftDist = int.MaxValue, rightDist = int.MaxValue;
+                        for (int l = n - 1; l >= 0; l--)
+                        {
+                            if (nodeRadii[l] > 0.015f) { left = nodeRadii[l]; leftDist = n - l; break; }
+                        }
+                        for (int r = n + 1; r < nodes; r++)
+                        {
+                            if (nodeRadii[r] > 0.015f) { right = nodeRadii[r]; rightDist = r - n; break; }
+                        }
+
+                        if (left > 0f && right > 0f)
+                            nodeRadii[n] = (left * rightDist + right * leftDist) / (float)(leftDist + rightDist);
+                        else if (left > 0f)
+                            nodeRadii[n] = left;
+                        else if (right > 0f)
+                            nodeRadii[n] = right;
+                        else
+                            nodeRadii[n] = 0.06f; // anatomical default
+                    }
+                }
+
+                // Sanity clamp (between 2cm and 25cm radius)
+                for (int n = 0; n < nodes; n++)
+                {
+                    nodeRadii[n] = Math.Clamp(nodeRadii[n], 0.02f, 0.25f);
+                }
+
+                cDef.AutoRadii = new List<float>(nodeRadii);
+                cDef.AutoRA = nodeRadii[0];
+                cDef.AutoRB = nodeRadii[nodes - 1];
+                adaptedCount++;
+            }
+
+            // Endpoint extension: extend each capsule along its axis so it covers the full
+            // mesh extent (the bones only span joint-to-joint, while the skin bulges past them).
+            for (int s = 0; s < segCount; s++)
+            {
+                if (segMinProj[s] >= float.MaxValue || segMaxProj[s] <= float.MinValue) continue;
+                var seg = segments[s];
+                var cDef = seg.cDef;
+                if (cDef == null || string.Equals(cDef.Id, "poitrine", StringComparison.OrdinalIgnoreCase)) continue;
+                float segLen = Vector3.Distance(seg.A, seg.B);
+                if (segLen < 1e-4f) continue;
+                cDef.AutoLenA = Math.Min(0f, segMinProj[s]);
+                cDef.AutoLenB = Math.Max(0f, segMaxProj[s] - segLen);
             }
 
             // Poitrine (Breasts / Pectoraux) Frontal Auto-Fit
@@ -15205,6 +15256,7 @@ namespace UoFiddler.Plugin.Granny3D
                             float tightRadius = Math.Max(0.055f, peakFwd * 0.50f + 0.003f);
                             brDef.AutoRA = tightRadius;
                             brDef.AutoRB = tightRadius;
+                            brDef.AutoRadii = new List<float> { tightRadius, tightRadius };
                             brDef.Offset.Y = (float)Math.Round((peakFwd - tightRadius - 0.065f) * 100f, 1);
                             brDef.Scale.Y = 1.0f;
                             adaptedCount++;
@@ -15275,7 +15327,10 @@ namespace UoFiddler.Plugin.Granny3D
                         DimZ = kv.Value.Scale.Z,
                         Radius = kv.Value.Radius,
                         AutoRA = kv.Value.AutoRA,
-                        AutoRB = kv.Value.AutoRB
+                        AutoRB = kv.Value.AutoRB,
+                        AutoLenA = kv.Value.AutoLenA,
+                        AutoLenB = kv.Value.AutoLenB,
+                        AutoRadii = kv.Value.AutoRadii != null ? new List<float>(kv.Value.AutoRadii) : new List<float>()
                     };
                 }
 
@@ -15336,6 +15391,9 @@ namespace UoFiddler.Plugin.Granny3D
                             cDef.Radius = kv.Value.Radius > 0.05f ? kv.Value.Radius : 1f;
                             cDef.AutoRA = kv.Value.AutoRA;
                             cDef.AutoRB = kv.Value.AutoRB;
+                            cDef.AutoLenA = kv.Value.AutoLenA;
+                            cDef.AutoLenB = kv.Value.AutoLenB;
+                            cDef.AutoRadii = kv.Value.AutoRadii != null ? new List<float>(kv.Value.AutoRadii) : new List<float>();
                         }
                     }
                 }
@@ -15364,6 +15422,14 @@ namespace UoFiddler.Plugin.Granny3D
         private void ResetColliders(bool silent = false)
         {
             InitColliderDefs();
+            foreach (var c in _colliders.Values)
+            {
+                c.AutoRA = 0f;
+                c.AutoRB = 0f;
+                c.AutoLenA = 0f;
+                c.AutoLenB = 0f;
+                c.AutoRadii.Clear();
+            }
             _colGlobalScale = 1.0f;
             if (_nudColGlobalScale != null) _nudColGlobalScale.Value = 1.00m;
 
