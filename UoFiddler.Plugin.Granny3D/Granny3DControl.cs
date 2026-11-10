@@ -7349,6 +7349,10 @@ namespace UoFiddler.Plugin.Granny3D
             _camera.Pitch = 0f;
             UpdateModelInfo();
             Log($"  done meshes={_loadedMeshes.Count} refCenter={_refCenter} refScale={_refScale} camDist={_camera.Distance} vp={glControl.Width}x{glControl.Height}");
+            if (!File.Exists(autoColPath) && _loadedMeshes.Exists(m => !m.Hidden && m.BaseVertices != null && m.BaseVertices.Length > 0))
+            {
+                AutoFitCapsulesToBodyMesh();
+            }
             if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
         }
 
@@ -13718,6 +13722,8 @@ namespace UoFiddler.Plugin.Granny3D
             public float ScaleX, ScaleY;
             public string ColliderId;
             public string Name;
+            public bool IsStart;
+            public bool IsEnd;
         }
 
         // Centre de la bounding box (en espace de base) du mesh et des autres parties du même fichier.
@@ -14672,27 +14678,87 @@ namespace UoFiddler.Plugin.Granny3D
                     A += segOff;
                     B += segOff;
 
-                    float cRad = cDef != null ? cDef.Radius : 1.0f;
-                    if (cDef != null && cDef.AutoRA > 0f) rA = cDef.AutoRA + clearance + _clothClearance;
-                    if (cDef != null && cDef.AutoRB > 0f) rB = cDef.AutoRB + clearance + _clothClearance;
+                    if (cDef != null && (cDef.AutoLenA != 0f || cDef.AutoLenB != 0f))
+                    {
+                        Vector3 dir = B - A;
+                        float segL = dir.Length;
+                        if (segL > 1e-4f)
+                        {
+                            Vector3 uDir = dir / segL;
+                            A += uDir * cDef.AutoLenA;
+                            B += uDir * cDef.AutoLenB;
+                        }
+                    }
 
-                    rA = rA * cRad * _colGlobalScale;
-                    rB = rB * cRad * _colGlobalScale;
+                    float cRad = cDef != null ? cDef.Radius : 1.0f;
+                    float baseRA = rA;
+                    float baseRB = rB;
+                    if (cDef != null && cDef.AutoRA > 0f) baseRA = cDef.AutoRA + clearance + _clothClearance;
+                    if (cDef != null && cDef.AutoRB > 0f) baseRB = cDef.AutoRB + clearance + _clothClearance;
+
+                    baseRA *= cRad * _colGlobalScale;
+                    baseRB *= cRad * _colGlobalScale;
 
                     if ((pName.ToLowerInvariant().Contains("head") || bName.ToLowerInvariant().Contains("head")) && IsNeckBone(bName))
                     {
                         hasHeadSegment = true;
                     }
 
-                    caps.Add(new ClothCapsule
+                    if (cDef != null && cDef.AutoRadii != null && cDef.AutoRadii.Count >= 2)
                     {
-                        A = A, B = B,
-                        RA = rA, RB = rB,
-                        ScaleX = cDef != null ? cDef.Scale.X : 1f,
-                        ScaleY = cDef != null ? cDef.Scale.Y : 1f,
-                        ColliderId = cDef != null ? cDef.Id : "",
-                        Name = bName
-                    });
+                        int subCount = cDef.AutoRadii.Count - 1;
+                        for (int s = 0; s < subCount; s++)
+                        {
+                            float t0 = (float)s / subCount;
+                            float t1 = (float)(s + 1) / subCount;
+                            Vector3 subA = Vector3.Lerp(A, B, t0);
+                            Vector3 subB = Vector3.Lerp(A, B, t1);
+                            float subRA = (cDef.AutoRadii[s] + clearance + _clothClearance) * cRad * _colGlobalScale;
+                            float subRB = (cDef.AutoRadii[s + 1] + clearance + _clothClearance) * cRad * _colGlobalScale;
+
+                            caps.Add(new ClothCapsule
+                            {
+                                A = subA,
+                                B = subB,
+                                RA = subRA,
+                                RB = subRB,
+                                ScaleX = cDef.Scale.X,
+                                ScaleY = cDef.Scale.Y,
+                                ColliderId = cDef.Id,
+                                Name = bName,
+                                IsStart = (s == 0),
+                                IsEnd = (s == subCount - 1)
+                            });
+                        }
+                    }
+                    else
+                    {
+                        float curLen = Vector3.Distance(A, B);
+                        int subCount = Math.Clamp((int)Math.Round(curLen / 0.04f), 1, 8);
+                        for (int s = 0; s < subCount; s++)
+                        {
+                            float t0 = (float)s / subCount;
+                            float t1 = (float)(s + 1) / subCount;
+                            Vector3 subA = Vector3.Lerp(A, B, t0);
+                            Vector3 subB = Vector3.Lerp(A, B, t1);
+                            float subRA = MathHelper.Lerp(baseRA, baseRB, t0);
+                            float subRB = MathHelper.Lerp(baseRB, baseRB, t1);
+
+                            caps.Add(new ClothCapsule
+                            {
+                                A = subA,
+                                B = subB,
+                                RA = subRA,
+                                RB = subRB,
+                                ScaleX = cDef != null ? cDef.Scale.X : 1f,
+                                ScaleY = cDef != null ? cDef.Scale.Y : 1f,
+                                ColliderId = cDef != null ? cDef.Id : "",
+                                Name = bName,
+                                IsStart = (s == 0),
+                                IsEnd = (s == subCount - 1)
+                            });
+                        }
+                    }
                 }
 
                 // If this mesh has a Head bone but NO child HeadNub / Head_End bone, synthesize the head capsule
@@ -14730,7 +14796,9 @@ namespace UoFiddler.Plugin.Granny3D
                                     ScaleX = headDef != null ? headDef.Scale.X : 1f,
                                     ScaleY = headDef != null ? headDef.Scale.Y : 1f,
                                     ColliderId = "tete",
-                                    Name = m.Bones[headIdx].Name + "_Cranium"
+                                    Name = m.Bones[headIdx].Name + "_Cranium",
+                                    IsStart = true,
+                                    IsEnd = true
                                 });
                             }
                         }
@@ -14774,7 +14842,9 @@ namespace UoFiddler.Plugin.Granny3D
                                 ScaleX = breastDef.Scale.X,
                                 ScaleY = breastDef.Scale.Y,
                                 ColliderId = "poitrine",
-                                Name = m.Bones[chestIdx].Name + "_Poitrine"
+                                Name = m.Bones[chestIdx].Name + "_Poitrine",
+                                IsStart = true,
+                                IsEnd = true
                             });
                         }
                     }
@@ -16461,18 +16531,28 @@ namespace UoFiddler.Plugin.Granny3D
                 AddLineSegment(targetLines, aGl + (w * sy) * raGl, bGl + (w * sy) * rbGl);
                 AddLineSegment(targetLines, aGl - (w * sy) * raGl, bGl - (w * sy) * rbGl);
 
-                // End caps (hemispherical arcs)
-                for (int k = 0; k < segs / 2; k++)
+                // End caps (hemispherical arcs) only at true limb boundaries
+                if (cap.IsStart)
                 {
-                    float a0 = (float)(k * Math.PI / (segs / 2));
-                    float a1 = (float)((k + 1) * Math.PI / (segs / 2));
-                    Vector3 arc0A = aGl - axis * (float)Math.Sin(a0) * raGl + (u * sx) * (float)Math.Cos(a0) * raGl;
-                    Vector3 arc1A = aGl - axis * (float)Math.Sin(a1) * raGl + (u * sx) * (float)Math.Cos(a1) * raGl;
-                    AddLineSegment(targetLines, arc0A, arc1A);
-
-                    Vector3 arc0B = bGl + axis * (float)Math.Sin(a0) * rbGl + (u * sx) * (float)Math.Cos(a0) * rbGl;
-                    Vector3 arc1B = bGl + axis * (float)Math.Sin(a1) * rbGl + (u * sx) * (float)Math.Cos(a1) * rbGl;
-                    AddLineSegment(targetLines, arc0B, arc1B);
+                    for (int k = 0; k < segs / 2; k++)
+                    {
+                        float a0 = (float)(k * Math.PI / (segs / 2));
+                        float a1 = (float)((k + 1) * Math.PI / (segs / 2));
+                        Vector3 arc0A = aGl - axis * (float)Math.Sin(a0) * raGl + (u * sx) * (float)Math.Cos(a0) * raGl;
+                        Vector3 arc1A = aGl - axis * (float)Math.Sin(a1) * raGl + (u * sx) * (float)Math.Cos(a1) * raGl;
+                        AddLineSegment(targetLines, arc0A, arc1A);
+                    }
+                }
+                if (cap.IsEnd)
+                {
+                    for (int k = 0; k < segs / 2; k++)
+                    {
+                        float a0 = (float)(k * Math.PI / (segs / 2));
+                        float a1 = (float)((k + 1) * Math.PI / (segs / 2));
+                        Vector3 arc0B = bGl + axis * (float)Math.Sin(a0) * rbGl + (u * sx) * (float)Math.Cos(a0) * rbGl;
+                        Vector3 arc1B = bGl + axis * (float)Math.Sin(a1) * rbGl + (u * sx) * (float)Math.Cos(a1) * rbGl;
+                        AddLineSegment(targetLines, arc0B, arc1B);
+                    }
                 }
             }
 
