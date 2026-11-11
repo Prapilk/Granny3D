@@ -13489,17 +13489,36 @@ namespace UoFiddler.Plugin.Granny3D
                     ComputeWorldMatrices(lm);
                 }
 
-                // Equipment attach transform (offset + mirror) on a full rig (own skeleton,
+                // Equipment attach transform (rotation + offset + mirror) on a full rig (own skeleton,
                 // not host-attached) must move the skeleton too, so the bone overlay / colliders
-                // / export follow the tweaked mesh. The mesh tweak skips both for these meshes.
+                // / export follow the tweaked mesh. The mesh tweak skips these for these meshes.
                 bool rigMirror = lm.MirrorX || lm.MirrorY || lm.MirrorZ;
-                if ((lm.AttachOffset != Vector3.Zero || rigMirror) && IsOwnSkeletonRig(lm))
+                bool hasRigRot = lm.AttachRotation != Vector3.Zero;
+                bool hasRigOff = lm.AttachOffset != Vector3.Zero;
+
+                if ((hasRigOff || rigMirror || hasRigRot) && IsOwnSkeletonRig(lm))
                 {
-                    Matrix4 rigTweak = Matrix4.CreateScale(
+                    Vector3 rotAngles = lm.MirrorX
+                        ? new Vector3(lm.AttachRotation.X, -lm.AttachRotation.Y, -lm.AttachRotation.Z)
+                        : lm.AttachRotation;
+
+                    Matrix4 rot = Matrix4.CreateFromQuaternion(Quaternion.FromEulerAngles(
+                        MathHelper.DegreesToRadians(rotAngles.X),
+                        MathHelper.DegreesToRadians(rotAngles.Y),
+                        MathHelper.DegreesToRadians(rotAngles.Z)));
+
+                    Matrix4 scale = Matrix4.CreateScale(
                         lm.MirrorX ? -1f : 1f,
                         lm.MirrorY ? -1f : 1f,
-                        lm.MirrorZ ? -1f : 1f)
-                        * Matrix4.CreateTranslation(lm.AttachOffset);
+                        lm.MirrorZ ? -1f : 1f);
+
+                    Vector3 off = lm.MirrorX
+                        ? new Vector3(-lm.AttachOffset.X, lm.AttachOffset.Y, lm.AttachOffset.Z)
+                        : lm.AttachOffset;
+
+                    Matrix4 tr = Matrix4.CreateTranslation(off);
+
+                    Matrix4 rigTweak = scale * rot * tr;
                     for (int i = 0; i < boneCount; i++)
                     {
                         int p = lm.Bones[i].ParentId;
@@ -13559,7 +13578,7 @@ namespace UoFiddler.Plugin.Granny3D
                 // also use the skin matrix.
                 bool inBodySpace = lm.AttachInBindSpace;
                 if (inBodySpace && bestBi < bestHost.SkinMatrices.Length)
-                    lm.AttachMatrix = bestHost.SkinMatrices[bestBi];
+                    lm.AttachMatrix = BuildAttachTweak(lm) * bestHost.SkinMatrices[bestBi];
                 else if (bestHost.WorldMatrices != null && bestBi < bestHost.WorldMatrices.Length)
                     lm.AttachMatrix = BuildAttachTweak(lm) * bestHost.WorldMatrices[bestBi];
                 else
@@ -13895,10 +13914,9 @@ namespace UoFiddler.Plugin.Granny3D
                 lm.PartScale * lm.PartScaleVec.Z);
             bool scaleTweaked = pscale.X != 1f || pscale.Y != 1f || pscale.Z != 1f;
 
-            bool hasRot = lm.AttachRotation != Vector3.Zero;
-            // For a full rig the offset AND the mirror are applied to the skeleton root
+            // For a full rig the rotation, offset AND the mirror are applied to the skeleton root
             // (PoseSkeletons) so the bones follow the mesh; applying them again here would
-            // double-shift / double-mirror the mesh.
+            // double-shift / double-rotate / double-mirror the mesh.
             bool rigSkip = IsOwnSkeletonRig(lm);
             bool mirrorX = lm.MirrorX && !rigSkip;
             bool mirrorY = lm.MirrorY && !rigSkip;
@@ -13906,6 +13924,7 @@ namespace UoFiddler.Plugin.Granny3D
             bool hasMirror = mirrorX || mirrorY || mirrorZ;
             Vector3 attachOffset = rigSkip ? Vector3.Zero : lm.AttachOffset;
             bool hasOffset = attachOffset != Vector3.Zero;
+            bool hasRot = lm.AttachRotation != Vector3.Zero && !rigSkip;
             bool thick = hasThickness && lm.Thickness != 0f && normal != default;
 
             if (!scaleTweaked && !hasRot && !hasMirror && !hasOffset && !thick && !lm.MirrorArms)
@@ -14769,6 +14788,11 @@ namespace UoFiddler.Plugin.Granny3D
 
                     var wa = m.WorldMatrices[p];
                     var wb = m.WorldMatrices[i];
+                    if (m.HasAttachMatrix)
+                    {
+                        wa = wa * m.AttachMatrix;
+                        wb = wb * m.AttachMatrix;
+                    }
                     Vector3 A = new Vector3(wa.M41, wa.M42, wa.M43);
                     Vector3 B = new Vector3(wb.M41, wb.M42, wb.M43);
 
@@ -16806,6 +16830,11 @@ namespace UoFiddler.Plugin.Granny3D
 
                     var wa = m.WorldMatrices[p];
                     var wb = m.WorldMatrices[i];
+                    if (m.HasAttachMatrix)
+                    {
+                        wa = wa * m.AttachMatrix;
+                        wb = wb * m.AttachMatrix;
+                    }
                     Vector3 A = new Vector3(wa.M41, wa.M42, wa.M43);
                     Vector3 B = new Vector3(wb.M41, wb.M42, wb.M43);
 
