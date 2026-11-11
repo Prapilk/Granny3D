@@ -666,7 +666,7 @@ namespace UoFiddler.Plugin.Granny3D
                             if (string.Equals(lm.SourcePath, _charPath, StringComparison.OrdinalIgnoreCase))
                             {
                                 GrannyModelPart? part = null;
-                                if (lm.PartIndex >= 0 && lm.PartIndex < _model.Parts.Count && string.Equals(_model.Parts[lm.PartIndex].Name, lm.Name, StringComparison.OrdinalIgnoreCase))
+                                if (lm.PartIndex >= 0 && lm.PartIndex < _model.Parts.Count)
                                 {
                                     part = _model.Parts[lm.PartIndex];
                                 }

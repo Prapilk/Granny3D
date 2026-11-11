@@ -4437,9 +4437,16 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         try { File.Delete(f); } catch { }
                     }
+
+                    string animSubDir = Path.Combine(folder, charName);
+                    if (Directory.Exists(animSubDir))
+                    {
+                        try { Directory.Delete(animSubDir, true); } catch { }
+                    }
                 }
 
                 node.Remove();
+                BuildAnimCategories();
                 Log($"Character supprimé : {charName} ({info.MeshPath})");
             }
             catch (Exception ex)
@@ -5724,6 +5731,29 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = folderTag.FolderPath, UseShellExecute = true }); } catch { }
                 });
+                tvAnimMenu.Items.Add(new ToolStripSeparator());
+                var delFolderItem = new ToolStripMenuItem("🗑️ Supprimer ce dossier d'animations", null, (s, a) =>
+                {
+                    var res = MessageBox.Show($"Voulez-vous vraiment supprimer le dossier '{node.Text}' et toutes ses animations ?", "Supprimer dossier d'animations", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                    if (res == DialogResult.Yes)
+                    {
+                        try
+                        {
+                            if (Directory.Exists(folderTag.FolderPath))
+                            {
+                                Directory.Delete(folderTag.FolderPath, true);
+                            }
+                            node.Remove();
+                            BuildAnimCategories();
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show($"Erreur lors de la suppression : {ex.Message}", "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
+                    }
+                });
+                delFolderItem.ForeColor = Color.Crimson;
+                tvAnimMenu.Items.Add(delFolderItem);
                 return;
             }
 
@@ -7022,6 +7052,9 @@ namespace UoFiddler.Plugin.Granny3D
                     // Automatically load the newly imported model
                     LoadModel(dlg.ImportedModelPath);
 
+                    _camera.ViewFront();
+                    if (glControl != null && glControl.IsHandleCreated) glControl.Invalidate();
+
                     // Reveal and select in tvModels
                     RevealModelFile(dlg.ImportedModelPath);
                 }
@@ -7520,9 +7553,10 @@ namespace UoFiddler.Plugin.Granny3D
             ApplyAnimationPose(0f);
             ComputeReferenceBounds();
             RefreshVertexBuffers(true);
+            ApplyAnimationPose(0f);
             _camera.Target = Vector3.Zero;
             _camera.Distance = 5f;
-            _camera.Yaw = 0f;
+            _camera.ViewFront();
             _camera.Pitch = 0f;
             UpdateModelInfo();
             Log($"  done meshes={_loadedMeshes.Count} refCenter={_refCenter} refScale={_refScale} camDist={_camera.Distance} vp={glControl.Width}x{glControl.Height}");
@@ -7613,9 +7647,10 @@ namespace UoFiddler.Plugin.Granny3D
             PopulateBoneCombo();
             ComputeReferenceBounds();
             RefreshVertexBuffers(true);
+            ApplyAnimationPose(0f);
             _camera.Target = Vector3.Zero;
             _camera.Distance = 5f;
-            _camera.Yaw = 0f;
+            _camera.ViewFront();
             _camera.Pitch = 0f;
             UpdateModelInfo();
             Log($"  custom character loaded: meshes={_loadedMeshes.Count} refCenter={_refCenter} refScale={_refScale}");
@@ -11995,7 +12030,13 @@ namespace UoFiddler.Plugin.Granny3D
                 else if (Path.GetExtension(file).Equals(".dds", StringComparison.OrdinalIgnoreCase))
                     bmp = LoadDds(file);
                 else
-                    bmp = new Bitmap(file);
+                {
+                    using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    using var ms = new MemoryStream();
+                    fs.CopyTo(ms);
+                    ms.Position = 0;
+                    bmp = new Bitmap(ms);
+                }
 
                 if (bmp == null) return -1;
 
@@ -12355,7 +12396,7 @@ namespace UoFiddler.Plugin.Granny3D
                 if (model != null)
                 {
                     GrannyModelPart part = null;
-                    if (lm.PartIndex >= 0 && lm.PartIndex < model.Parts.Count && string.Equals(model.Parts[lm.PartIndex].Name, lm.Name, StringComparison.OrdinalIgnoreCase))
+                    if (lm.PartIndex >= 0 && lm.PartIndex < model.Parts.Count)
                     {
                         part = model.Parts[lm.PartIndex];
                     }
@@ -12397,7 +12438,7 @@ namespace UoFiddler.Plugin.Granny3D
                 if (model != null)
                 {
                     GrannyModelPart part = null;
-                    if (lm.PartIndex >= 0 && lm.PartIndex < model.Parts.Count && string.Equals(model.Parts[lm.PartIndex].Name, lm.Name, StringComparison.OrdinalIgnoreCase))
+                    if (lm.PartIndex >= 0 && lm.PartIndex < model.Parts.Count)
                     {
                         part = model.Parts[lm.PartIndex];
                     }

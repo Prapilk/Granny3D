@@ -73,7 +73,7 @@ namespace UoFiddler.Plugin.Granny3D
                 string dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
 
-                using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+                using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
                 using var bw = new BinaryWriter(fs, Encoding.UTF8);
                 bw.Write(Signature);
                 bw.Write(Version);
@@ -115,7 +115,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
             try
             {
-                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using var br = new BinaryReader(fs, Encoding.UTF8);
 
                 var sig = br.ReadBytes(Signature.Length);
