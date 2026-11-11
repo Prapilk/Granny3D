@@ -44,6 +44,7 @@ namespace UoFiddler.Plugin.Granny3D
         private System.Windows.Forms.Timer animTimer = null!;
 
         // State - Model & Raw Assets
+        private string? _initialStartDir;
         private string? _currentModelPath;
         private Scene? _rawModelScene;
         private readonly List<string> _detectedAnimFiles = new();
@@ -103,8 +104,17 @@ namespace UoFiddler.Plugin.Granny3D
                     : basePath;
             }
 
+            _initialStartDir = startDir;
             txtSourceDir.Text = startDir;
-            ScanSourceFolder(startDir);
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            if (!string.IsNullOrEmpty(_initialStartDir) && Directory.Exists(_initialStartDir))
+            {
+                ScanSourceFolder(_initialStartDir);
+            }
         }
 
         private void InitializeComponent()
@@ -313,7 +323,14 @@ namespace UoFiddler.Plugin.Granny3D
                 CheckOnClick = true,
                 Font = new Font("Segoe UI", 8.5F)
             };
-            clbAnimations.ItemCheck += (s, e) => BeginInvoke(new Action(UpdateAnimCountLabel));
+            clbAnimations.ItemCheck += (s, e) =>
+            {
+                if (IsHandleCreated)
+                {
+                    try { BeginInvoke(new Action(UpdateAnimCountLabel)); }
+                    catch { }
+                }
+            };
 
             grpAnims.Controls.Add(clbAnimations);
             grpAnims.Controls.Add(pnlAnimBtns);
