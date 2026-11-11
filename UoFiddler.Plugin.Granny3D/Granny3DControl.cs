@@ -12070,19 +12070,32 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
-        public static string MakeSafeFilename(string name)
+        public static string MakeSafeFilename(string name, int maxLen = 45)
         {
-            if (string.IsNullOrEmpty(name)) return "mesh";
+            if (string.IsNullOrWhiteSpace(name)) return "mesh";
             var invalid = Path.GetInvalidFileNameChars();
             var sb = new StringBuilder(name.Length);
             foreach (char c in name)
             {
-                if (Array.IndexOf(invalid, c) >= 0 || c == ' ' || c == ':' || c == '/' || c == '\\')
-                    sb.Append('_');
+                if (Array.IndexOf(invalid, c) >= 0 || c <= 31 || c == ' ' || c == ':' || c == '/' || c == '\\' || c == '.' || c == ',' || c == ';' || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == '\'' || c == '"' || c == '`')
+                {
+                    if (sb.Length == 0 || sb[sb.Length - 1] != '_')
+                        sb.Append('_');
+                }
                 else
+                {
                     sb.Append(c);
+                }
             }
-            return sb.ToString();
+            string result = sb.ToString().Trim('_', ' ', '.');
+            if (string.IsNullOrEmpty(result)) result = "mesh";
+
+            if (result.Length > maxLen)
+            {
+                result = result.Substring(0, maxLen).TrimEnd('_', ' ', '.');
+                if (string.IsNullOrEmpty(result)) result = "mesh";
+            }
+            return result;
         }
 
         // If the diffuse has no cutout alpha (fully opaque), borrow the carve mask from the
@@ -12356,13 +12369,16 @@ namespace UoFiddler.Plugin.Granny3D
 
             string outFolder = Path.Combine(BasePath, "Others");
             string ext = Path.GetExtension(ofd.FileName);
-            string safeName = MakeSafeFilename(lm.Name);
-            if (!string.IsNullOrEmpty(lm.MaterialName) && !lm.MaterialName.Equals(lm.Name, StringComparison.OrdinalIgnoreCase))
-                safeName = $"{safeName}_{MakeSafeFilename(lm.MaterialName)}";
-            else if (lm.PartIndex > 0)
+            string safeName = MakeSafeFilename(lm.Name, 35);
+            string safeMat = !string.IsNullOrEmpty(lm.MaterialName) ? MakeSafeFilename(lm.MaterialName, 20) : "";
+            if (!string.IsNullOrEmpty(safeMat) && !safeName.Contains(safeMat, StringComparison.OrdinalIgnoreCase))
+                safeName = $"{safeName}_{safeMat}";
+            else if (lm.PartIndex > 0 && !safeName.Contains($"p{lm.PartIndex + 1}", StringComparison.OrdinalIgnoreCase))
                 safeName = $"{safeName}_p{lm.PartIndex + 1}";
 
-            string charName = !string.IsNullOrEmpty(lm.SourcePath) ? Path.GetFileNameWithoutExtension(lm.SourcePath) : "custom";
+            safeName = MakeSafeFilename(safeName, 45);
+            string rawCharName = !string.IsNullOrEmpty(lm.SourcePath) ? Path.GetFileNameWithoutExtension(lm.SourcePath) : "custom";
+            string charName = MakeSafeFilename(rawCharName, 30);
             string destName = $"{charName}_{safeName}{ext}";
             string destPath = Path.Combine(outFolder, destName);
             try

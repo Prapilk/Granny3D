@@ -1819,15 +1819,17 @@ void main() {
                 var mesh = _rawModelScene.Meshes[m];
                 Matrix4 meshNodeMat = meshToNodeMat[m];
                 Matrix4 totalMeshMat = meshNodeMat * userTransform;
-                string baseName = string.IsNullOrEmpty(mesh.Name) ? $"Mesh_{m}" : mesh.Name;
-                string matName = (mesh.MaterialIndex >= 0 && mesh.MaterialIndex < _rawModelScene.MaterialCount)
+                string rawBase = string.IsNullOrEmpty(mesh.Name) ? $"Mesh_{m}" : mesh.Name;
+                string baseName = Granny3DControl.MakeSafeFilename(rawBase, 35);
+                string rawMat = (mesh.MaterialIndex >= 0 && mesh.MaterialIndex < _rawModelScene.MaterialCount)
                     ? (_rawModelScene.Materials[mesh.MaterialIndex].Name ?? string.Empty)
                     : string.Empty;
+                string matName = Granny3DControl.MakeSafeFilename(rawMat, 20);
                 string uniquePartName = baseName;
                 bool isNameShared = _rawModelScene.Meshes.Where((other, idx) => idx != m && other.Name == mesh.Name).Any();
                 if (isNameShared || usedPartNames.Contains(uniquePartName))
                 {
-                    if (!string.IsNullOrEmpty(matName))
+                    if (!string.IsNullOrEmpty(matName) && !uniquePartName.Contains(matName, StringComparison.OrdinalIgnoreCase))
                         uniquePartName = $"{baseName}_{matName}";
                     else
                         uniquePartName = $"{baseName}_{m}";
@@ -1836,9 +1838,12 @@ void main() {
                 {
                     uniquePartName = $"{uniquePartName}_{m}";
                 }
+                uniquePartName = Granny3DControl.MakeSafeFilename(uniquePartName, 45);
+                while (usedPartNames.Contains(uniquePartName))
+                {
+                    uniquePartName = $"{uniquePartName}_{m}";
+                }
                 usedPartNames.Add(uniquePartName);
-                // Sanitize filename/part name
-                uniquePartName = string.Join("_", uniquePartName.Split(Path.GetInvalidFileNameChars()));
                 var part = new GrannyModelPart
                 {
                     Name = uniquePartName
@@ -1888,7 +1893,9 @@ void main() {
                     if (texFile != null && File.Exists(texFile))
                     {
                         string ext = Path.GetExtension(texFile);
-                        string savedTexName = $"{creatureName}_{uniquePartName}{ext}";
+                        string safeCreature = Granny3DControl.MakeSafeFilename(creatureName, 30);
+                        string safePart = Granny3DControl.MakeSafeFilename(uniquePartName, 45);
+                        string savedTexName = $"{safeCreature}_{safePart}{ext}";
                         string destTexPath = Path.Combine(outFolder, savedTexName);
                         try
                         {

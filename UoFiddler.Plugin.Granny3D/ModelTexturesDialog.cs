@@ -704,14 +704,16 @@ namespace UoFiddler.Plugin.Granny3D
                     {
                         // Nouvelle texture choisie
                         string ext = Path.GetExtension(chosenPath);
-                        string cleanMesh = Granny3DControl.MakeSafeFilename(part.Name);
-                        string safeMat = !string.IsNullOrEmpty(part.MaterialName) ? Granny3DControl.MakeSafeFilename(part.MaterialName) : "";
+                        string cleanMesh = Granny3DControl.MakeSafeFilename(part.Name, 35);
+                        string safeMat = !string.IsNullOrEmpty(part.MaterialName) ? Granny3DControl.MakeSafeFilename(part.MaterialName, 20) : "";
                         if (!string.IsNullOrEmpty(safeMat) && !cleanMesh.Contains(safeMat, StringComparison.OrdinalIgnoreCase))
                             cleanMesh = $"{cleanMesh}_{safeMat}";
-                        else if (partIdx > 0 && !cleanMesh.Contains($"p{partIdx + 1}", StringComparison.OrdinalIgnoreCase) && cleanMesh.Equals(Granny3DControl.MakeSafeFilename(part.Name), StringComparison.OrdinalIgnoreCase))
+                        else if (partIdx > 0 && !cleanMesh.Contains($"p{partIdx + 1}", StringComparison.OrdinalIgnoreCase))
                             cleanMesh = $"{cleanMesh}_p{partIdx + 1}";
 
-                        string destName = $"{charName}_{cleanMesh}{ext}";
+                        cleanMesh = Granny3DControl.MakeSafeFilename(cleanMesh, 45);
+                        string safeCharName = Granny3DControl.MakeSafeFilename(charName, 30);
+                        string destName = $"{safeCharName}_{cleanMesh}{ext}";
                         string destPath = Path.Combine(_othersFolder, destName);
 
                         if (!string.Equals(chosenPath, destPath, StringComparison.OrdinalIgnoreCase))
