@@ -300,9 +300,23 @@ namespace UoFiddler.Plugin.Granny3D
                 pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Left, Width = 8 });
             }
 
+            var btnFlipV = new Button
+            {
+                Text = Localization.Tr("btn_flip_v", "Inverser UV (V)"),
+                Dock = DockStyle.Left,
+                Width = 130,
+                BackColor = Color.FromArgb(70, 50, 95),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9f, FontStyle.Regular)
+            };
+            btnFlipV.Click += BtnFlipV_Click;
+
             pnlBottom.Controls.Add(btnOpenFolder);
             pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Left, Width = 8 });
             pnlBottom.Controls.Add(btnExtractFbx);
+            pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Left, Width = 8 });
+            pnlBottom.Controls.Add(btnFlipV);
             pnlBottom.Controls.Add(_btnCancel);
             pnlBottom.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 10 });
             pnlBottom.Controls.Add(_btnApply);
@@ -413,6 +427,66 @@ namespace UoFiddler.Plugin.Granny3D
             _dgv.Rows[rowIndex].Cells["colTex"].Value = Path.GetFileName(selectedFile) + " (En attente d'enregistrement)";
             _dgv.Rows[rowIndex].DefaultCellStyle.ForeColor = Color.LightGreen;
             UpdatePreviewForPath(selectedFile);
+        }
+
+        private void BtnFlipV_Click(object? sender, EventArgs e)
+        {
+            int selectedPartIdx = -1;
+            if (_dgv.CurrentRow != null && _dgv.CurrentRow.Index >= 0 && _dgv.CurrentRow.Index < _model.Parts.Count)
+                selectedPartIdx = _dgv.CurrentRow.Index;
+            else if (_dgv.SelectedRows.Count > 0 && _dgv.SelectedRows[0].Index >= 0 && _dgv.SelectedRows[0].Index < _model.Parts.Count)
+                selectedPartIdx = _dgv.SelectedRows[0].Index;
+
+            int startIdx = (selectedPartIdx >= 0) ? selectedPartIdx : 0;
+            int endIdx = (selectedPartIdx >= 0) ? selectedPartIdx + 1 : _model.Parts.Count;
+
+            int flippedCount = 0;
+            for (int pIdx = startIdx; pIdx < endIdx; pIdx++)
+            {
+                var part = _model.Parts[pIdx];
+                if (part.UVs != null && part.UVs.Length > 0)
+                {
+                    for (int v = 0; v < part.UVs.Length; v++)
+                        part.UVs[v] = new OpenTK.Mathematics.Vector2(part.UVs[v].X, 1.0f - part.UVs[v].Y);
+
+                    if (_liveMeshes != null)
+                    {
+                        var lm = (pIdx < _liveMeshes.Count) ? _liveMeshes[pIdx] : _liveMeshes.Find(m => string.Equals(m.Name, part.Name, StringComparison.OrdinalIgnoreCase));
+                        if (lm != null)
+                        {
+                            if (lm.SourceMesh != null && lm.SourceMesh.UVs != null)
+                            {
+                                lm.SourceMesh.UVs.Clear();
+                                lm.SourceMesh.UVs.AddRange(part.UVs);
+                            }
+                            if (lm.CornerUVs != null && lm.Indices != null && lm.Interleaved != null)
+                            {
+                                for (int c = 0; c < lm.Indices.Length; c++)
+                                {
+                                    int vi = lm.Indices[c];
+                                    if (vi >= 0 && vi < part.UVs.Length)
+                                    {
+                                        lm.CornerUVs[c] = part.UVs[vi];
+                                        lm.Interleaved[c * 8 + 6] = part.UVs[vi].X;
+                                        lm.Interleaved[c * 8 + 7] = part.UVs[vi].Y;
+                                    }
+                                }
+                                if (lm.Vbo > 0)
+                                {
+                                    OpenTK.Graphics.OpenGL.GL.BindBuffer(OpenTK.Graphics.OpenGL.BufferTarget.ArrayBuffer, lm.Vbo);
+                                    OpenTK.Graphics.OpenGL.GL.BufferSubData(OpenTK.Graphics.OpenGL.BufferTarget.ArrayBuffer, IntPtr.Zero, lm.Interleaved.Length * sizeof(float), lm.Interleaved);
+                                    OpenTK.Graphics.OpenGL.GL.BindBuffer(OpenTK.Graphics.OpenGL.BufferTarget.ArrayBuffer, 0);
+                                }
+                            }
+                        }
+                    }
+                    flippedCount++;
+                }
+            }
+
+            _invalidateGlFunc?.Invoke();
+            string targetName = (selectedPartIdx >= 0) ? $"'{_model.Parts[selectedPartIdx].Name}'" : "toutes les pièces";
+            MessageBox.Show(this, $"Coordonnées UV (V) inversées pour {targetName} ({flippedCount} pièce(s)).\nCliquez sur 'Appliquer et Enregistrer' pour enregistrer définitivement dans le fichier .char.", "Inversion UV", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void BtnExtractFbx_Click(object? sender, EventArgs e)
@@ -631,9 +705,10 @@ namespace UoFiddler.Plugin.Granny3D
                         // Nouvelle texture choisie
                         string ext = Path.GetExtension(chosenPath);
                         string cleanMesh = Granny3DControl.MakeSafeFilename(part.Name);
-                        if (!string.IsNullOrEmpty(part.MaterialName) && !part.MaterialName.Equals(part.Name, StringComparison.OrdinalIgnoreCase))
-                            cleanMesh = $"{cleanMesh}_{Granny3DControl.MakeSafeFilename(part.MaterialName)}";
-                        else if (partIdx > 0)
+                        string safeMat = !string.IsNullOrEmpty(part.MaterialName) ? Granny3DControl.MakeSafeFilename(part.MaterialName) : "";
+                        if (!string.IsNullOrEmpty(safeMat) && !cleanMesh.Contains(safeMat, StringComparison.OrdinalIgnoreCase))
+                            cleanMesh = $"{cleanMesh}_{safeMat}";
+                        else if (partIdx > 0 && !cleanMesh.Contains($"p{partIdx + 1}", StringComparison.OrdinalIgnoreCase) && cleanMesh.Equals(Granny3DControl.MakeSafeFilename(part.Name), StringComparison.OrdinalIgnoreCase))
                             cleanMesh = $"{cleanMesh}_p{partIdx + 1}";
 
                         string destName = $"{charName}_{cleanMesh}{ext}";

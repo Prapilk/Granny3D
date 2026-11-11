@@ -714,7 +714,7 @@ namespace UoFiddler.Plugin.Granny3D
                     else
                         pm.BaseNormals[v] = Vector3.UnitZ;
                     if (mesh.HasTextureCoords(0))
-                        pm.UVs[v] = new Vector2(mesh.TextureCoordinateChannels[0][v].X, mesh.TextureCoordinateChannels[0][v].Y);
+                        pm.UVs[v] = new Vector2(mesh.TextureCoordinateChannels[0][v].X, 1.0f - mesh.TextureCoordinateChannels[0][v].Y);
                 }
                 // Indices
                 var idxList = new List<int>();
@@ -1861,7 +1861,7 @@ void main() {
                     if (mesh.HasTextureCoords(0))
                     {
                         var uv = mesh.TextureCoordinateChannels[0][v];
-                        part.UVs[v] = new Vector2(uv.X, uv.Y);
+                        part.UVs[v] = new Vector2(uv.X, 1.0f - uv.Y);
                     }
                 }
                 // Indices
