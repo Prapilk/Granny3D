@@ -70,6 +70,24 @@ namespace UoFiddler.Plugin.Granny3D
         private bool _isRotating;
         private bool _isPanning;
 
+        // ViewCube (3ds Max-style cube in viewport)
+        private int _viewCubeVao;
+        private int _viewCubeVbo;
+        private int _viewCubeTex;
+        private const int ViewCubePx = 80;
+        private const int ViewCubeMargin = 12;
+
+        private static readonly Vector3[] ViewCubeFaceNormals =
+        {
+            new Vector3(0, 1, 0),    // 0 DEVANT (+Y)
+            new Vector3(0, -1, 0),   // 1 DERR (-Y)
+            new Vector3(-1, 0, 0),   // 2 GAUCHE (-X)
+            new Vector3(1, 0, 0),    // 3 DROIT (+X)
+            new Vector3(0, 0, 1),    // 4 HAUT (+Z)
+            new Vector3(0, 0, -1)    // 5 BAS (-Z)
+        };
+        private static readonly string[] ViewCubeFaceLabels = { "DEVANT", "DERR", "GAUCHE", "DROIT", "HAUT", "BAS" };
+
         public string? ImportedModelPath { get; private set; }
 
         private class PreviewMesh
@@ -360,16 +378,17 @@ namespace UoFiddler.Plugin.Granny3D
             var pnlTopBar = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 40,
+                Height = 72,
                 BackColor = Color.FromArgb(28, 28, 30),
                 Padding = new Padding(6)
             };
 
-            var lblAnim = new Label { Text = "🎬 Test Animation :", Location = new Point(8, 10), AutoSize = true, ForeColor = Color.Gold, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+            // Row 1: Animation controls
+            var lblAnim = new Label { Text = "🎬 Test Animation :", Location = new Point(8, 8), AutoSize = true, ForeColor = Color.Gold, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
             cmbPreviewAnim = new ComboBox
             {
-                Location = new Point(140, 8),
-                Width = 240,
+                Location = new Point(130, 6),
+                Width = 210,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(24, 24, 26),
                 ForeColor = Color.White,
@@ -380,7 +399,7 @@ namespace UoFiddler.Plugin.Granny3D
             btnPlayPause = new Button
             {
                 Text = "⏸ Pause",
-                Location = new Point(386, 7),
+                Location = new Point(346, 5),
                 Size = new Size(72, 26),
                 BackColor = Color.FromArgb(45, 45, 50),
                 ForeColor = Color.White,
@@ -391,34 +410,96 @@ namespace UoFiddler.Plugin.Granny3D
 
             trackScrubber = new TrackBar
             {
-                Location = new Point(464, 4),
+                Location = new Point(424, 3),
                 Width = 200,
-                Height = 32,
+                Height = 30,
                 Minimum = 0,
                 Maximum = 1000,
                 TickStyle = TickStyle.None
             };
             trackScrubber.Scroll += (s, e) => OnScrubberScroll();
 
-            lblTime = new Label { Text = "0.00s / 0.00s", Location = new Point(670, 10), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 8.5F) };
+            lblTime = new Label { Text = "0.00s / 0.00s", Location = new Point(630, 9), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 8.5F) };
+            chkLoop = new CheckBox { Text = "Boucle", Location = new Point(730, 9), AutoSize = true, Checked = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 8.5F) };
 
-            chkLoop = new CheckBox { Text = "Boucle", Location = new Point(780, 10), AutoSize = true, Checked = true, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 8.5F) };
+            // Row 2: Camera View presets
+            var lblViews = new Label { Text = "🎥 Vues Caméra :", Location = new Point(8, 41), AutoSize = true, ForeColor = Color.FromArgb(120, 190, 255), Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+
+            var btnViewFront = new Button
+            {
+                Text = "👤 Vue de Face (Devant)",
+                Location = new Point(130, 37),
+                Size = new Size(160, 27),
+                BackColor = Color.FromArgb(30, 95, 80),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            btnViewFront.Click += (s, e) => ViewFront();
+
+            var btnViewIso = new Button
+            {
+                Text = "🔄 Vue Iso (UO)",
+                Location = new Point(296, 37),
+                Size = new Size(110, 27),
+                BackColor = Color.FromArgb(45, 55, 70),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F)
+            };
+            btnViewIso.Click += (s, e) => ViewIso();
+
+            var btnViewSide = new Button
+            {
+                Text = "◀ Profil",
+                Location = new Point(412, 37),
+                Size = new Size(80, 27),
+                BackColor = Color.FromArgb(45, 45, 50),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F)
+            };
+            btnViewSide.Click += (s, e) => ViewRight();
+
+            var btnViewTop = new Button
+            {
+                Text = "🔝 Dessus",
+                Location = new Point(498, 37),
+                Size = new Size(80, 27),
+                BackColor = Color.FromArgb(45, 45, 50),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F)
+            };
+            btnViewTop.Click += (s, e) => ViewTop();
 
             var btnResetCam = new Button
             {
-                Text = "🎥 Reset Caméra",
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Location = new Point(pnlTopBar.Width - 130, 7),
-                Size = new Size(120, 26),
+                Text = "🎥 Reset",
+                Location = new Point(584, 37),
+                Size = new Size(76, 27),
                 BackColor = Color.FromArgb(45, 45, 50),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 8.5F)
             };
             btnResetCam.Click += (s, e) => ResetCamera();
-            pnlTopBar.Resize += (s, e) => btnResetCam.Location = new Point(pnlTopBar.Width - 130, 7);
 
-            pnlTopBar.Controls.AddRange(new Control[] { lblAnim, cmbPreviewAnim, btnPlayPause, trackScrubber, lblTime, chkLoop, btnResetCam });
+            var lblHelp = new Label
+            {
+                Text = "💡 En 'Vue de Face', la tête de la créature doit regarder l'écran !",
+                Location = new Point(668, 42),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(180, 220, 255),
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Italic)
+            };
+
+            pnlTopBar.Controls.AddRange(new Control[]
+            {
+                lblAnim, cmbPreviewAnim, btnPlayPause, trackScrubber, lblTime, chkLoop,
+                lblViews, btnViewFront, btnViewIso, btnViewSide, btnViewTop, btnResetCam, lblHelp
+            });
 
             glControl = new GLControl
             {
@@ -859,6 +940,9 @@ namespace UoFiddler.Plugin.Granny3D
                 }
                 foreach (var t in _glTextures) GL.DeleteTexture(t);
                 _glTextures.Clear();
+                if (_viewCubeVao != 0) { GL.DeleteVertexArray(_viewCubeVao); _viewCubeVao = 0; }
+                if (_viewCubeVbo != 0) { GL.DeleteBuffer(_viewCubeVbo); _viewCubeVbo = 0; }
+                if (_viewCubeTex != 0) { GL.DeleteTexture(_viewCubeTex); _viewCubeTex = 0; }
                 _previewMeshes.Clear();
             }
             catch { }
@@ -1109,13 +1193,259 @@ namespace UoFiddler.Plugin.Granny3D
             glControl?.Invalidate();
         }
 
+        private void SetCameraAngles(float yawDeg, float pitchDeg)
+        {
+            _camYaw = yawDeg;
+            _camPitch = Math.Clamp(pitchDeg, -89.5f, 89.5f);
+            glControl?.Invalidate();
+        }
+
+        public void ViewFront()  { SetCameraAngles(180f, 0f); }
+        public void ViewBack()   { SetCameraAngles(0f, 0f); }
+        public void ViewLeft()   { SetCameraAngles(-90f, 0f); }
+        public void ViewRight()  { SetCameraAngles(90f, 0f); }
+        public void ViewTop()    { SetCameraAngles(180f, 89.5f); }
+        public void ViewIso()    { SetCameraAngles(135f, 35f); }
+
+        private Vector3 GetCameraEye()
+        {
+            float radYaw = MathHelper.DegreesToRadians(_camYaw);
+            float radPitch = MathHelper.DegreesToRadians(_camPitch);
+            Vector3 offset = new Vector3(
+                (float)(_camDist * Math.Cos(radPitch) * Math.Sin(radYaw)),
+                (float)(-_camDist * Math.Cos(radPitch) * Math.Cos(radYaw)),
+                (float)(_camDist * Math.Sin(radPitch)));
+            return _camTarget + offset;
+        }
+
+        private Matrix4 GetViewMatrix()
+        {
+            return Matrix4.LookAt(GetCameraEye(), _camTarget, Vector3.UnitZ);
+        }
+
         private void ResetCamera()
         {
             _camDist = 3.5f;
-            _camYaw = 45f;
-            _camPitch = 25f;
             _camTarget = new Vector3(0, 0, 0.6f);
-            glControl?.Invalidate();
+            ViewFront(); // Default to front view so user sees facing immediately!
+        }
+
+        // ==================== VIEW CUBE (3DS MAX STYLE) ====================
+
+        private static void ViewCubeFaceTangents(int f, out Vector3 u, out Vector3 v)
+        {
+            switch (f)
+            {
+                case 0: u = new Vector3(-1, 0, 0); v = new Vector3(0, 0, 1); break;  // +Y DEVANT
+                case 1: u = new Vector3(1, 0, 0); v = new Vector3(0, 0, 1); break;   // -Y DERR
+                case 2: u = new Vector3(0, -1, 0); v = new Vector3(0, 0, 1); break;  // -X GAUCHE
+                case 3: u = new Vector3(0, 1, 0); v = new Vector3(0, 0, 1); break;   // +X DROIT
+                case 4: u = new Vector3(1, 0, 0); v = new Vector3(0, 1, 0); break;   // +Z HAUT
+                default: u = new Vector3(1, 0, 0); v = new Vector3(0, -1, 0); break; // -Z BAS
+            }
+        }
+
+        private void EnsureViewCube()
+        {
+            if (_viewCubeVao != 0 && _viewCubeTex != 0) return;
+
+            var data = new List<float>(6 * 6 * 8);
+            for (int f = 0; f < 6; f++)
+            {
+                var n = ViewCubeFaceNormals[f];
+                ViewCubeFaceTangents(f, out var u, out var v);
+                float col = f % 3, row = f / 3;
+                float uL = col / 3f, uR = (col + 1f) / 3f;
+                float vTop = row * 0.5f, vBot = (row + 1) * 0.5f;
+                var ps = new[] { n - u - v, n + u - v, n + u + v, n - u + v };
+                var uu = new[] { uR, uL, uL, uR };
+                var vv = new[] { vBot, vBot, vTop, vTop };
+                int[] tri = { 0, 1, 2, 0, 2, 3 };
+                foreach (int i in tri)
+                {
+                    data.Add(ps[i].X); data.Add(ps[i].Y); data.Add(ps[i].Z);
+                    data.Add(n.X); data.Add(n.Y); data.Add(n.Z);
+                    data.Add(uu[i]); data.Add(vv[i]);
+                }
+            }
+
+            _viewCubeVao = GL.GenVertexArray();
+            GL.BindVertexArray(_viewCubeVao);
+            _viewCubeVbo = GL.GenBuffer();
+            GL.BindBuffer(BufferTarget.ArrayBuffer, _viewCubeVbo);
+            GL.BufferData(BufferTarget.ArrayBuffer, data.Count * sizeof(float), data.ToArray(), BufferUsageHint.StaticDraw);
+            int stride = 8 * sizeof(float);
+            GL.EnableVertexAttribArray(0);
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, 0);
+            GL.EnableVertexAttribArray(1);
+            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, 3 * sizeof(float));
+            GL.EnableVertexAttribArray(2);
+            GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, 6 * sizeof(float));
+            GL.BindVertexArray(0);
+
+            _viewCubeTex = BuildViewCubeTexture();
+        }
+
+        private int BuildViewCubeTexture()
+        {
+            const int tile = 128;
+            using var bmp = new Bitmap(tile * 3, tile * 2);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.FromArgb(40, 44, 52));
+                var bgs = new[]
+                {
+                    Color.FromArgb(60, 130, 180),   // DEVANT (+Y)
+                    Color.FromArgb(50, 70, 110),    // DERR (-Y)
+                    Color.FromArgb(70, 130, 80),    // GAUCHE (-X)
+                    Color.FromArgb(160, 90, 60),    // DROIT (+X)
+                    Color.FromArgb(180, 160, 60),   // HAUT (+Z)
+                    Color.FromArgb(120, 80, 150)    // BAS (-Z)
+                };
+                using var font = new Font("Segoe UI", 15f, FontStyle.Bold);
+                using var border = new Pen(Color.FromArgb(20, 22, 28), 3f);
+                for (int i = 0; i < 6; i++)
+                {
+                    int x = (i % 3) * tile, y = (i / 3) * tile;
+                    using var br = new SolidBrush(bgs[i]);
+                    g.FillRectangle(br, x, y, tile, tile);
+                    g.DrawRectangle(border, x + 1.5f, y + 1.5f, tile - 3, tile - 3);
+                    var sz = g.MeasureString(ViewCubeFaceLabels[i], font);
+                    g.DrawString(ViewCubeFaceLabels[i], font, Brushes.White,
+                        x + (tile - sz.Width) / 2f, y + (tile - sz.Height) / 2f);
+                }
+            }
+
+            var bd = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            int tex = GL.GenTexture();
+            GL.BindTexture(TextureTarget.Texture2D, tex);
+            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, bmp.Width, bmp.Height, 0,
+                OpenTK.Graphics.OpenGL.PixelFormat.Bgra, PixelType.UnsignedByte, bd.Scan0);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            bmp.UnlockBits(bd);
+            return tex;
+        }
+
+        private void DrawViewCube()
+        {
+            if (_shaderMesh == 0) return;
+            int vw = Math.Max(1, glControl.Width);
+            int vh = Math.Max(1, glControl.Height);
+            if (vw < ViewCubePx + 24 || vh < ViewCubePx + 24) return;
+            EnsureViewCube();
+            if (_viewCubeVao == 0 || _viewCubeTex == 0) return;
+
+            Matrix4 mvp = ViewCubeMvp(0, 0, vw, vh);
+
+            int cx = ViewCubeMargin;
+            int cy = vh - ViewCubePx - ViewCubeMargin;
+            GL.Enable(EnableCap.ScissorTest);
+            GL.Scissor(cx, cy, ViewCubePx, ViewCubePx);
+            GL.Clear(ClearBufferMask.DepthBufferBit);
+            GL.Scissor(0, 0, vw, vh);
+            GL.Disable(EnableCap.ScissorTest);
+            GL.Enable(EnableCap.DepthTest);
+            GL.UseProgram(_shaderMesh);
+
+            int uMvp = GL.GetUniformLocation(_shaderMesh, "uMvp");
+            int uHasTex = GL.GetUniformLocation(_shaderMesh, "uHasTex");
+            int uColor = GL.GetUniformLocation(_shaderMesh, "uColor");
+
+            GL.UniformMatrix4(uMvp, false, ref mvp);
+            GL.Uniform1(uHasTex, 1);
+            GL.Uniform3(uColor, 1f, 1f, 1f);
+            GL.ActiveTexture(TextureUnit.Texture0);
+            GL.BindTexture(TextureTarget.Texture2D, _viewCubeTex);
+            GL.BindVertexArray(_viewCubeVao);
+            GL.DrawArrays(PrimitiveType.Triangles, 0, 36);
+            GL.BindVertexArray(0);
+            GL.UseProgram(0);
+        }
+
+        private Matrix4 ViewCubeMvp(int vx, int vy, int vw, int vh)
+        {
+            int cornerX = vx + ViewCubeMargin;
+            int cornerY = vy + vh - ViewCubePx - ViewCubeMargin;
+            float half = ViewCubePx / 2f;
+            float cubeHalf = half * 0.62f;
+
+            Matrix4 rot = GetViewMatrix();
+            rot.Row3 = new Vector4(0, 0, 0, 1);
+            Matrix4 s = Matrix4.CreateScale(cubeHalf, cubeHalf, cubeHalf);
+            Matrix4 t = Matrix4.CreateTranslation(cornerX + half, cornerY + half, 0f);
+            Matrix4 pixelToNdc = Matrix4.CreateScale(2f / vw, 2f / vh, 1f / (2f * cubeHalf))
+                               * Matrix4.CreateTranslation(-1f, -1f, 0f);
+            return rot * s * t * pixelToNdc;
+        }
+
+        private bool TryViewCubeClick(MouseEventArgs e)
+        {
+            int vw = Math.Max(1, glControl.Width);
+            int vh = Math.Max(1, glControl.Height);
+            if (vw < ViewCubePx + 24 || vh < ViewCubePx + 24) return false;
+
+            float mx = e.X;
+            float my = vh - e.Y;
+            int cornerX = ViewCubeMargin;
+            int cornerY = vh - ViewCubePx - ViewCubeMargin;
+            if (mx < cornerX || mx > cornerX + ViewCubePx || my < cornerY || my > cornerY + ViewCubePx)
+                return false;
+
+            Matrix4 rot = GetViewMatrix();
+            rot.Row3 = new Vector4(0, 0, 0, 1);
+            float half = ViewCubePx / 2f;
+            float cubeHalf = half * 0.62f;
+            Vector3 eye = GetCameraEye();
+
+            for (int f = 0; f < 6; f++)
+            {
+                var n = ViewCubeFaceNormals[f];
+                if (Vector3.Dot(n, eye - n) <= 0f) continue;
+                ViewCubeFaceTangents(f, out var u, out var v);
+                var pts = new Vector3[4];
+                var signs = new[] { (-1, -1), (1, -1), (1, 1), (-1, 1) };
+                for (int k = 0; k < 4; k++)
+                {
+                    Vector3 p = Vector3.TransformPosition(n + signs[k].Item1 * u + signs[k].Item2 * v, rot);
+                    pts[k] = new Vector3(cornerX + half + p.X * cubeHalf, cornerY + half + p.Y * cubeHalf, 0f);
+                }
+                if (PointInConvexQuad(mx, my, pts))
+                {
+                    ApplyViewCubeFace(f);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool PointInConvexQuad(float x, float y, Vector3[] q)
+        {
+            bool? sign = null;
+            for (int i = 0; i < 4; i++)
+            {
+                var p1 = q[i];
+                var p2 = q[(i + 1) % 4];
+                float cross = (p2.X - p1.X) * (y - p1.Y) - (p2.Y - p1.Y) * (x - p1.X);
+                if (Math.Abs(cross) < 1e-4f) continue;
+                bool s = cross > 0;
+                if (!sign.HasValue) sign = s;
+                else if (sign.Value != s) return false;
+            }
+            return true;
+        }
+
+        private void ApplyViewCubeFace(int f)
+        {
+            switch (f)
+            {
+                case 0: ViewFront(); break;
+                case 1: ViewBack(); break;
+                case 2: ViewLeft(); break;
+                case 3: ViewRight(); break;
+                case 4: ViewTop(); break;
+                case 5: SetCameraAngles(180f, -89.5f); break;
+            }
         }
 
         private void EnsureShaders()
@@ -1215,22 +1545,18 @@ void main() {
             float aspect = Math.Max(0.1f, (float)glControl.Width / Math.Max(1, glControl.Height));
             Matrix4 proj = Matrix4.CreatePerspectiveFieldOfView(MathHelper.DegreesToRadians(45f), aspect, 0.05f, 100f);
 
-            float radYaw = MathHelper.DegreesToRadians(_camYaw);
-            float radPitch = MathHelper.DegreesToRadians(_camPitch);
-            Vector3 camEye = _camTarget + new Vector3(
-                _camDist * (float)Math.Cos(radPitch) * (float)Math.Cos(radYaw),
-                _camDist * (float)Math.Cos(radPitch) * (float)Math.Sin(radYaw),
-                _camDist * (float)Math.Sin(radPitch));
-
-            Matrix4 view = Matrix4.LookAt(camEye, _camTarget, Vector3.UnitZ);
+            Matrix4 view = GetViewMatrix();
             Matrix4 mvp = view * proj;
 
-            // 1. Draw Ground Grid & Coordinate Axes
+            // 1. Draw Ground Grid, Facing Arrow & Coordinate Axes
             DrawGridAndAxes(mvp);
 
             // 2. Compute Skinned Vertices with UserTransform
             Matrix4 userTransform = GetUserTransform();
             UpdateAndRenderModel(mvp, userTransform);
+
+            // 3. Draw 3D ViewCube in corner
+            DrawViewCube();
 
             glControl.SwapBuffers();
         }
@@ -1262,13 +1588,27 @@ void main() {
             GL.Uniform4(uCol, 0.9f, 0.2f, 0.2f, 1.0f);
             DrawLines(new float[] { 0, 0, 0, 1.0f, 0, 0 });
 
-            // Y (Green) = Avant (+Y en UO !)
-            GL.Uniform4(uCol, 0.2f, 0.95f, 0.3f, 1.0f);
-            DrawLines(new float[] { 0, 0, 0, 0, 1.5f, 0, 0, 1.5f, 0, 0.1f, 1.35f, 0, 0, 1.5f, 0, -0.1f, 1.35f, 0 });
-
             // Z (Blue) = Haut (+Z)
             GL.Uniform4(uCol, 0.3f, 0.6f, 1.0f, 1.0f);
             DrawLines(new float[] { 0, 0, 0, 0, 0, 1.0f });
+
+            // Big Facing Arrow on the Ground along +Y (Avant / Direction de regard en UO)
+            GL.Uniform4(uCol, 0.15f, 0.95f, 0.35f, 1.0f);
+            var facingArrow = new float[]
+            {
+                // Main stem from (0, -0.4) to (0, 2.2)
+                0f, -0.4f, 0.005f,   0f, 2.2f, 0.005f,
+                // Arrow tip
+                0f, 2.2f, 0.005f,   -0.25f, 1.85f, 0.005f,
+                0f, 2.2f, 0.005f,    0.25f, 1.85f, 0.005f,
+                -0.25f, 1.85f, 0.005f, 0.25f, 1.85f, 0.005f,
+                // Chevrons
+                0f, 1.4f, 0.005f,   -0.20f, 1.15f, 0.005f,
+                0f, 1.4f, 0.005f,    0.20f, 1.15f, 0.005f,
+                0f, 0.8f, 0.005f,   -0.15f, 0.60f, 0.005f,
+                0f, 0.8f, 0.005f,    0.15f, 0.60f, 0.005f
+            };
+            DrawLines(facingArrow);
 
             GL.UseProgram(0);
         }
@@ -1451,6 +1791,9 @@ void main() {
 
         private void GlControl_MouseDown(object? sender, MouseEventArgs e)
         {
+            if (e.Button == MouseButtons.Left && TryViewCubeClick(e))
+                return;
+
             _lastMouse = e.Location;
             if (e.Button == MouseButtons.Left) _isRotating = true;
             else if (e.Button == MouseButtons.Right) _isPanning = true;
@@ -1478,7 +1821,7 @@ void main() {
             {
                 float factor = _camDist * 0.0015f;
                 float radYaw = MathHelper.DegreesToRadians(_camYaw);
-                Vector3 right = new(-(float)Math.Sin(radYaw), (float)Math.Cos(radYaw), 0);
+                Vector3 right = new((float)Math.Cos(radYaw), (float)Math.Sin(radYaw), 0);
                 Vector3 up = Vector3.UnitZ;
                 _camTarget += right * (-dx * factor) + up * (dy * factor);
                 glControl.Invalidate();
