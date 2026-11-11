@@ -502,6 +502,7 @@ namespace UoFiddler.Plugin.Granny3D
         private Button btnImportAnim;
         private Button btnImportMesh;
         private Button btnImportModel;
+        private Button btnImportFullSet;
         private Button btnApplyMixamo;
         // animation categories (Male / Female / Animals / ...)
         private class AnimCat
@@ -1134,7 +1135,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             // ---- Left column: models tree (top) / animations + meshes (bottom),
             //      separated by draggable splitters so every zone can be enlarged. ----
-            var pnlModelTools = new Panel { Dock = DockStyle.Bottom, Height = 84 };
+            var pnlModelTools = new Panel { Dock = DockStyle.Bottom, Height = 114 };
             btnApplyMixamo = new Button
             {
                 Text = "⚡ Convert/create rig to UO…",
@@ -1164,13 +1165,28 @@ namespace UoFiddler.Plugin.Granny3D
 
             btnImportModel = new Button
             {
-                Text = "Importer un Character Mixamo…",
-                Dock = DockStyle.Fill,
+                Text = Localization.Tr("btn_import_model", "Charger Modèle (.grn)..."),
+                Dock = DockStyle.Top,
+                Height = 28,
                 BackColor = Color.FromArgb(48, 48, 48),
                 ForeColor = Color.Gainsboro,
                 FlatStyle = FlatStyle.Flat
             };
             btnImportModel.Click += BtnImportModel_Click;
+
+            btnImportFullSet = new Button
+            {
+                Text = Localization.Tr("btn_import_full_set", "📦 Charger Full set externe..."),
+                Dock = DockStyle.Top,
+                Height = 28,
+                BackColor = Color.FromArgb(38, 70, 50),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font(Font, FontStyle.Bold)
+            };
+            btnImportFullSet.Click += BtnImportFullSet_Click;
+
+            pnlModelTools.Controls.Add(btnImportFullSet);
             pnlModelTools.Controls.Add(btnImportModel);
             pnlModelTools.Controls.Add(btnImportMesh);
             pnlModelTools.Controls.Add(btnApplyMixamo);
@@ -2856,6 +2872,7 @@ namespace UoFiddler.Plugin.Granny3D
             if (btnAttach != null) btnAttach.Text = Localization.Tr("btn_attach", "Attacher...");
             if (btnImportMesh != null) btnImportMesh.Text = Localization.Tr("btn_import_mesh", "Importer Mesh (.grn)...");
             if (btnImportModel != null) btnImportModel.Text = Localization.Tr("btn_import_model", "Charger Modèle (.grn)...");
+            if (btnImportFullSet != null) btnImportFullSet.Text = Localization.Tr("btn_import_full_set", "📦 Charger Full set externe...");
             if (tabEquipment != null) tabEquipment.Text = Localization.Tr("tab_equipment", "Équipement (attache)");
             if (tabPose != null) tabPose.Text = Localization.Tr("tab_pose", "Personnage (déplacement / pose)");
             if (grpCamera != null) grpCamera.Text = Localization.Tr("grp_camera", "Caméra (rendu UO)");
@@ -3730,6 +3747,7 @@ namespace UoFiddler.Plugin.Granny3D
                 tvMenu.Items.Add(applyMixamoGen);
 
                 tvMenu.Items.Add(Localization.Tr("menu_import_mixamo", "Importer un Character Mixamo (FBX)..."), null, BtnImportModel_Click);
+                tvMenu.Items.Add(Localization.Tr("menu_import_full_set", "📦 Charger Full set externe..."), null, BtnImportFullSet_Click);
                 tvMenu.Items.Add(Localization.Tr("menu_import_mesh", "Importer un mesh (FBX / OBJ)..."), null, BtnImportMesh_Click);
                 tvMenu.Items.Add(Localization.Tr("menu_import_anim", "Importer une animation FBX Mixamo..."), null, BtnImportAnim_Click);
                 tvMenu.Items.Add(new ToolStripSeparator());
@@ -5651,12 +5669,13 @@ namespace UoFiddler.Plugin.Granny3D
             tag.Populated = true;
         }
 
-        public static void CollectAnims(string folder, string prefix, List<string> outFiles, string pattern = "*.grn")
+        public static void CollectAnims(string folder, string prefix, List<string> outFiles, string pattern = "*.grn", bool searchSubDirs = false)
         {
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) return;
             try
             {
-                foreach (var f in Directory.GetFiles(folder, pattern))
+                var opt = searchSubDirs ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+                foreach (var f in Directory.GetFiles(folder, pattern, opt))
                 {
                     string name = Path.GetFileName(f);
                     if (pattern == "*.grn" && name.IndexOf("lod", StringComparison.OrdinalIgnoreCase) >= 0) continue;
@@ -6989,6 +7008,31 @@ namespace UoFiddler.Plugin.Granny3D
         // Import a Mixamo FBX character: extract meshes, skeleton, materials and skinning,
         // convert to UO coordinate system (Z-up), save as .char in BasePath\Others,
         // refresh the treeview and load/display the character.
+        private void BtnImportFullSet_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                using var dlg = new FullSetImportDialog(BasePath);
+                if (dlg.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(dlg.ImportedModelPath))
+                {
+                    // Refresh models tree & animation categories
+                    RestoreModelsTree();
+                    BuildAnimCategories();
+
+                    // Automatically load the newly imported model
+                    LoadModel(dlg.ImportedModelPath);
+
+                    // Reveal and select in tvModels
+                    RevealModelFile(dlg.ImportedModelPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"FullSet import error: {ex.Message}\n{ex}");
+                MessageBox.Show("Erreur d'import : " + ex.Message, "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
         private void BtnImportModel_Click(object sender, EventArgs e)
         {
             try
@@ -12143,6 +12187,7 @@ namespace UoFiddler.Plugin.Granny3D
                 lstLoadedMenu.Items.Add(applyMixamoFallback);
 
                 lstLoadedMenu.Items.Add(Localization.Tr("menu_import_mixamo", "Importer un Character Mixamo (FBX)..."), null, BtnImportModel_Click);
+                lstLoadedMenu.Items.Add(Localization.Tr("menu_import_full_set", "📦 Charger Full set externe..."), null, BtnImportFullSet_Click);
                 lstLoadedMenu.Items.Add(Localization.Tr("menu_import_mesh", "Importer un mesh (FBX / OBJ)..."), null, BtnImportMesh_Click);
                 return;
             }
@@ -17457,7 +17502,16 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             if (!string.IsNullOrEmpty(folder) && Directory.Exists(folder))
-                CollectAnims(folder, prefix, list);
+            {
+                CollectAnims(folder, prefix, list, "*.grn");
+                CollectAnims(folder, prefix, list, "*.anim");
+                string creatureFolder = Path.Combine(folder, Path.GetFileNameWithoutExtension(_currentModelPath));
+                if (Directory.Exists(creatureFolder))
+                {
+                    CollectAnims(creatureFolder, null, list, "*.grn");
+                    CollectAnims(creatureFolder, null, list, "*.anim");
+                }
+            }
 
             if (list.Count == 0)
             {
@@ -17486,7 +17540,7 @@ namespace UoFiddler.Plugin.Granny3D
                 // equipment parts, not clips, so only its .anim imports are offered.
                 var group = new List<string>();
                 if (!others) CollectAnims(folder, null, group, "*.grn");
-                CollectAnims(folder, null, group, "*.anim");
+                CollectAnims(folder, null, group, "*.anim", searchSubDirs: true);
                 group.Sort(StringComparer.OrdinalIgnoreCase);
                 string label = others ? "Importés (Mixamo)" : f;
                 foreach (var p in group)
@@ -18929,6 +18983,7 @@ void main(){
             glContextMenu.Items.Add(applyMixamoItem);
 
             glContextMenu.Items.Add("Importer un Character Mixamo (FBX)...", null, BtnImportModel_Click);
+            glContextMenu.Items.Add(Localization.Tr("menu_import_full_set", "📦 Charger Full set externe..."), null, BtnImportFullSet_Click);
             glContextMenu.Items.Add("Importer une animation FBX Mixamo...", null, BtnImportAnim_Click);
             glContextMenu.Items.Add(new ToolStripSeparator());
 
