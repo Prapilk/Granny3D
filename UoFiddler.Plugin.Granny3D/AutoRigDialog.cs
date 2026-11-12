@@ -49,15 +49,9 @@ namespace UoFiddler.Plugin.Granny3D
         private int _ghostVertexCount;
         private readonly Dictionary<string, Vector3> _targetReferenceJointPositions = new(StringComparer.OrdinalIgnoreCase);
 
-        // UI Mode 2 controls
-        private Button btnModePlaceRig = null!;
-        private Button btnModeAdaptBody = null!;
-        private Panel pnlAdaptationControls = null!;
-        private Button btnSnapAll = null!;
+        // UI Morphing & Ghost controls
         private CheckBox chkMagnetSnap = null!;
         private CheckBox chkShowGhostBody = null!;
-        private Button btnFreezeAdaptation = null!;
-        private Button btnCancelAdaptation = null!;
         private Label lblAdaptTip = null!;
 
         // Visual controls
@@ -144,6 +138,7 @@ namespace UoFiddler.Plugin.Granny3D
         private string _ghostSkeletonName = "";
         private string _ghostSkeletonPath = "";
         private CheckBox chkShowGhostSkeleton = null!;
+        private bool _liveDeformMeshWithBones = true;
 
         private float _scale = 1.0f;
         private float _rotX = 0f;
@@ -1128,105 +1123,124 @@ namespace UoFiddler.Plugin.Granny3D
                 Padding = new Padding(10)
             };
 
-            // Mode Switch Panel (Mode 1: Placer le Rig vs Mode 2: Adapter au Corps)
-            var pnlModeSwitch = new Panel { Dock = DockStyle.Top, Height = 36, Padding = new Padding(0, 0, 0, 4) };
-            btnModePlaceRig = new Button
+            // Panneau Unifié Morphing & Aimantation Fantôme
+            var pnlGhostMorphing = new Panel
             {
-                Text = "🦴 1. Placer le Rig (Points)",
-                Dock = DockStyle.Left,
-                Width = 245,
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.FromArgb(24, 32, 38),
+                Padding = new Padding(6),
+                Margin = new Padding(0, 0, 0, 4)
+            };
+
+            var pnlSnapButtons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
                 Height = 32,
-                BackColor = Color.FromArgb(40, 80, 130),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0)
+            };
+
+            var btnSnapGhost = new Button
+            {
+                Text = "🧲 Aimanter tout sur le squelette fantôme",
+                AutoSize = true,
+                Height = 28,
+                BackColor = Color.FromArgb(20, 110, 75),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold)
             };
-            btnModePlaceRig.FlatAppearance.BorderColor = Color.FromArgb(70, 120, 180);
-            btnModePlaceRig.Click += (s, e) =>
+            btnSnapGhost.FlatAppearance.BorderColor = Color.FromArgb(40, 160, 100);
+            btnSnapGhost.Click += (s, e) => SnapToGhostJoints(onlySelected: false);
+
+            var btnSnapSelected = new Button
             {
-                if (_isClothingAdaptMode)
-                {
-                    var res = MessageBox.Show(
-                        "Quitter le mode adaptation ?\n\nCliquez sur OUI pour figer les modifications,\nou sur NON pour annuler l'adaptation et revenir à la pose d'origine.",
-                        "Mode Édition Rig", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-                    if (res == DialogResult.Cancel) return;
-                    if (res == DialogResult.Yes) FreezeClothingAdaptation();
-                    else CancelClothingAdaptation();
-                }
-                _isClothingAdaptMode = false;
-                grpMarkers.Height = 540;
-                UpdateAdaptationUIState();
+                Text = "🎯 Aimanter os actif",
+                AutoSize = true,
+                Height = 28,
+                BackColor = Color.FromArgb(40, 75, 120),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+                Margin = new Padding(6, 0, 0, 0)
+            };
+            btnSnapSelected.FlatAppearance.BorderColor = Color.FromArgb(60, 110, 170);
+            btnSnapSelected.Click += (s, e) => SnapToGhostJoints(onlySelected: true);
+
+            var btnFreezeMorphing = new Button
+            {
+                Text = "💾 Figer la pose déformée",
+                AutoSize = true,
+                Height = 28,
+                BackColor = Color.FromArgb(90, 45, 110),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+                Margin = new Padding(6, 0, 0, 0)
+            };
+            btnFreezeMorphing.FlatAppearance.BorderColor = Color.FromArgb(120, 65, 150);
+            btnFreezeMorphing.Click += (s, e) => FreezeDeformedPose();
+
+            var btnResetPoseMorph = new Button
+            {
+                Text = "↩ Pose d'origine",
+                AutoSize = true,
+                Height = 28,
+                BackColor = Color.FromArgb(80, 45, 45),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+                Margin = new Padding(6, 0, 0, 0)
+            };
+            btnResetPoseMorph.FlatAppearance.BorderColor = Color.FromArgb(120, 60, 60);
+            btnResetPoseMorph.Click += (s, e) => ResetToOriginalPose();
+
+            pnlSnapButtons.Controls.Add(btnSnapGhost);
+            pnlSnapButtons.Controls.Add(btnSnapSelected);
+            pnlSnapButtons.Controls.Add(btnFreezeMorphing);
+            pnlSnapButtons.Controls.Add(btnResetPoseMorph);
+
+            var pnlMorphChecks = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = 28,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0, 4, 0, 0)
+            };
+
+            var chkLiveDeform = new CheckBox
+            {
+                Text = "🔄 Déformer le maillage avec les os (Morphing en direct)",
+                Checked = true,
+                AutoSize = true,
+                ForeColor = Color.FromArgb(255, 215, 0),
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+            };
+            chkLiveDeform.CheckedChanged += (s, e) =>
+            {
+                _liveDeformMeshWithBones = chkLiveDeform.Checked;
+                if (_liveDeformMeshWithBones) UpdateClothingAdaptationDeformation();
                 glControl.Invalidate();
             };
 
-            btnModeAdaptBody = new Button
-            {
-                Text = "👗 2. Adapter au Corps (Morphing)",
-                Dock = DockStyle.Right,
-                Width = 235,
-                Height = 32,
-                BackColor = Color.FromArgb(45, 45, 50),
-                ForeColor = Color.Gainsboro,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold)
-            };
-            btnModeAdaptBody.FlatAppearance.BorderColor = Color.FromArgb(40, 140, 90);
-            btnModeAdaptBody.Click += (s, e) =>
-            {
-                if (!_isClothingAdaptMode)
-                {
-                    EnterClothingAdaptMode();
-                    if (_isClothingAdaptMode) grpMarkers.Height = 675;
-                }
-            };
-
-            pnlModeSwitch.Controls.Add(btnModePlaceRig);
-            pnlModeSwitch.Controls.Add(btnModeAdaptBody);
-
-            // Mode 2 Controls Panel
-            pnlAdaptationControls = new Panel
-            {
-                Dock = DockStyle.Top,
-                Height = 135,
-                BackColor = Color.FromArgb(28, 38, 34),
-                Padding = new Padding(6),
-                Visible = false
-            };
-
-            btnSnapAll = new Button
-            {
-                Text = "🧲 Aimanter tout sur le corps cible (Auto T-Pose)",
-                Dock = DockStyle.Top,
-                Height = 32,
-                BackColor = Color.FromArgb(24, 128, 64),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9.5F, FontStyle.Bold)
-            };
-            btnSnapAll.FlatAppearance.BorderColor = Color.FromArgb(40, 180, 90);
-            btnSnapAll.Click += (s, e) => SnapAllMarkersToTargetJoints();
-
-            var pnlAdaptChecks = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 26,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                Padding = new Padding(0, 4, 0, 0)
-            };
             chkMagnetSnap = new CheckBox
             {
                 Text = "🧲 Aimantation active (Snap 6cm)",
                 Checked = true,
                 AutoSize = true,
                 ForeColor = Color.PaleGreen,
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+                Margin = new Padding(12, 0, 0, 0)
             };
             chkMagnetSnap.CheckedChanged += (s, e) => { _snapToTargetJoints = chkMagnetSnap.Checked; };
 
             chkShowGhostBody = new CheckBox
             {
-                Text = "👻 Corps cible (Ghost)",
+                Text = "👻 Corps cible 3D (Ghost)",
                 Checked = true,
                 AutoSize = true,
                 ForeColor = Color.SkyBlue,
@@ -1238,59 +1252,14 @@ namespace UoFiddler.Plugin.Granny3D
                 _showGhostTargetBody = chkShowGhostBody.Checked;
                 glControl.Invalidate();
             };
-            var btnFitScaleTarget = new Button
-            {
-                Text = "📏 Aligner taille au corps (1.75m)",
-                AutoSize = true,
-                Height = 24,
-                BackColor = Color.FromArgb(40, 70, 95),
-                ForeColor = Color.PaleTurquoise,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 8F, FontStyle.Bold),
-                Margin = new Padding(12, 0, 0, 0)
-            };
-            btnFitScaleTarget.FlatAppearance.BorderColor = Color.DarkCyan;
-            btnFitScaleTarget.Click += (s, e) => FitClothingScaleToTargetBody();
 
-            pnlAdaptChecks.Controls.Add(chkMagnetSnap);
-            pnlAdaptChecks.Controls.Add(chkShowGhostBody);
-            pnlAdaptChecks.Controls.Add(btnFitScaleTarget);
-
-            var pnlAdaptBtns = new Panel { Dock = DockStyle.Top, Height = 30, Padding = new Padding(0, 2, 0, 0) };
-            btnFreezeAdaptation = new Button
-            {
-                Text = "💾 Figer l'adaptation",
-                Dock = DockStyle.Left,
-                Width = 240,
-                Height = 26,
-                BackColor = Color.FromArgb(70, 50, 110),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
-            };
-            btnFreezeAdaptation.FlatAppearance.BorderColor = Color.FromArgb(100, 80, 150);
-            btnFreezeAdaptation.Click += (s, e) => FreezeClothingAdaptation();
-
-            btnCancelAdaptation = new Button
-            {
-                Text = "↩ Annuler l'adaptation",
-                Dock = DockStyle.Right,
-                Width = 220,
-                Height = 26,
-                BackColor = Color.FromArgb(75, 45, 45),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
-            };
-            btnCancelAdaptation.FlatAppearance.BorderColor = Color.FromArgb(110, 65, 65);
-            btnCancelAdaptation.Click += (s, e) => CancelClothingAdaptation();
-
-            pnlAdaptBtns.Controls.Add(btnFreezeAdaptation);
-            pnlAdaptBtns.Controls.Add(btnCancelAdaptation);
+            pnlMorphChecks.Controls.Add(chkLiveDeform);
+            pnlMorphChecks.Controls.Add(chkMagnetSnap);
+            pnlMorphChecks.Controls.Add(chkShowGhostBody);
 
             lblAdaptTip = new Label
             {
-                Text = "💡 Déplacez les repères : le vêtement se déforme en direct et s'aimante au corps cible !",
+                Text = "💡 Déplacez ou aimantez les os : le maillage suit en direct et s'adapte au squelette cible !",
                 Dock = DockStyle.Top,
                 Height = 22,
                 ForeColor = Color.LightYellow,
@@ -1298,10 +1267,9 @@ namespace UoFiddler.Plugin.Granny3D
                 Padding = new Padding(0, 4, 0, 0)
             };
 
-            pnlAdaptationControls.Controls.Add(lblAdaptTip);
-            pnlAdaptationControls.Controls.Add(pnlAdaptBtns);
-            pnlAdaptationControls.Controls.Add(pnlAdaptChecks);
-            pnlAdaptationControls.Controls.Add(btnSnapAll);
+            pnlGhostMorphing.Controls.Add(lblAdaptTip);
+            pnlGhostMorphing.Controls.Add(pnlMorphChecks);
+            pnlGhostMorphing.Controls.Add(pnlSnapButtons);
 
             var lblJointTip = new Label
             {
@@ -1605,47 +1573,6 @@ namespace UoFiddler.Plugin.Granny3D
             pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_back", "Paume Arr. (180°)"), 245, 125, () => SetRollExact(180f)));
             pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_default", "0° (Défaut)"), 375, 80, () => SetRollExact(0f)));
 
-            // Ghost & Retargeting Snapping Bar
-            var pnlGhostSnap = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 32,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                Margin = new Padding(0),
-                Padding = new Padding(0, 2, 0, 2)
-            };
-
-            var btnSnapGhost = new Button
-            {
-                Text = "🧲 Aimanter tout sur le squelette fantôme",
-                AutoSize = true,
-                Height = 26,
-                BackColor = Color.FromArgb(20, 100, 70),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
-            };
-            btnSnapGhost.FlatAppearance.BorderColor = Color.FromArgb(40, 140, 90);
-            btnSnapGhost.Click += (s, e) => SnapToGhostJoints(onlySelected: false);
-
-            var btnSnapSelected = new Button
-            {
-                Text = "🎯 Aimanter os actif",
-                AutoSize = true,
-                Height = 26,
-                BackColor = Color.FromArgb(40, 75, 110),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
-                Margin = new Padding(4, 0, 0, 0)
-            };
-            btnSnapSelected.FlatAppearance.BorderColor = Color.FromArgb(60, 100, 150);
-            btnSnapSelected.Click += (s, e) => SnapToGhostJoints(onlySelected: true);
-
-            pnlGhostSnap.Controls.Add(btnSnapGhost);
-            pnlGhostSnap.Controls.Add(btnSnapSelected);
-
             var pnlArmTPose = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
@@ -1719,9 +1646,8 @@ namespace UoFiddler.Plugin.Granny3D
                 c.SendToBack();
             }
 
-            AddRowToMarkers(pnlModeSwitch);
+            AddRowToMarkers(pnlGhostMorphing);
             AddRowToMarkers(lblJointTip);
-            AddRowToMarkers(pnlAdaptationControls);
             AddRowToMarkers(pnlTopRigBtns);
             AddRowToMarkers(pnlSkinBtns);
             AddRowToMarkers(pnlTemplateBtns);
@@ -1730,8 +1656,7 @@ namespace UoFiddler.Plugin.Granny3D
             AddRowToMarkers(pnlCoords);
             AddRowToMarkers(pnlRotControls);
             AddRowToMarkers(pnlRotBtns);
-            AddRowToMarkers(pnlGhostSnap);
-            AddRowToMarkers(pnlArmTPose);
+                        AddRowToMarkers(pnlArmTPose);
             AddRowToMarkers(lblRotTip);
             AddRowToMarkers(btnResetPose);
 
@@ -2784,8 +2709,17 @@ namespace UoFiddler.Plugin.Granny3D
             _ghostSkeletonPath = targetPath;
             _ghostSkeletonName = !string.IsNullOrEmpty(targetName) ? targetName : Path.GetFileNameWithoutExtension(targetPath);
             _ghostRefBones = LoadBonesFromFile(targetPath);
+            _customSkeletonPath = targetPath;
+            _customSkeletonName = _ghostSkeletonName;
+            _refPath = targetPath;
+            _refBones = new List<GrannyBone>(_ghostRefBones);
             _showGhostSkeleton = true;
             if (chkShowGhostSkeleton != null) chkShowGhostSkeleton.Checked = true;
+
+            if (_unadaptedBaseVertices == null)
+            {
+                CaptureRestPoseSnapshot();
+            }
 
             _targetReferenceJointPositions.Clear();
             for (int i = 0; i < _ghostRefBones.Count; i++)
@@ -2866,7 +2800,7 @@ namespace UoFiddler.Plugin.Granny3D
                 if (foundCan) continue;
 
                 // 3. Proximity snap: find closest ghost joint within 0.35m
-                float minDistSq = 0.35f * 0.35f;
+                float minDistSq = 0.85f * 0.85f;
                 Vector3 bestPos = Vector3.Zero;
                 bool foundClose = false;
                 foreach (var kvp in _targetReferenceJointPositions)
@@ -2889,12 +2823,15 @@ namespace UoFiddler.Plugin.Granny3D
 
             UpdateNudValues();
             EnsurePreviewModel();
-            if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
+            if (_liveDeformMeshWithBones)
+            {
+                UpdateClothingAdaptationDeformation();
+            }
             glControl.Invalidate();
 
             if (lblAdaptTip != null)
             {
-                lblAdaptTip.Text = $"✅ {count} repère(s) aimanté(s) sur le squelette fantôme !";
+                lblAdaptTip.Text = $"✅ {count} repère(s) aimanté(s) sur le squelette fantôme ! Le maillage suit la nouvelle pose.";
             }
         }
 
@@ -4792,11 +4729,12 @@ namespace UoFiddler.Plugin.Granny3D
         private void ComputeTargetReferenceJoints()
         {
             _targetReferenceJointPositions.Clear();
-            if (_refBones == null || _refBones.Count == 0) return;
+            var bones = (_ghostRefBones != null && _ghostRefBones.Count > 0) ? _ghostRefBones : _refBones;
+            if (bones == null || bones.Count == 0) return;
 
-            for (int i = 0; i < _refBones.Count; i++)
+            for (int i = 0; i < bones.Count; i++)
             {
-                var b = _refBones[i];
+                var b = bones[i];
                 if (Math.Abs(b.InverseBindMatrix.Determinant) > 1e-5f)
                 {
                     var world = Matrix4.Invert(b.InverseBindMatrix);
@@ -4825,11 +4763,15 @@ namespace UoFiddler.Plugin.Granny3D
 
                 var allVerts = new List<float>();
 
-                if (rbCustom.Checked && !string.IsNullOrEmpty(_customSkeletonPath) && File.Exists(_customSkeletonPath))
+                string targetGhostPath = !string.IsNullOrEmpty(_ghostSkeletonPath) && File.Exists(_ghostSkeletonPath) 
+                    ? _ghostSkeletonPath 
+                    : _customSkeletonPath;
+
+                if (!string.IsNullOrEmpty(targetGhostPath) && File.Exists(targetGhostPath))
                 {
-                    if (_customSkeletonPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+                    if (targetGhostPath.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
                     {
-                        var mdl = GrannyModelFile.Load(_customSkeletonPath);
+                        var mdl = GrannyModelFile.Load(targetGhostPath);
                         if (mdl?.Parts != null)
                         {
                             foreach (var part in mdl.Parts)
@@ -4853,7 +4795,7 @@ namespace UoFiddler.Plugin.Granny3D
                     else
                     {
                         var p = new GrannyFormatParser();
-                        if (p.Load(_customSkeletonPath))
+                        if (p.Load(targetGhostPath))
                         {
                             foreach (var m in p.Meshes)
                             {
@@ -5026,194 +4968,6 @@ namespace UoFiddler.Plugin.Granny3D
             glControl.Invalidate();
         }
 
-        private void FreezeClothingAdaptation()
-        {
-            if (!_isClothingAdaptMode || _adaptedVertices == null) return;
-
-            bool recalcSkin = false;
-            if (_hasManualSkinWeights)
-            {
-                var res = MessageBox.Show(
-                    "Vous avez modifié des poids de skinning au pinceau (heatmap).\n\n" +
-                    "Voulez-vous CONSERVER vos retouches manuelles ?\n\n" +
-                    "• Cliquez sur OUI pour CONSERVER vos retouches au pinceau (Recommandé).\n" +
-                    "• Cliquez sur NON pour les écraser et recalculer automatiquement le skinning sur le corps cible.",
-                    "💾 Figer l'adaptation - Retouches Heatmap",
-                    MessageBoxButtons.YesNoCancel,
-                    MessageBoxIcon.Question);
-
-                if (res == DialogResult.Cancel) return;
-                recalcSkin = (res == DialogResult.No);
-            }
-            else
-            {
-                var res = MessageBox.Show(
-                    "Voulez-vous figer la nouvelle pose adaptée sur le corps cible ?\n\n" +
-                    "• Le vêtement déformé deviendra la nouvelle géométrie de repos permanente.\n" +
-                    "• Les repères d'articulation seront validés sur le squelette cible.\n\n" +
-                    "Cliquez sur OUI pour figer et recalculer un skinning volumétrique propre sur le corps cible (recommandé),\n" +
-                    "ou sur NON pour figer en conservant les poids actuels.",
-                    "💾 Figer l'adaptation du vêtement",
-                    MessageBoxButtons.YesNoCancel,
-                    MessageBoxIcon.Question);
-
-                if (res == DialogResult.Cancel) return;
-                recalcSkin = (res == DialogResult.Yes);
-            }
-
-            // Apply frozen geometry
-            _baseVertices = (Vector3[])_adaptedVertices.Clone();
-            _baseNormals = (Vector3[])_adaptedNormals.Clone();
-
-            // Update model parts geometry
-            if (_modelParts != null && _modelParts.Count > 0)
-            {
-                int vOffset = 0;
-                foreach (var part in _modelParts)
-                {
-                    int pCount = part.Vertices.Length;
-                    if (vOffset + pCount <= _baseVertices.Length)
-                    {
-                        var newPartVerts = new Vector3[pCount];
-                        var newPartNorms = new Vector3[pCount];
-                        Array.Copy(_baseVertices, vOffset, newPartVerts, 0, pCount);
-                        Array.Copy(_baseNormals, vOffset, newPartNorms, 0, pCount);
-                        part.Vertices = newPartVerts;
-                        part.Normals = newPartNorms;
-                    }
-                    vOffset += pCount;
-                }
-            }
-
-            _isClothingAdaptMode = false;
-            _unadaptedBaseVertices = null;
-            _unadaptedBaseNormals = null;
-            _sourceBoneWorld = null;
-            _sourceInvBind = null;
-
-            EnsurePreviewModel();
-
-            if (recalcSkin && _previewModel != null)
-            {
-                foreach (var part in _previewModel.Parts)
-                {
-                    MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
-                }
-                var allSkin = new List<VertexInfluence[]>();
-                foreach (var part in _previewModel.Parts)
-                {
-                    if (part.Skin != null) allSkin.AddRange(part.Skin);
-                    else allSkin.AddRange(Enumerable.Repeat(Array.Empty<VertexInfluence>(), part.Vertices.Length));
-                }
-                _rawSkin = allSkin.ToArray();
-            }
-
-            // Forcer le squelette sur celui du corps cible pour un attachement exact dans le viewer principal
-            if (_previewModel != null && _refBones != null && _refBones.Count > 0)
-            {
-                try
-                {
-                    // Construire map nom -> index du squelette cible
-                    var targetByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                    for (int ti = 0; ti < _refBones.Count; ti++)
-                        targetByName[_refBones[ti].Name] = ti;
-
-                    // Remapper le skin par nom d'os
-                    if (_rawSkin != null && _rawSkin.Length > 0)
-                    {
-                        for (int v = 0; v < _rawSkin.Length; v++)
-                        {
-                            var infs = _rawSkin[v];
-                            if (infs == null || infs.Length == 0) continue;
-                            var newInfs = new List<VertexInfluence>(infs.Length);
-                            float sum = 0f;
-                            for (int k = 0; k < infs.Length; k++)
-                            {
-                                int srcIdx = infs[k].BoneId;
-                                string bname = null;
-                                if (_previewModel.Bones != null && srcIdx >= 0 && srcIdx < _previewModel.Bones.Count)
-                                    bname = _previewModel.Bones[srcIdx].Name;
-                                if (!string.IsNullOrEmpty(bname) && targetByName.TryGetValue(bname, out int tIdx))
-                                {
-                                    newInfs.Add(new VertexInfluence { BoneId = tIdx, Weight = infs[k].Weight });
-                                    sum += infs[k].Weight;
-                                }
-                            }
-                            if (newInfs.Count == 0) continue;
-                            if (sum > 1e-6f)
-                            {
-                                for (int ni = 0; ni < newInfs.Count; ni++)
-                                {
-                                    var ni2 = newInfs[ni];
-                                    ni2.Weight = ni2.Weight / sum;
-                                    newInfs[ni] = ni2;
-                                }
-                            }
-                            // Garder top 4
-                            newInfs.Sort((a,b) => b.Weight.CompareTo(a.Weight));
-                            if (newInfs.Count > 4) newInfs.RemoveRange(4, newInfs.Count - 4);
-                            _rawSkin[v] = newInfs.ToArray();
-                        }
-                        // Appliquer aux parts
-                        int sOff = 0;
-                        foreach (var part in _previewModel.Parts)
-                        {
-                            int pc = part.Vertices.Length;
-                            if (pc > 0 && _rawSkin != null)
-                            {
-                                var pSkin = new VertexInfluence[pc][];
-                                for (int pv = 0; pv < pc && sOff + pv < _rawSkin.Length; pv++)
-                                    pSkin[pv] = _rawSkin[sOff + pv];
-                                part.Skin = pSkin;
-                                sOff += pc;
-                            }
-                        }
-                    }
-
-                    // Remplacer le squelette par celui du corps cible
-                    _previewModel.Bones = new List<GrannyBone>(_refBones.Count);
-                    for (int bi = 0; bi < _refBones.Count; bi++)
-                    {
-                        var rb = _refBones[bi];
-                        _previewModel.Bones.Add(new GrannyBone
-                        {
-                            Id = bi,
-                            ParentId = rb.ParentId,
-                            Name = rb.Name,
-                            LocalPosition = rb.LocalPosition,
-                            LocalRotation = rb.LocalRotation,
-                            InverseBindMatrix = rb.InverseBindMatrix
-                        });
-                    }
-
-                    // Synchroniser les repères sur le squelette cible figé
-                    foreach (var m in _markers)
-                    {
-                        if (_targetReferenceJointPositions.TryGetValue(m.BoneName, out Vector3 targetPos))
-                        {
-                            m.Position = targetPos;
-                            m.RotationDegrees = Vector3.Zero;
-                            m.IsSnapped = true;
-                        }
-                    }
-
-                    _isSkeletonLockedToTarget = true;
-                    if (!recalcSkin) _hasManualSkinWeights = true;
-                    if (chkForceAutoSkin != null) chkForceAutoSkin.Checked = false;
-                }
-                catch { }
-            }
-
-            UploadMeshToGl();
-            UpdateAdaptationUIState();
-            glControl.Invalidate();
-
-            MessageBox.Show(
-                "Pose figée avec succès !\n\nLe modèle est désormais adapté aux proportions et au squelette exact du corps cible.",
-                "Adaptation Réussie",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
 
         private void FitClothingScaleToTargetBody()
         {
@@ -5341,9 +5095,141 @@ namespace UoFiddler.Plugin.Granny3D
             }
         }
 
+        private void CaptureRestPoseSnapshot()
+        {
+            if (_baseVertices == null || _baseVertices.Length == 0) return;
+            EnsurePreviewModel();
+            if (_previewModel == null || _previewModel.Bones.Count == 0) return;
+
+            _unadaptedBaseVertices = (Vector3[])_baseVertices.Clone();
+            _unadaptedBaseNormals = _baseNormals != null ? (Vector3[])_baseNormals.Clone() : null;
+            _sourceMarkerPositions = _markers.Select(m => m.Position).ToArray();
+
+            int nb = _previewModel.Bones.Count;
+            _sourceBoneWorld = new Matrix4[nb];
+            _sourceInvBind = new Matrix4[nb];
+            for (int i = 0; i < nb; i++)
+            {
+                _sourceInvBind[i] = _previewModel.Bones[i].InverseBindMatrix;
+                if (Math.Abs(_sourceInvBind[i].Determinant) > 1e-5f)
+                    _sourceBoneWorld[i] = Matrix4.Invert(_sourceInvBind[i]);
+                else
+                    _sourceBoneWorld[i] = Matrix4.Identity;
+            }
+        }
+
+        private void FreezeDeformedPose()
+        {
+            if (_adaptedVertices == null)
+            {
+                MessageBox.Show("Aucune déformation en cours à figer.", "Figer la pose", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var res = MessageBox.Show(
+                "Voulez-vous figer la nouvelle pose déformée sur le squelette cible ?\n\n" +
+                "• La géométrie déformée deviendra la nouvelle pose de repos permanente du modèle.\n" +
+                "• Les matrices de bind du squelette seront recalibrées sur cette nouvelle pose.\n\n" +
+                "Continuer ?",
+                "💾 Figer la pose déformée",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (res != DialogResult.Yes) return;
+
+            // Apply frozen geometry to base mesh
+            _baseVertices = (Vector3[])_adaptedVertices.Clone();
+            _baseNormals = (Vector3[])_adaptedNormals.Clone();
+
+            // Update model parts
+            if (_modelParts != null && _modelParts.Count > 0)
+            {
+                int vOffset = 0;
+                foreach (var part in _modelParts)
+                {
+                    int pCount = part.Vertices.Length;
+                    if (vOffset + pCount <= _baseVertices.Length)
+                    {
+                        var newPartVerts = new Vector3[pCount];
+                        var newPartNorms = new Vector3[pCount];
+                        Array.Copy(_baseVertices, vOffset, newPartVerts, 0, pCount);
+                        Array.Copy(_baseNormals, vOffset, newPartNorms, 0, pCount);
+                        part.Vertices = newPartVerts;
+                        part.Normals = newPartNorms;
+                    }
+                    vOffset += pCount;
+                }
+            }
+
+            // Adapt bones to markers
+            AdaptPreviewBonesToMarkers();
+
+            // Re-snapshot base pose so further tweaking starts from here
+            _unadaptedBaseVertices = (Vector3[])_baseVertices.Clone();
+            _unadaptedBaseNormals = (Vector3[])_baseNormals.Clone();
+            _sourceMarkerPositions = _markers.Select(m => m.Position).ToArray();
+
+            int nb = _previewModel?.Bones?.Count ?? 0;
+            if (_previewModel != null && _previewModel.Bones.Count > 0)
+            {
+                _sourceBoneWorld = new Matrix4[nb];
+                _sourceInvBind = new Matrix4[nb];
+                for (int i = 0; i < nb; i++)
+                {
+                    _sourceInvBind[i] = _previewModel.Bones[i].InverseBindMatrix;
+                    if (Math.Abs(_sourceInvBind[i].Determinant) > 1e-5f)
+                        _sourceBoneWorld[i] = Matrix4.Invert(_sourceInvBind[i]);
+                    else
+                        _sourceBoneWorld[i] = Matrix4.Identity;
+                }
+            }
+
+            UploadMeshToGl();
+            glControl.Invalidate();
+
+            if (lblAdaptTip != null)
+            {
+                lblAdaptTip.Text = "✅ Pose déformée figée avec succès comme nouvelle pose de repos !";
+            }
+        }
+
+        private void ResetToOriginalPose()
+        {
+            if (_unadaptedBaseVertices == null) return;
+
+            _baseVertices = (Vector3[])_unadaptedBaseVertices.Clone();
+            _baseNormals = _unadaptedBaseNormals != null ? (Vector3[])_unadaptedBaseNormals.Clone() : null;
+
+            if (_sourceMarkerPositions != null && _sourceMarkerPositions.Length == _markers.Count)
+            {
+                for (int i = 0; i < _markers.Count; i++)
+                {
+                    _markers[i].Position = _sourceMarkerPositions[i];
+                    _markers[i].IsSnapped = false;
+                }
+            }
+
+            _adaptedVertices = null;
+            _adaptedNormals = null;
+
+            EnsurePreviewModel();
+            UploadMeshToGl();
+            UpdateNudValues();
+            glControl.Invalidate();
+
+            if (lblAdaptTip != null)
+            {
+                lblAdaptTip.Text = "Pose d'origine rétablie.";
+            }
+        }
+
         private void UpdateClothingAdaptationDeformation()
         {
-            if (!_isClothingAdaptMode || _unadaptedBaseVertices == null || _sourceInvBind == null) return;
+            if (!_liveDeformMeshWithBones) return;
+            if (_unadaptedBaseVertices == null || _sourceInvBind == null)
+            {
+                CaptureRestPoseSnapshot();
+            }
+            if (_unadaptedBaseVertices == null || _sourceInvBind == null) return;
             if (_previewModel == null || _previewModel.Bones.Count == 0 || _indices == null) return;
 
             var skinToUse = _rawSkin ?? (_previewModel.Parts.Count > 0 ? _previewModel.Parts[0].Skin : null);
@@ -5483,18 +5369,6 @@ namespace UoFiddler.Plugin.Granny3D
 
         private void UpdateAdaptationUIState()
         {
-            if (btnModePlaceRig != null)
-            {
-                btnModePlaceRig.BackColor = !_isClothingAdaptMode ? Color.FromArgb(40, 80, 130) : Color.FromArgb(45, 45, 50);
-            }
-            if (btnModeAdaptBody != null)
-            {
-                btnModeAdaptBody.BackColor = _isClothingAdaptMode ? Color.FromArgb(24, 120, 56) : Color.FromArgb(45, 45, 50);
-            }
-            if (pnlAdaptationControls != null)
-            {
-                pnlAdaptationControls.Visible = _isClothingAdaptMode;
-            }
         }
 
         private static int FindMatchingBoneIndex(List<GrannyBone> bones, string uoTargetName)
@@ -8666,7 +8540,7 @@ void main() {
 
                     UpdateNudValues();
                     EnsurePreviewModel();
-                    if (_isClothingAdaptMode)
+                    if (_liveDeformMeshWithBones || _isClothingAdaptMode)
                     {
                         UpdateClothingAdaptationDeformation();
                     }
