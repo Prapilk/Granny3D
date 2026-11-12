@@ -123,6 +123,28 @@ namespace UoFiddler.Plugin.Granny3D
         private string? _textureName;
 
         // Transform parameters
+        public enum RigTransformTarget
+        {
+            Mesh,
+            Skeleton,
+            Both
+        }
+
+        private RigTransformTarget _currentTransformTarget = RigTransformTarget.Both;
+        private Button btnTargetMesh = null!;
+        private Button btnTargetSkeleton = null!;
+        private Button btnTargetBoth = null!;
+        private Label lblNudge = null!;
+        private Label lblScale = null!;
+
+        // Flag to track whether loaded model has its own rig
+        private bool _hasImportedRig = false;
+        private List<GrannyBone>? _ghostRefBones = null;
+        private bool _showGhostSkeleton = false;
+        private string _ghostSkeletonName = "";
+        private string _ghostSkeletonPath = "";
+        private CheckBox chkShowGhostSkeleton = null!;
+
         private float _scale = 1.0f;
         private float _rotX = 0f;
         private float _rotY = 0f;
@@ -800,9 +822,9 @@ namespace UoFiddler.Plugin.Granny3D
             // 2. Transform & Orientation Group
             var grpTransform = new GroupBox
             {
-                Text = Localization.Tr("rig_grp_transform", "2. Orientation, Échelle & Alignement du Modèle"),
+                Text = Localization.Tr("rig_grp_transform", "2. Orientation, Échelle & Déplacement"),
                 Dock = DockStyle.Top,
-                Height = 285,
+                Height = 320,
                 ForeColor = Color.DeepSkyBlue,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -835,20 +857,52 @@ namespace UoFiddler.Plugin.Granny3D
                 return b;
             }
 
+            // Row 0: Target Selector (Mesh vs Skeleton vs Both)
+            var pnlTargetMode = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0, 0, 0, 4)
+            };
+            var lblTarget = new Label
+            {
+                Text = "Cible active :",
+                AutoSize = true,
+                ForeColor = Color.Gold,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                Padding = new Padding(0, 6, 6, 0)
+            };
+            pnlTargetMode.Controls.Add(lblTarget);
+
+            btnTargetMesh = new Button { Text = "👤 Modèle (Mesh)", Height = 28, AutoSize = true, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Margin = new Padding(2, 2, 4, 2) };
+            btnTargetSkeleton = new Button { Text = "🦴 Squelette", Height = 28, AutoSize = true, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Margin = new Padding(2, 2, 4, 2) };
+            btnTargetBoth = new Button { Text = "🔗 Modèle + Squelette", Height = 28, AutoSize = true, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Margin = new Padding(2, 2, 4, 2) };
+
+            btnTargetMesh.Click += (s, e) => SetTransformTarget(RigTransformTarget.Mesh);
+            btnTargetSkeleton.Click += (s, e) => SetTransformTarget(RigTransformTarget.Skeleton);
+            btnTargetBoth.Click += (s, e) => SetTransformTarget(RigTransformTarget.Both);
+
+            pnlTargetMode.Controls.Add(btnTargetMesh);
+            pnlTargetMode.Controls.Add(btnTargetSkeleton);
+            pnlTargetMode.Controls.Add(btnTargetBoth);
+            pnlTransformInner.Controls.Add(pnlTargetMode);
+            UpdateTransformTargetUI();
+
             // Row 1: Fast Alignment
-            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_stand_up", "🧍 Redresser Debout (Z-up)"), Color.FromArgb(30, 90, 140), AutoStandUp));
-            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_ground", "⚡ Pieds au sol (Z=0) & Centrer"), Color.FromArgb(20, 100, 70), AutoCenterAndGround));
-            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_fit_skel", "⚡ Ajuster taille au squelette (1.75m)"), Color.FromArgb(90, 40, 110), AutoScaleToSkeleton));
+            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_stand_up", "🧘 Redresser Debout (Z-up)"), Color.FromArgb(30, 90, 140), AutoStandUpTarget));
+            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_ground", "⚡ Pieds au sol (Z=0) & Centrer"), Color.FromArgb(20, 100, 70), AutoGroundAndCenterTarget));
+            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_fit_skel", "⚡ Ajuster taille au squelette (1.75m)"), Color.FromArgb(90, 40, 110), AutoScaleTargetToSkeleton));
 
             // Row 2: Rotations & Mirror
-            pnlTransformInner.Controls.Add(CreateTBtn("↻ Rot X +90°", Color.FromArgb(45, 45, 50), () => RotateModel(90f, 0, 0)));
-            pnlTransformInner.Controls.Add(CreateTBtn("↺ Rot X -90°", Color.FromArgb(45, 45, 50), () => RotateModel(-90f, 0, 0)));
-            pnlTransformInner.Controls.Add(CreateTBtn("↻ Rot Y +90°", Color.FromArgb(45, 45, 50), () => RotateModel(0, 90f, 0)));
-            pnlTransformInner.Controls.Add(CreateTBtn("↺ Rot Y -90°", Color.FromArgb(45, 45, 50), () => RotateModel(0, -90f, 0)));
-            pnlTransformInner.Controls.Add(CreateTBtn("↻ Rot Z +90°", Color.FromArgb(45, 45, 50), () => RotateModel(0, 0, 90f)));
-            pnlTransformInner.Controls.Add(CreateTBtn("↺ Rot Z -90°", Color.FromArgb(45, 45, 50), () => RotateModel(0, 0, -90f)));
-            pnlTransformInner.Controls.Add(CreateTBtn("↻ 180°", Color.FromArgb(45, 45, 50), () => RotateModel(0, 0, 180f)));
-            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_mirror_x", "⇋ Miroir X"), Color.FromArgb(70, 50, 40), ToggleMirrorX));
+            pnlTransformInner.Controls.Add(CreateTBtn("↺ Rot X +90°", Color.FromArgb(45, 45, 50), () => RotateTarget(90f, 0, 0)));
+            pnlTransformInner.Controls.Add(CreateTBtn("↻ Rot X -90°", Color.FromArgb(45, 45, 50), () => RotateTarget(-90f, 0, 0)));
+            pnlTransformInner.Controls.Add(CreateTBtn("↺ Rot Y +90°", Color.FromArgb(45, 45, 50), () => RotateTarget(0, 90f, 0)));
+            pnlTransformInner.Controls.Add(CreateTBtn("↻ Rot Y -90°", Color.FromArgb(45, 45, 50), () => RotateTarget(0, -90f, 0)));
+            pnlTransformInner.Controls.Add(CreateTBtn("↺ Rot Z +90°", Color.FromArgb(45, 45, 50), () => RotateTarget(0, 0, 90f)));
+            pnlTransformInner.Controls.Add(CreateTBtn("↻ Rot Z -90°", Color.FromArgb(45, 45, 50), () => RotateTarget(0, 0, -90f)));
+            pnlTransformInner.Controls.Add(CreateTBtn("↺ 180°", Color.FromArgb(45, 45, 50), () => RotateTarget(0, 0, 180f)));
+            pnlTransformInner.Controls.Add(CreateTBtn(Localization.Tr("rig_btn_mirror_x", "⇄ Miroir X"), Color.FromArgb(70, 50, 40), ToggleMirrorTarget));
 
             // Row 3: Position Offset / Nudge
             var pnlNudge = new FlowLayoutPanel
@@ -858,14 +912,14 @@ namespace UoFiddler.Plugin.Granny3D
                 WrapContents = true,
                 Margin = new Padding(0, 4, 0, 0)
             };
-            var lblNudge = new Label { Text = Localization.Tr("rig_lbl_nudge", "Position Modèle :"), AutoSize = true, ForeColor = Color.Gainsboro, Padding = new Padding(0, 6, 4, 0) };
+            lblNudge = new Label { Text = Localization.Tr("rig_lbl_nudge", "Position :"), AutoSize = true, ForeColor = Color.Gainsboro, Padding = new Padding(0, 6, 4, 0) };
             pnlNudge.Controls.Add(lblNudge);
-            pnlNudge.Controls.Add(CreateTBtn("X: ◀ -5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(-0.05f, 0, 0)));
-            pnlNudge.Controls.Add(CreateTBtn("▶ +5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(0.05f, 0, 0)));
-            pnlNudge.Controls.Add(CreateTBtn("Y: ▼ -5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(0, -0.05f, 0)));
-            pnlNudge.Controls.Add(CreateTBtn("▲ +5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(0, 0.05f, 0)));
-            pnlNudge.Controls.Add(CreateTBtn("Z: ▼ -5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(0, 0, -0.05f)));
-            pnlNudge.Controls.Add(CreateTBtn("▲ +5cm", Color.FromArgb(40, 40, 45), () => NudgeOffset(0, 0, 0.05f)));
+            pnlNudge.Controls.Add(CreateTBtn("X: ◀ -5cm", Color.FromArgb(40, 40, 45), () => NudgeTarget(-0.05f, 0, 0)));
+            pnlNudge.Controls.Add(CreateTBtn("▶ +5cm", Color.FromArgb(40, 40, 45), () => NudgeTarget(0.05f, 0, 0)));
+            pnlNudge.Controls.Add(CreateTBtn("Y: ▼ -5cm", Color.FromArgb(40, 40, 45), () => NudgeTarget(0, -0.05f, 0)));
+            pnlNudge.Controls.Add(CreateTBtn("▲ +5cm", Color.FromArgb(40, 40, 45), () => NudgeTarget(0, 0.05f, 0)));
+            pnlNudge.Controls.Add(CreateTBtn("Z: ▼ -5cm", Color.FromArgb(40, 40, 45), () => NudgeTarget(0, 0, -0.05f)));
+            pnlNudge.Controls.Add(CreateTBtn("▲ +5cm", Color.FromArgb(40, 40, 45), () => NudgeTarget(0, 0, 0.05f)));
             pnlTransformInner.Controls.Add(pnlNudge);
 
             // Row 4: Manual scale input
@@ -876,19 +930,19 @@ namespace UoFiddler.Plugin.Granny3D
                 WrapContents = true,
                 Margin = new Padding(0, 4, 0, 0)
             };
-            var lblScale = new Label { Text = Localization.Tr("rig_lbl_scale", "Échelle Modèle :"), AutoSize = true, ForeColor = Color.Gainsboro, Padding = new Padding(0, 6, 4, 0) };
+            lblScale = new Label { Text = Localization.Tr("rig_lbl_scale", "Échelle :"), AutoSize = true, ForeColor = Color.Gainsboro, Padding = new Padding(0, 6, 4, 0) };
             nudScale = new NumericUpDown { DecimalPlaces = 4, Minimum = 0.0001m, Maximum = 1000000m, Value = 1.0m, Increment = 0.01m, Width = 85, BackColor = Color.FromArgb(22, 22, 24), ForeColor = Color.White, Margin = new Padding(0, 3, 4, 0) };
             nudScale.ValueChanged += (s, e) => OnMeshScaleChanged();
 
             pnlScale.Controls.Add(lblScale);
             pnlScale.Controls.Add(nudScale);
-            pnlScale.Controls.Add(CreateTBtn("-10%", Color.FromArgb(40, 50, 60), () => SetModelScale(_scale * 0.9f)));
-            pnlScale.Controls.Add(CreateTBtn("+10%", Color.FromArgb(40, 50, 60), () => SetModelScale(_scale * 1.1f)));
-            pnlScale.Controls.Add(CreateTBtn("-5%", Color.FromArgb(35, 45, 55), () => SetModelScale(_scale * 0.95f)));
-            pnlScale.Controls.Add(CreateTBtn("+5%", Color.FromArgb(35, 45, 55), () => SetModelScale(_scale * 1.05f)));
-            pnlScale.Controls.Add(CreateTBtn("x0.01 (cm→m)", Color.FromArgb(30, 55, 75), () => SetModelScale(_scale * 0.01f)));
-            pnlScale.Controls.Add(CreateTBtn("x100 (m→cm)", Color.FromArgb(30, 55, 75), () => SetModelScale(_scale * 100f)));
-            pnlScale.Controls.Add(CreateTBtn("1.0 (Reset)", Color.FromArgb(50, 50, 55), () => SetModelScale(1.0f)));
+            pnlScale.Controls.Add(CreateTBtn("-10%", Color.FromArgb(40, 50, 60), () => ScaleTarget(0.9f)));
+            pnlScale.Controls.Add(CreateTBtn("+10%", Color.FromArgb(40, 50, 60), () => ScaleTarget(1.1f)));
+            pnlScale.Controls.Add(CreateTBtn("-5%", Color.FromArgb(35, 45, 55), () => ScaleTarget(0.95f)));
+            pnlScale.Controls.Add(CreateTBtn("+5%", Color.FromArgb(35, 45, 55), () => ScaleTarget(1.05f)));
+            pnlScale.Controls.Add(CreateTBtn("x0.01 (cm→m)", Color.FromArgb(30, 55, 75), () => ScaleTarget(0.01f)));
+            pnlScale.Controls.Add(CreateTBtn("x100 (m→cm)", Color.FromArgb(30, 55, 75), () => ScaleTarget(100f)));
+            pnlScale.Controls.Add(CreateTBtn("1.0 (Reset)", Color.FromArgb(50, 50, 55), ResetScaleTarget));
             pnlTransformInner.Controls.Add(pnlScale);
 
             // Row 5: Dimensions display
@@ -908,7 +962,7 @@ namespace UoFiddler.Plugin.Granny3D
             {
                 Text = Localization.Tr("rig_grp_skeleton", "3. Squelette UO (Humains, Monstres, Animaux) & Options"),
                 Dock = DockStyle.Top,
-                Height = 135,
+                Height = 160,
                 ForeColor = Color.LimeGreen,
                 Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                 Padding = new Padding(10)
@@ -920,7 +974,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             btnChooseSkeleton = new Button
             {
-                Text = Localization.Tr("rig_btn_choose_skel", "🔍 Choisir squelette..."),
+                Text = Localization.Tr("rig_btn_choose_skel", "🔍 Choisir créature..."),
                 Location = new Point(455, 19),
                 Size = new Size(200, 26),
                 BackColor = Color.FromArgb(40, 75, 110),
@@ -929,11 +983,36 @@ namespace UoFiddler.Plugin.Granny3D
                 Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
             };
 
+            var btnReplaceWithTargetSkel = new Button
+            {
+                Text = "⚠️ Remplacer rig existant",
+                Location = new Point(455, 48),
+                Size = new Size(200, 24),
+                BackColor = Color.FromArgb(65, 38, 42),
+                ForeColor = Color.LightCoral,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8F, FontStyle.Bold)
+            };
+            btnReplaceWithTargetSkel.FlatAppearance.BorderColor = Color.FromArgb(100, 55, 60);
+            btnReplaceWithTargetSkel.Click += (s, e) =>
+            {
+                if (!_hasImportedRig) return;
+                var res = MessageBox.Show(
+                    "Attention : Cela va écraser le squelette et le skinning d'origine du modèle pour repartir de zéro sur le squelette UO sélectionné.\n\nVoulez-vous continuer ?",
+                    "Remplacer le squelette", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (res != DialogResult.Yes) return;
+
+                _hasImportedRig = false;
+                if (rbMale.Checked) OnSkeletonChanged(false);
+                else if (rbFemale.Checked) OnSkeletonChanged(true);
+                else if (rbCustom.Checked) OnSkeletonChangedCreature(_customSkeletonPath, _customSkeletonName);
+            };
+
             lblSkeletonName = new Label
             {
                 Text = "Squelette actif : Homme (H_Male_Lod2.grn)",
                 Location = new Point(15, 50),
-                Size = new Size(650, 20),
+                Size = new Size(430, 20),
                 ForeColor = Color.LightGreen,
                 Font = new Font("Segoe UI", 8.5F, FontStyle.Italic)
             };
@@ -943,8 +1022,17 @@ namespace UoFiddler.Plugin.Granny3D
                 if (_isInternalSkeletonSwitch) return;
                 if (rbMale.Checked)
                 {
-                    lblSkeletonName.Text = "Squelette actif : Homme (H_Male_Lod2.grn)";
-                    OnSkeletonChanged(false);
+                    string maleRef = Path.Combine(_basePath, "Humans", "H_Male_Lod2.grn");
+                    if (!File.Exists(maleRef)) maleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Male_Lod2.grn");
+                    if (_hasImportedRig)
+                    {
+                        SetGhostTargetSkeleton(maleRef, "Homme (H_Male)");
+                    }
+                    else
+                    {
+                        lblSkeletonName.Text = "Squelette actif : Homme (H_Male_Lod2.grn)";
+                        OnSkeletonChanged(false);
+                    }
                 }
             };
             rbFemale.CheckedChanged += (s, e) =>
@@ -952,8 +1040,17 @@ namespace UoFiddler.Plugin.Granny3D
                 if (_isInternalSkeletonSwitch) return;
                 if (rbFemale.Checked)
                 {
-                    lblSkeletonName.Text = "Squelette actif : Femme (H_Female_Lod2.grn)";
-                    OnSkeletonChanged(true);
+                    string femaleRef = Path.Combine(_basePath, "Humans", "H_Female_Lod2.grn");
+                    if (!File.Exists(femaleRef)) femaleRef = Path.Combine(Granny3DControl.BasePath, "Humans", "H_Female_Lod2.grn");
+                    if (_hasImportedRig)
+                    {
+                        SetGhostTargetSkeleton(femaleRef, "Femme (H_Female)");
+                    }
+                    else
+                    {
+                        lblSkeletonName.Text = "Squelette actif : Femme (H_Female_Lod2.grn)";
+                        OnSkeletonChanged(true);
+                    }
                 }
             };
             rbCustom.CheckedChanged += (s, e) =>
@@ -964,7 +1061,12 @@ namespace UoFiddler.Plugin.Granny3D
                     if (string.IsNullOrEmpty(_customSkeletonPath) || !File.Exists(_customSkeletonPath))
                         ChooseCustomSkeleton();
                     else
-                        OnSkeletonChangedCreature(_customSkeletonPath, _customSkeletonName);
+                    {
+                        if (_hasImportedRig)
+                            SetGhostTargetSkeleton(_customSkeletonPath, _customSkeletonName);
+                        else
+                            OnSkeletonChangedCreature(_customSkeletonPath, _customSkeletonName);
+                    }
                 }
             };
             btnChooseSkeleton.Click += (s, e) => ChooseCustomSkeleton();
@@ -989,13 +1091,30 @@ namespace UoFiddler.Plugin.Granny3D
                 Font = new Font("Segoe UI", 9F, FontStyle.Regular)
             };
 
+            chkShowGhostSkeleton = new CheckBox
+            {
+                Text = "👻 Squelette Cible Fantôme (Morphing/Aimantation)",
+                Checked = true,
+                Location = new Point(15, 126),
+                AutoSize = true,
+                ForeColor = Color.PaleTurquoise,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold)
+            };
+            chkShowGhostSkeleton.CheckedChanged += (s, e) =>
+            {
+                _showGhostSkeleton = chkShowGhostSkeleton.Checked;
+                glControl.Invalidate();
+            };
+
             grpSkeleton.Controls.Add(rbMale);
             grpSkeleton.Controls.Add(rbFemale);
             grpSkeleton.Controls.Add(rbCustom);
             grpSkeleton.Controls.Add(btnChooseSkeleton);
+            grpSkeleton.Controls.Add(btnReplaceWithTargetSkel);
             grpSkeleton.Controls.Add(lblSkeletonName);
             grpSkeleton.Controls.Add(chkSymmetry);
             grpSkeleton.Controls.Add(chkForceAutoSkin);
+            grpSkeleton.Controls.Add(chkShowGhostSkeleton);
 
             // 4. Markers Adjustments Group
             var grpMarkers = new GroupBox
@@ -1374,21 +1493,21 @@ namespace UoFiddler.Plugin.Granny3D
 
             var btnSelectAll = new Button
             {
-                Text = Localization.Tr("rig_btn_sel_all", "🎯 Tout"),
-                Location = new Point(332, 2),
-                Size = new Size(72, 26),
-                BackColor = Color.FromArgb(45, 55, 75),
+                Text = "🦴 Tout le squelette",
+                Location = new Point(330, 2),
+                Size = new Size(130, 26),
+                BackColor = Color.FromArgb(30, 80, 130),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 8F, FontStyle.Bold)
             };
-            btnSelectAll.FlatAppearance.BorderColor = Color.FromArgb(65, 75, 95);
+            btnSelectAll.FlatAppearance.BorderColor = Color.FromArgb(50, 110, 170);
             btnSelectAll.Click += (s, e) => SelectAllMarkers();
 
             var btnDeselectAll = new Button
             {
-                Text = Localization.Tr("rig_btn_desel_all", "🧹 Aucun"),
-                Location = new Point(408, 2),
+                Text = "◻ Aucun",
+                Location = new Point(466, 2),
                 Size = new Size(70, 26),
                 BackColor = Color.FromArgb(45, 45, 50),
                 ForeColor = Color.Gainsboro,
@@ -1486,52 +1605,8 @@ namespace UoFiddler.Plugin.Granny3D
             pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_back", "Paume Arr. (180°)"), 245, 125, () => SetRollExact(180f)));
             pnlRotBtns.Controls.Add(CreateRotBtn(Localization.Tr("rig_palm_default", "0° (Défaut)"), 375, 80, () => SetRollExact(0f)));
 
-            // Skeleton Scale Presets Panel
-            var pnlSkelScale = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 30,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                Margin = new Padding(0),
-                Padding = new Padding(0, 2, 0, 2)
-            };
-            var lblSkelScale = new Label
-            {
-                Text = Localization.Tr("rig_lbl_skel_scale", "Échelle Squelette :"),
-                AutoSize = true,
-                ForeColor = Color.Gainsboro,
-                Padding = new Padding(0, 5, 4, 0),
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular)
-            };
-            pnlSkelScale.Controls.Add(lblSkelScale);
-
-            Button CreateSkelScaleBtn(string text, int width, float factor)
-            {
-                var b = new Button
-                {
-                    Text = text,
-                    Size = new Size(width, 24),
-                    BackColor = Color.FromArgb(30, 60, 50),
-                    ForeColor = Color.White,
-                    FlatStyle = FlatStyle.Flat,
-                    Margin = new Padding(2, 1, 2, 0),
-                    Font = new Font("Segoe UI", 8F, FontStyle.Bold)
-                };
-                b.FlatAppearance.BorderColor = Color.FromArgb(50, 80, 70);
-                b.Click += (s, e) => ScaleSkeletonMarkers(factor);
-                return b;
-            }
-
-            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("-10%", 48, 0.90f));
-            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("+10%", 48, 1.10f));
-            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("-5%", 44, 0.95f));
-            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("+5%", 44, 1.05f));
-            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("x0.5", 44, 0.50f));
-            pnlSkelScale.Controls.Add(CreateSkelScaleBtn("x2.0", 44, 2.00f));
-
-            // Auto Fit & Center Skeleton Panel
-            var pnlSkelFit = new FlowLayoutPanel
+            // Ghost & Retargeting Snapping Bar
+            var pnlGhostSnap = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
                 Height = 32,
@@ -1541,35 +1616,35 @@ namespace UoFiddler.Plugin.Granny3D
                 Padding = new Padding(0, 2, 0, 2)
             };
 
-            var btnFitSkel = new Button
+            var btnSnapGhost = new Button
             {
-                Text = Localization.Tr("rig_btn_fit_skel_to_mesh", "📏 Aligner Squelette sur Modèle (Hauteur & Sol)"),
+                Text = "🧲 Aimanter tout sur le squelette fantôme",
                 AutoSize = true,
                 Height = 26,
-                BackColor = Color.FromArgb(70, 45, 95),
+                BackColor = Color.FromArgb(20, 100, 70),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
-                Margin = new Padding(0, 2, 6, 0),
                 Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
             };
-            btnFitSkel.FlatAppearance.BorderColor = Color.FromArgb(90, 65, 115);
-            btnFitSkel.Click += (s, e) => AutoFitSkeletonHeightToMesh();
+            btnSnapGhost.FlatAppearance.BorderColor = Color.FromArgb(40, 140, 90);
+            btnSnapGhost.Click += (s, e) => SnapToGhostJoints(onlySelected: false);
 
-            var btnCenterSkel = new Button
+            var btnSnapSelected = new Button
             {
-                Text = Localization.Tr("rig_btn_center_skel", "🎯 Centrer"),
-                Size = new Size(80, 26),
-                BackColor = Color.FromArgb(40, 65, 85),
+                Text = "🎯 Aimanter os actif",
+                AutoSize = true,
+                Height = 26,
+                BackColor = Color.FromArgb(40, 75, 110),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
-                Margin = new Padding(0, 2, 2, 0),
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
+                Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+                Margin = new Padding(4, 0, 0, 0)
             };
-            btnCenterSkel.FlatAppearance.BorderColor = Color.FromArgb(60, 85, 105);
-            btnCenterSkel.Click += (s, e) => AutoCenterSkeletonToMesh();
+            btnSnapSelected.FlatAppearance.BorderColor = Color.FromArgb(60, 100, 150);
+            btnSnapSelected.Click += (s, e) => SnapToGhostJoints(onlySelected: true);
 
-            pnlSkelFit.Controls.Add(btnFitSkel);
-            pnlSkelFit.Controls.Add(btnCenterSkel);
+            pnlGhostSnap.Controls.Add(btnSnapGhost);
+            pnlGhostSnap.Controls.Add(btnSnapSelected);
 
             var pnlArmTPose = new FlowLayoutPanel
             {
@@ -1655,8 +1730,7 @@ namespace UoFiddler.Plugin.Granny3D
             AddRowToMarkers(pnlCoords);
             AddRowToMarkers(pnlRotControls);
             AddRowToMarkers(pnlRotBtns);
-            AddRowToMarkers(pnlSkelScale);
-            AddRowToMarkers(pnlSkelFit);
+            AddRowToMarkers(pnlGhostSnap);
             AddRowToMarkers(pnlArmTPose);
             AddRowToMarkers(lblRotTip);
             AddRowToMarkers(btnResetPose);
@@ -2403,6 +2477,509 @@ namespace UoFiddler.Plugin.Granny3D
             glControl.Invalidate();
         }
 
+        private void SetTransformTarget(RigTransformTarget target)
+        {
+            _currentTransformTarget = target;
+            UpdateTransformTargetUI();
+        }
+
+        private void UpdateTransformTargetUI()
+        {
+            if (btnTargetMesh == null || btnTargetSkeleton == null || btnTargetBoth == null) return;
+
+            void StyleBtn(Button btn, bool active, Color activeColor)
+            {
+                btn.BackColor = active ? activeColor : Color.FromArgb(40, 42, 46);
+                btn.ForeColor = active ? Color.White : Color.Gainsboro;
+                btn.FlatAppearance.BorderColor = active ? Color.FromArgb(100, 200, 255) : Color.FromArgb(65, 65, 70);
+                btn.FlatAppearance.BorderSize = active ? 2 : 1;
+            }
+
+            StyleBtn(btnTargetMesh, _currentTransformTarget == RigTransformTarget.Mesh, Color.FromArgb(20, 100, 160));
+            StyleBtn(btnTargetSkeleton, _currentTransformTarget == RigTransformTarget.Skeleton, Color.FromArgb(30, 120, 80));
+            StyleBtn(btnTargetBoth, _currentTransformTarget == RigTransformTarget.Both, Color.FromArgb(110, 50, 140));
+
+            string targetName = _currentTransformTarget == RigTransformTarget.Mesh ? "Modèle" :
+                                _currentTransformTarget == RigTransformTarget.Skeleton ? "Squelette" : "Modèle + Squelette";
+            if (lblNudge != null) lblNudge.Text = $"Position ({targetName}) :";
+            if (lblScale != null) lblScale.Text = $"Échelle ({targetName}) :";
+        }
+
+        private void RotateTarget(float rx, float ry, float rz)
+        {
+            if (_currentTransformTarget == RigTransformTarget.Mesh)
+            {
+                RotateModel(rx, ry, rz);
+            }
+            else if (_currentTransformTarget == RigTransformTarget.Skeleton)
+            {
+                RotateSkeletonMarkers(rx, ry, rz, pivotAroundModel: false);
+            }
+            else // Both
+            {
+                RotateModel(rx, ry, rz);
+                RotateSkeletonMarkers(rx, ry, rz, pivotAroundModel: true);
+            }
+        }
+
+        private void RotateSkeletonMarkers(float rx, float ry, float rz, bool pivotAroundModel = false)
+        {
+            if (_markers == null || _markers.Count == 0) return;
+            CommitPendingNudUndo();
+            PushUndoState($"Rotation squelette ({rx:0}°, {ry:0}°, {rz:0}°)");
+
+            List<JointMarker> targets;
+            if (!pivotAroundModel && _selectedMarkerIndices.Count > 1 && _selectedMarkerIndices.Count < _markers.Count)
+                targets = _selectedMarkerIndices.Where(i => i >= 0 && i < _markers.Count).Select(i => _markers[i]).ToList();
+            else
+                targets = _markers;
+
+            if (targets.Count == 0) return;
+
+            Vector3 pivot;
+            if (pivotAroundModel)
+            {
+                pivot = _offset;
+            }
+            else
+            {
+                float minX = float.MaxValue, maxX = float.MinValue;
+                float minY = float.MaxValue, maxY = float.MinValue;
+                float minZ = float.MaxValue, maxZ = float.MinValue;
+                foreach (var m in targets)
+                {
+                    minX = Math.Min(minX, m.Position.X); maxX = Math.Max(maxX, m.Position.X);
+                    minY = Math.Min(minY, m.Position.Y); maxY = Math.Max(maxY, m.Position.Y);
+                    minZ = Math.Min(minZ, m.Position.Z); maxZ = Math.Max(maxZ, m.Position.Z);
+                }
+                pivot = new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f);
+            }
+
+            var rotMat = Matrix4.CreateRotationX(MathHelper.DegreesToRadians(rx)) *
+                         Matrix4.CreateRotationY(MathHelper.DegreesToRadians(ry)) *
+                         Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(rz));
+
+            foreach (var m in targets)
+            {
+                Vector3 rel = m.Position - pivot;
+                m.Position = pivot + Vector3.TransformVector(rel, rotMat);
+                m.RotationDegrees = new Vector3((m.RotationDegrees.X + rx) % 360f, (m.RotationDegrees.Y + ry) % 360f, (m.RotationDegrees.Z + rz) % 360f);
+            }
+
+            UpdateNudValues();
+            EnsurePreviewModel();
+            if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
+            glControl.Invalidate();
+        }
+
+        private void NudgeTarget(float dx, float dy, float dz)
+        {
+            var delta = new Vector3(dx, dy, dz);
+            CommitPendingNudUndo();
+
+            if (_currentTransformTarget == RigTransformTarget.Mesh)
+            {
+                PushUndoState("Décalage modèle");
+                _offset += delta;
+                RebakeModelTransform();
+            }
+            else if (_currentTransformTarget == RigTransformTarget.Skeleton)
+            {
+                PushUndoState("Décalage squelette");
+                List<JointMarker> targets;
+                if (_selectedMarkerIndices.Count > 0 && _selectedMarkerIndices.Count < _markers.Count)
+                    targets = _selectedMarkerIndices.Where(i => i >= 0 && i < _markers.Count).Select(i => _markers[i]).ToList();
+                else
+                    targets = _markers;
+                foreach (var m in targets) m.Position += delta;
+                UpdateNudValues();
+                EnsurePreviewModel();
+                if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
+            }
+            else // Both
+            {
+                PushUndoState("Décalage modèle + squelette");
+                _offset += delta;
+                foreach (var m in _markers) m.Position += delta;
+                RebakeModelTransform();
+                UpdateNudValues();
+                EnsurePreviewModel();
+                if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
+            }
+            glControl.Invalidate();
+        }
+
+        private void ScaleTarget(float factor)
+        {
+            if (_currentTransformTarget == RigTransformTarget.Mesh)
+            {
+                SetModelScale(_scale * factor);
+            }
+            else if (_currentTransformTarget == RigTransformTarget.Skeleton)
+            {
+                ScaleSkeletonMarkers(factor, onlySelectedIfMultiple: false);
+            }
+            else // Both
+            {
+                SetModelScale(_scale * factor);
+                ScaleSkeletonMarkers(factor, onlySelectedIfMultiple: false);
+            }
+        }
+
+        private void ResetScaleTarget()
+        {
+            if (_currentTransformTarget == RigTransformTarget.Mesh)
+            {
+                SetModelScale(1.0f);
+            }
+            else if (_currentTransformTarget == RigTransformTarget.Skeleton)
+            {
+                AutoFitSkeletonHeightToMesh();
+            }
+            else // Both
+            {
+                SetModelScale(1.0f);
+                AutoFitSkeletonHeightToMesh();
+            }
+        }
+
+        private void AutoStandUpTarget()
+        {
+            if (_currentTransformTarget == RigTransformTarget.Mesh)
+            {
+                RotateModel(90f, 0, 0);
+            }
+            else if (_currentTransformTarget == RigTransformTarget.Skeleton)
+            {
+                RotateSkeletonMarkers(90f, 0, 0, pivotAroundModel: false);
+            }
+            else // Both
+            {
+                AutoStandUp();
+                RotateSkeletonMarkers(90f, 0, 0, pivotAroundModel: true);
+            }
+        }
+
+        private void AutoGroundAndCenterTarget()
+        {
+            if (_currentTransformTarget == RigTransformTarget.Mesh)
+            {
+                if (_baseVertices == null || _baseVertices.Length == 0) return;
+                CommitPendingNudUndo();
+                PushUndoState("Centrer et poser modèle au sol");
+                float minX = float.MaxValue, maxX = float.MinValue;
+                float minY = float.MaxValue, maxY = float.MinValue;
+                float minZ = float.MaxValue, maxZ = float.MinValue;
+                foreach (var v in _baseVertices)
+                {
+                    minX = Math.Min(minX, v.X); maxX = Math.Max(maxX, v.X);
+                    minY = Math.Min(minY, v.Y); maxY = Math.Max(maxY, v.Y);
+                    minZ = Math.Min(minZ, v.Z); maxZ = Math.Max(maxZ, v.Z);
+                }
+                float centerX = (minX + maxX) * 0.5f;
+                float centerY = (minY + maxY) * 0.5f;
+                _offset += new Vector3(-centerX, -centerY, -minZ);
+                RebakeModelTransform();
+                EnsurePreviewModel();
+                glControl.Invalidate();
+            }
+            else if (_currentTransformTarget == RigTransformTarget.Skeleton)
+            {
+                if (_markers == null || _markers.Count == 0) return;
+                CommitPendingNudUndo();
+                PushUndoState("Centrer et poser squelette au sol");
+                float minX = float.MaxValue, maxX = float.MinValue;
+                float minY = float.MaxValue, maxY = float.MinValue;
+                float minZ = float.MaxValue, maxZ = float.MinValue;
+                foreach (var m in _markers)
+                {
+                    minX = Math.Min(minX, m.Position.X); maxX = Math.Max(maxX, m.Position.X);
+                    minY = Math.Min(minY, m.Position.Y); maxY = Math.Max(maxY, m.Position.Y);
+                    minZ = Math.Min(minZ, m.Position.Z); maxZ = Math.Max(maxZ, m.Position.Z);
+                }
+                float centerX = (minX + maxX) * 0.5f;
+                float centerY = (minY + maxY) * 0.5f;
+                var shift = new Vector3(-centerX, -centerY, -minZ);
+                foreach (var m in _markers) m.Position += shift;
+                UpdateNudValues();
+                EnsurePreviewModel();
+                if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
+                glControl.Invalidate();
+            }
+            else // Both
+            {
+                AutoCenterAndGround();
+            }
+        }
+
+        private void AutoScaleTargetToSkeleton()
+        {
+            if (_currentTransformTarget == RigTransformTarget.Skeleton)
+            {
+                AutoFitSkeletonHeightToMesh();
+            }
+            else
+            {
+                AutoScaleToSkeleton();
+            }
+        }
+
+        private void ToggleMirrorTarget()
+        {
+            if (_currentTransformTarget == RigTransformTarget.Mesh)
+            {
+                ToggleMirrorX();
+            }
+            else if (_currentTransformTarget == RigTransformTarget.Skeleton)
+            {
+                CommitPendingNudUndo();
+                PushUndoState("Miroir X squelette");
+                foreach (var m in _markers)
+                {
+                    m.Position = new Vector3(-m.Position.X, m.Position.Y, m.Position.Z);
+                }
+                UpdateNudValues();
+                EnsurePreviewModel();
+                glControl.Invalidate();
+            }
+            else // Both
+            {
+                ToggleMirrorX();
+                foreach (var m in _markers)
+                {
+                    m.Position = new Vector3(-m.Position.X, m.Position.Y, m.Position.Z);
+                }
+                UpdateNudValues();
+                EnsurePreviewModel();
+                glControl.Invalidate();
+            }
+        }
+
+        private static List<GrannyBone> LoadBonesFromFile(string path)
+        {
+            var list = new List<GrannyBone>();
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return list;
+            try
+            {
+                if (path.EndsWith(".char", StringComparison.OrdinalIgnoreCase))
+                {
+                    var charModel = GrannyModelFile.Load(path);
+                    if (charModel?.Bones != null) list.AddRange(charModel.Bones);
+                }
+                else
+                {
+                    var parser = new GrannyFormatParser();
+                    if (parser.Load(path) && parser.Bones != null) list.AddRange(parser.Bones);
+                }
+            }
+            catch { }
+            for (int i = 0; i < list.Count; i++) list[i].Id = i;
+            return list;
+        }
+
+        private void SetGhostTargetSkeleton(string targetPath, string targetName)
+        {
+            if (string.IsNullOrEmpty(targetPath) || !File.Exists(targetPath)) return;
+
+            _ghostSkeletonPath = targetPath;
+            _ghostSkeletonName = !string.IsNullOrEmpty(targetName) ? targetName : Path.GetFileNameWithoutExtension(targetPath);
+            _ghostRefBones = LoadBonesFromFile(targetPath);
+            _showGhostSkeleton = true;
+            if (chkShowGhostSkeleton != null) chkShowGhostSkeleton.Checked = true;
+
+            _targetReferenceJointPositions.Clear();
+            for (int i = 0; i < _ghostRefBones.Count; i++)
+            {
+                var b = _ghostRefBones[i];
+                if (Math.Abs(b.InverseBindMatrix.Determinant) > 1e-5f)
+                {
+                    var world = Matrix4.Invert(b.InverseBindMatrix);
+                    _targetReferenceJointPositions[b.Name] = world.Row3.Xyz;
+                }
+                else
+                {
+                    _targetReferenceJointPositions[b.Name] = b.LocalPosition;
+                }
+            }
+
+            LoadGhostTargetBody();
+
+            int myBonesCount = _previewModel?.Bones?.Count ?? _markers.Count;
+            if (lblSkeletonName != null)
+            {
+                lblSkeletonName.Text = $"Rig modèle : {myBonesCount} os | Fantôme cible : {_ghostSkeletonName} ({_ghostRefBones.Count} os)";
+            }
+
+            glControl.Invalidate();
+        }
+
+        private void SnapToGhostJoints(bool onlySelected = false)
+        {
+            if (_targetReferenceJointPositions.Count == 0)
+            {
+                MessageBox.Show("Aucun squelette fantôme n'est actif. Veuillez sélectionner un squelette cible dans l'étape 3.", "Aimantation Fantôme", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            CommitPendingNudUndo();
+            PushUndoState(onlySelected ? "Aimanter os sélectionné sur le fantôme" : "Aimanter tout sur le squelette fantôme");
+
+            List<JointMarker> targets;
+            if (onlySelected && _selectedMarkerIndex >= 0 && _selectedMarkerIndex < _markers.Count)
+            {
+                targets = new List<JointMarker> { _markers[_selectedMarkerIndex] };
+            }
+            else
+            {
+                targets = _markers;
+            }
+
+            int count = 0;
+            foreach (var m in targets)
+            {
+                // 1. Exact name match
+                if (_targetReferenceJointPositions.TryGetValue(m.BoneName, out Vector3 targetPos))
+                {
+                    m.Position = targetPos;
+                    m.IsSnapped = true;
+                    count++;
+                    continue;
+                }
+
+                // 2. Mixamo / Canonical map match
+                bool foundCan = false;
+                foreach (var (mix, uo) in MixamoRetarget.BoneMap)
+                {
+                    if (string.Equals(m.BoneName, mix, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(m.BoneName, mix.Replace("mixamorig:", ""), StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (_targetReferenceJointPositions.TryGetValue(uo, out Vector3 canPos))
+                        {
+                            m.Position = canPos;
+                            m.IsSnapped = true;
+                            count++;
+                            foundCan = true;
+                            break;
+                        }
+                    }
+                }
+                if (foundCan) continue;
+
+                // 3. Proximity snap: find closest ghost joint within 0.35m
+                float minDistSq = 0.35f * 0.35f;
+                Vector3 bestPos = Vector3.Zero;
+                bool foundClose = false;
+                foreach (var kvp in _targetReferenceJointPositions)
+                {
+                    float dSq = (m.Position - kvp.Value).LengthSquared;
+                    if (dSq < minDistSq)
+                    {
+                        minDistSq = dSq;
+                        bestPos = kvp.Value;
+                        foundClose = true;
+                    }
+                }
+                if (foundClose)
+                {
+                    m.Position = bestPos;
+                    m.IsSnapped = true;
+                    count++;
+                }
+            }
+
+            UpdateNudValues();
+            EnsurePreviewModel();
+            if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
+            glControl.Invalidate();
+
+            if (lblAdaptTip != null)
+            {
+                lblAdaptTip.Text = $"✅ {count} repère(s) aimanté(s) sur le squelette fantôme !";
+            }
+        }
+
+        private void DrawGhostSkeleton(Matrix4 mvp)
+        {
+            if (_ghostRefBones == null || _ghostRefBones.Count == 0 || _targetReferenceJointPositions.Count == 0) return;
+
+            GL.UseProgram(_shaderLineProg);
+            int uMvp = GL.GetUniformLocation(_shaderLineProg, "uMvp");
+            int uColor = GL.GetUniformLocation(_shaderLineProg, "uColor");
+            GL.UniformMatrix4(uMvp, false, ref mvp);
+
+            // 1. Draw ghost bone lines in cyan/teal
+            var lines = new List<float>();
+            int nb = _ghostRefBones.Count;
+            for (int i = 0; i < nb; i++)
+            {
+                int pIdx = _ghostRefBones[i].ParentId;
+                if (pIdx >= 0 && pIdx < nb && pIdx != i)
+                {
+                    string pName = _ghostRefBones[pIdx].Name;
+                    string cName = _ghostRefBones[i].Name;
+                    if (pName.Equals("__Root", StringComparison.OrdinalIgnoreCase) ||
+                        pName.Equals("master_h_male", StringComparison.OrdinalIgnoreCase) ||
+                        pName.Equals("Object03", StringComparison.OrdinalIgnoreCase) ||
+                        cName.Equals("Object03", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (_targetReferenceJointPositions.TryGetValue(pName, out Vector3 p0) &&
+                        _targetReferenceJointPositions.TryGetValue(cName, out Vector3 p1))
+                    {
+                        float dSq = (p1 - p0).LengthSquared;
+                        if (dSq > 1e-6f && dSq < 25f)
+                        {
+                            lines.Add(p0.X); lines.Add(p0.Y); lines.Add(p0.Z);
+                            lines.Add(p1.X); lines.Add(p1.Y); lines.Add(p1.Z);
+                        }
+                    }
+                }
+            }
+
+            if (lines.Count > 0)
+            {
+                GL.LineWidth(2.5f);
+                Vector4 ghostBoneCol = new Vector4(0.15f, 0.85f, 1.0f, 0.70f);
+                GL.Uniform4(uColor, ghostBoneCol);
+
+                int vao = GL.GenVertexArray();
+                int vbo = GL.GenBuffer();
+                GL.BindVertexArray(vao);
+                GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
+                GL.BufferData(BufferTarget.ArrayBuffer, lines.Count * sizeof(float), lines.ToArray(), BufferUsageHint.StreamDraw);
+
+                GL.EnableVertexAttribArray(0);
+                GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
+
+                GL.DrawArrays(OpenTK.Graphics.OpenGL.PrimitiveType.Lines, 0, lines.Count / 3);
+
+                GL.BindVertexArray(0);
+                GL.DeleteBuffer(vbo);
+                GL.DeleteVertexArray(vao);
+            }
+
+            // 2. Draw ghost joint cross markers
+            Vector4 ghostJointCol = new Vector4(0.2f, 0.80f, 1.0f, 0.50f);
+            Vector4 ghostSnappedCol = new Vector4(0.2f, 1.0f, 0.4f, 0.95f);
+
+            foreach (var kvp in _targetReferenceJointPositions)
+            {
+                Vector3 tPos = kvp.Value;
+                bool isSnapped = _markers.Any(m => (m.Position - tPos).LengthSquared < 0.0004f);
+                if (isSnapped)
+                {
+                    GL.Uniform4(uColor, ghostSnappedCol);
+                    DrawCrossMarker(mvp, tPos, 0.045f, ghostSnappedCol);
+                    DrawMarkerSelectionBox(mvp, tPos, 0.022f, ghostSnappedCol);
+                }
+                else
+                {
+                    GL.Uniform4(uColor, ghostJointCol);
+                    DrawCrossMarker(mvp, tPos, 0.035f, ghostJointCol);
+                }
+            }
+        }
+
         private void SelectAllMarkers()
         {
             CommitPendingNudUndo();
@@ -2782,7 +3359,14 @@ namespace UoFiddler.Plugin.Granny3D
                 _customSkeletonName = dlg.SelectedModel.DisplayName;
                 rbCustom.Text = $"Créature : {_customSkeletonName}";
                 rbCustom.Checked = true;
-                OnSkeletonChangedCreature(_customSkeletonPath, _customSkeletonName);
+                if (_hasImportedRig)
+                {
+                    SetGhostTargetSkeleton(_customSkeletonPath, _customSkeletonName);
+                }
+                else
+                {
+                    OnSkeletonChangedCreature(_customSkeletonPath, _customSkeletonName);
+                }
             }
             else
             {
@@ -3310,6 +3894,7 @@ namespace UoFiddler.Plugin.Granny3D
             for (int i = 0; i < bones.Count; i++) bones[i].Id = i;
             _liveOriginalBones = new List<GrannyBone>(bones);
             _hasManualSkinWeights = true;
+            _hasImportedRig = true;
             if (chkForceAutoSkin != null) chkForceAutoSkin.Checked = false;
 
             // Est-ce un squelette bipède humain classique (43 os ou doigts humains) ?
@@ -6092,6 +6677,7 @@ namespace UoFiddler.Plugin.Granny3D
                         }
                         else
                         {
+                            _hasImportedRig = false;
                             _isInternalSkeletonSwitch = true;
                             if (fn.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
                                 rbFemale.Checked = true;
@@ -6245,6 +6831,7 @@ namespace UoFiddler.Plugin.Granny3D
                         RebakeModelTransform();
                         if (_previewModel.Bones == null || _previewModel.Bones.Count == 0)
                         {
+                            _hasImportedRig = false;
                             _isInternalSkeletonSwitch = true;
                             if (fn.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
                                 rbFemale.Checked = true;
@@ -6360,6 +6947,7 @@ namespace UoFiddler.Plugin.Granny3D
                         else
                         {
                             _liveOriginalBones = null;
+                            _hasImportedRig = false;
                             _isInternalSkeletonSwitch = true;
                             if (fn.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0)
                                 rbFemale.Checked = true;
@@ -7192,8 +7780,8 @@ void main() {
             // 1. Draw Ground Grid
             DrawGrid(mvp);
 
-            // 2. Draw Ghost Target Body (in Adaptation Mode)
-            if (_isClothingAdaptMode && _showGhostTargetBody && _ghostVao != 0 && _ghostVertexCount > 0)
+            // 2. Draw Ghost Target Body (in Adaptation Mode or Ghost mode)
+            if ((_isClothingAdaptMode || _showGhostSkeleton) && _showGhostTargetBody && _ghostVao != 0 && _ghostVertexCount > 0)
             {
                 GL.Enable(EnableCap.Blend);
                 GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
@@ -7236,6 +7824,12 @@ void main() {
             {
                 DrawSkeletonLines(mvp);
                 DrawJointMarkers(mvp);
+            }
+
+            // Draw Ghost Skeleton
+            if (_showGhostSkeleton && _ghostRefBones != null && _ghostRefBones.Count > 0)
+            {
+                DrawGhostSkeleton(mvp);
             }
 
             // 5. Draw 3D Weight Brush Cursor
@@ -7998,6 +8592,31 @@ void main() {
                             if ((primaryNewPos - targetPos).Length <= _snapDistance)
                             {
                                 primaryNewPos = targetPos;
+                                curM.IsSnapped = true;
+                            }
+                            else
+                            {
+                                curM.IsSnapped = false;
+                            }
+                        }
+                        else
+                        {
+                            float minDistSq = _snapDistance * _snapDistance;
+                            Vector3 bestTargetPos = Vector3.Zero;
+                            bool foundBest = false;
+                            foreach (var kvp in _targetReferenceJointPositions)
+                            {
+                                float dSq = (primaryNewPos - kvp.Value).LengthSquared;
+                                if (dSq <= minDistSq)
+                                {
+                                    minDistSq = dSq;
+                                    bestTargetPos = kvp.Value;
+                                    foundBest = true;
+                                }
+                            }
+                            if (foundBest)
+                            {
+                                primaryNewPos = bestTargetPos;
                                 curM.IsSnapped = true;
                             }
                             else
