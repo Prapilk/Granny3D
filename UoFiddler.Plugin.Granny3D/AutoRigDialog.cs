@@ -50,6 +50,7 @@ namespace UoFiddler.Plugin.Granny3D
         private readonly Dictionary<string, Vector3> _targetReferenceJointPositions = new(StringComparer.OrdinalIgnoreCase);
 
         // UI Morphing & Ghost controls
+        private CheckBox chkLiveDeform = null!;
         private CheckBox chkMagnetSnap = null!;
         private CheckBox chkShowGhostBody = null!;
         private Label lblAdaptTip = null!;
@@ -138,7 +139,7 @@ namespace UoFiddler.Plugin.Granny3D
         private string _ghostSkeletonName = "";
         private string _ghostSkeletonPath = "";
         private CheckBox chkShowGhostSkeleton = null!;
-        private bool _liveDeformMeshWithBones = true;
+        private bool _liveDeformMeshWithBones = false;
 
         private float _scale = 1.0f;
         private float _rotX = 0f;
@@ -1212,10 +1213,10 @@ namespace UoFiddler.Plugin.Granny3D
                 Margin = new Padding(0, 4, 0, 0)
             };
 
-            var chkLiveDeform = new CheckBox
+            chkLiveDeform = new CheckBox
             {
                 Text = "🔄 Déformer le maillage avec les os (Morphing en direct)",
-                Checked = true,
+                Checked = false,
                 AutoSize = true,
                 ForeColor = Color.FromArgb(255, 215, 0),
                 Font = new Font("Segoe UI", 8.5F, FontStyle.Bold)
@@ -1223,7 +1224,17 @@ namespace UoFiddler.Plugin.Granny3D
             chkLiveDeform.CheckedChanged += (s, e) =>
             {
                 _liveDeformMeshWithBones = chkLiveDeform.Checked;
-                if (_liveDeformMeshWithBones) UpdateClothingAdaptationDeformation();
+                if (_liveDeformMeshWithBones)
+                {
+                    CaptureRestPoseSnapshot();
+                    UpdateClothingAdaptationDeformation();
+                }
+                else
+                {
+                    _adaptedVertices = null;
+                    _adaptedNormals = null;
+                    UploadMeshToGl();
+                }
                 glControl.Invalidate();
             };
 
@@ -2493,7 +2504,6 @@ namespace UoFiddler.Plugin.Granny3D
 
             UpdateNudValues();
             EnsurePreviewModel();
-            if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
             glControl.Invalidate();
         }
 
@@ -2519,7 +2529,6 @@ namespace UoFiddler.Plugin.Granny3D
                 foreach (var m in targets) m.Position += delta;
                 UpdateNudValues();
                 EnsurePreviewModel();
-                if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
             }
             else // Both
             {
@@ -2529,7 +2538,6 @@ namespace UoFiddler.Plugin.Granny3D
                 RebakeModelTransform();
                 UpdateNudValues();
                 EnsurePreviewModel();
-                if (_isClothingAdaptMode) UpdateClothingAdaptationDeformation();
             }
             glControl.Invalidate();
         }
@@ -2831,7 +2839,10 @@ namespace UoFiddler.Plugin.Granny3D
 
             if (lblAdaptTip != null)
             {
-                lblAdaptTip.Text = $"✅ {count} repère(s) aimanté(s) sur le squelette fantôme ! Le maillage suit la nouvelle pose.";
+                if (_liveDeformMeshWithBones)
+                    lblAdaptTip.Text = $"✅ {count} repère(s) aimanté(s) sur le squelette fantôme ! Le maillage suit la nouvelle pose.";
+                else
+                    lblAdaptTip.Text = $"✅ {count} repère(s) aimanté(s) sur le fantôme ! (Cochez 'Déformer le maillage' si vous voulez adapter le maillage en direct)";
             }
         }
 
@@ -4456,7 +4467,7 @@ namespace UoFiddler.Plugin.Granny3D
                 {
                     var part = _previewModel.Parts[pi];
                     bool hasSkin = part.Skin != null && part.Skin.Length == part.Vertices.Length && part.Skin.Any(x => x != null && x.Length > 0);
-                    if (!hasSkin || (chkForceAutoSkin.Checked && !_hasManualSkinWeights))
+                    if (!hasSkin || (chkForceAutoSkin.Checked && !_hasManualSkinWeights && !_hasImportedRig))
                     {
                         MixamoCharacterImport.ComputeVolumetricSkinning(part, _previewModel.Bones);
                     }
@@ -4530,6 +4541,13 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             var fittedWorld = new Matrix4[nb];
+            for (int i = 0; i < nb; i++)
+            {
+                if (Math.Abs(_previewModel.Bones[i].InverseBindMatrix.Determinant) > 1e-5f)
+                    fittedWorld[i] = Matrix4.Invert(_previewModel.Bones[i].InverseBindMatrix);
+                else
+                    fittedWorld[i] = Matrix4.Identity;
+            }
 
             void ComputeFitted(int idx)
             {
@@ -5210,6 +5228,8 @@ namespace UoFiddler.Plugin.Granny3D
 
             _adaptedVertices = null;
             _adaptedNormals = null;
+            _liveDeformMeshWithBones = false;
+            if (chkLiveDeform != null) chkLiveDeform.Checked = false;
 
             EnsurePreviewModel();
             UploadMeshToGl();
@@ -5225,6 +5245,7 @@ namespace UoFiddler.Plugin.Granny3D
         private void UpdateClothingAdaptationDeformation()
         {
             if (!_liveDeformMeshWithBones) return;
+            if (_currentTransformTarget == RigTransformTarget.Skeleton) return;
             if (_unadaptedBaseVertices == null || _sourceInvBind == null)
             {
                 CaptureRestPoseSnapshot();
@@ -6501,6 +6522,12 @@ namespace UoFiddler.Plugin.Granny3D
             try
             {
                 _currentModelPath = filePath;
+                _adaptedVertices = null;
+                _adaptedNormals = null;
+                _unadaptedBaseVertices = null;
+                _unadaptedBaseNormals = null;
+                _liveDeformMeshWithBones = false;
+                if (chkLiveDeform != null) chkLiveDeform.Checked = false;
                 string fn = Path.GetFileName(filePath);
                 string ext = Path.GetExtension(filePath).ToLowerInvariant();
 
@@ -7284,7 +7311,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             EnsurePreviewModel();
-            if (_isClothingAdaptMode)
+            if (_liveDeformMeshWithBones && _currentTransformTarget != RigTransformTarget.Skeleton)
             {
                 UpdateClothingAdaptationDeformation();
             }
@@ -7312,7 +7339,7 @@ namespace UoFiddler.Plugin.Granny3D
             }
 
             EnsurePreviewModel();
-            if (_isClothingAdaptMode)
+            if (_liveDeformMeshWithBones && _currentTransformTarget != RigTransformTarget.Skeleton)
             {
                 UpdateClothingAdaptationDeformation();
             }
@@ -7343,7 +7370,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             UpdateNudValues();
             EnsurePreviewModel();
-            if (_isClothingAdaptMode)
+            if (_liveDeformMeshWithBones && _currentTransformTarget != RigTransformTarget.Skeleton)
             {
                 UpdateClothingAdaptationDeformation();
             }
@@ -7371,7 +7398,7 @@ namespace UoFiddler.Plugin.Granny3D
 
             UpdateNudValues();
             EnsurePreviewModel();
-            if (_isClothingAdaptMode)
+            if (_liveDeformMeshWithBones && _currentTransformTarget != RigTransformTarget.Skeleton)
             {
                 UpdateClothingAdaptationDeformation();
             }
@@ -8540,7 +8567,7 @@ void main() {
 
                     UpdateNudValues();
                     EnsurePreviewModel();
-                    if (_liveDeformMeshWithBones || _isClothingAdaptMode)
+                    if (_liveDeformMeshWithBones && _currentTransformTarget != RigTransformTarget.Skeleton)
                     {
                         UpdateClothingAdaptationDeformation();
                     }
